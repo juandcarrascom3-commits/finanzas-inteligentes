@@ -1,0 +1,24 @@
+# Frontend (React / Vite)
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Backend (Python / FastAPI)
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+
+# Variables de entorno y llaves privadas
+.env
+.env.local
+.env.*.local
+
+# Archivos de sistema y caché de editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
