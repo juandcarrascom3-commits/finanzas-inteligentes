@@ -7,6 +7,7 @@ Trading/order endpoints are intentionally not implemented here.
 import json
 import logging
 import os
+import hashlib
 import time
 import urllib.error
 import urllib.parse
@@ -79,17 +80,159 @@ class EtoroAdapter:
     def fetch_pnl(self) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         return self._get(self._pnl_path())
 
-    def fetch_history(self) -> Dict[str, Any]:
+    def fetch_history(self, min_date: Optional[str] = None, page_size: int = 200, max_pages: int = 50) -> Dict[str, Any]:
+        items: List[Dict[str, Any]] = []
+        duplicates = 0
+        identity_conflicts = 0
+        pages = 0
+        meta: Dict[str, Any] = {"endpoint": self._history_path(), "page_start": 1, "page_size": page_size}
+        seen_exact = set()
+        seen_by_primary: Dict[str, str] = {}
+        stop_reason = "MAX_PAGES"
+        clean_min_date = min_date or self._clean_env_value(os.getenv("ETORO_HISTORY_MIN_DATE", "")) or "2000-01-01"
+
+        for page in range(1, max_pages + 1):
+            params: Dict[str, Any] = {"page": page, "pageSize": page_size}
+            params["minDate"] = clean_min_date
+            data, page_meta = self._get(self._history_path(), params)
+            meta.update(page_meta)
+            rows = self.extract_items(data, "history")
+            pages += 1
+            if not rows:
+                stop_reason = "EMPTY_PAGE"
+                break
+
+            new_identities = 0
+            for raw in rows:
+                primary, fingerprint = self._history_identity(raw)
+                exact_key = f"{primary}:{fingerprint}"
+                if exact_key in seen_exact:
+                    duplicates += 1
+                    continue
+                row = dict(raw)
+                row["_etoro_identity"] = exact_key
+                if primary in seen_by_primary and seen_by_primary[primary] != fingerprint:
+                    row["_etoro_identity_conflict"] = True
+                    identity_conflicts += 1
+                seen_by_primary[primary] = fingerprint
+                seen_exact.add(exact_key)
+                items.append(row)
+                new_identities += 1
+
+            if new_identities == 0:
+                stop_reason = "NO_NEW_IDENTITIES"
+                break
+        else:
+            stop_reason = "MAX_PAGES"
+
         return {
-            "items": [],
-            "pages": 0,
-            "meta": {},
-            "history_status": "NOT_AVAILABLE",
-            "reason": "eToro history endpoint is not validated/available for this connector.",
+            "items": items,
+            "pages": pages,
+            "meta": {**meta, "stop_reason": stop_reason},
+            "history_status": "READY",
+            "trade_history_status": "READY",
+            "rows_downloaded": len(items),
+            "duplicate_rows": duplicates,
+            "identity_conflicts": identity_conflicts,
+            "stop_reason": stop_reason,
         }
 
     def fetch_instrument_metadata(self, instrument_id: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         return self._get("/market-data/search", {"instrumentId": instrument_id, "pageSize": 1})
+
+    def fetch_metadata_for_instruments(self, instrument_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        metadata_by_instrument: Dict[str, Dict[str, Any]] = {}
+        for instrument_id in sorted({str(value) for value in instrument_ids if str(value or "")}):
+            payload, _ = self.fetch_instrument_metadata(instrument_id)
+            items = self.extract_items(payload, "instruments")
+            metadata_by_instrument[instrument_id] = items[0] if items else payload
+        return metadata_by_instrument
+
+    def normalize_history_rows(
+        self,
+        rows: List[Dict[str, Any]],
+        metadata_by_instrument: Optional[Dict[str, Dict[str, Any]]] = None,
+        instrument_mappings: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, Any]:
+        metadata_by_instrument = metadata_by_instrument or {}
+        mappings = instrument_mappings or {}
+        operations: List[Dict[str, Any]] = []
+        accepted_rows: List[Dict[str, Any]] = []
+        rejected_rows: List[Dict[str, Any]] = []
+        unsupported_rows: List[Dict[str, Any]] = []
+        partial_rows: List[Dict[str, Any]] = []
+        net_profit_reconciliation: List[Dict[str, Any]] = []
+        periods: List[str] = []
+
+        for index, raw in enumerate(rows, start=1):
+            status, reason = self._classify_history_row(raw)
+            instrument_id = self._history_instrument_id(raw)
+            metadata = metadata_by_instrument.get(str(instrument_id), {})
+            ticker = self._history_ticker(raw, metadata, mappings)
+            raw_net_profit = self._first(raw, ["netProfit"])
+            if not ticker and status == "SUPPORTED_DIRECT":
+                status, reason = "PARTIAL_DATA", "Missing confirmed ticker/mapping for eToro instrument."
+
+            normalized = {
+                "source": self.source,
+                "environment": self.environment.upper(),
+                "classification": status,
+                "reason": reason,
+                "positionId": self._first(raw, ["positionId", "positionID"]),
+                "parentPositionId": self._first(raw, ["parentPositionId", "parentPositionID"]),
+                "orderId": self._first(raw, ["orderId", "orderID"]),
+                "instrumentId": instrument_id,
+                "socialTradeId": self._first(raw, ["socialTradeId", "socialTradeID"]),
+                "ticker": ticker,
+                "openTimestamp": self._first(raw, ["openTimestamp", "openDateTime", "openDate"]),
+                "closeTimestamp": self._first(raw, ["closeTimestamp", "closeDateTime", "closeDate"]),
+                "units": self._num(self._first(raw, ["units", "quantity"])),
+                "openRate": self._num(self._first(raw, ["openRate"])),
+                "closeRate": self._num(self._first(raw, ["closeRate"])),
+                "investment": self._num(self._first(raw, ["investment"])),
+                "initialInvestment": self._num(self._first(raw, ["initialInvestment"])),
+                "fees": self._num(self._first(raw, ["fees", "totalFees"])),
+                "netProfit": None if raw_net_profit is None else self._num(raw_net_profit),
+                "isBuy": self._first(raw, ["isBuy"]),
+                "leverage": self._num(self._first(raw, ["leverage"]) or 1),
+                "provenance": "ETORO_HISTORY_DIRECT",
+                "raw_payload": raw,
+            }
+            if normalized["openTimestamp"]:
+                periods.append(str(normalized["openTimestamp"])[:10])
+            if normalized["closeTimestamp"]:
+                periods.append(str(normalized["closeTimestamp"])[:10])
+
+            if status != "SUPPORTED_DIRECT":
+                rejected = {"row_number": index, "row": normalized, "error": reason}
+                rejected_rows.append(rejected)
+                if status == "PARTIAL_DATA":
+                    partial_rows.append(normalized)
+                else:
+                    unsupported_rows.append(normalized)
+                continue
+
+            accepted_rows.append(normalized)
+            buy, sell = self._history_row_to_operations(normalized)
+            operations.extend([buy, sell])
+            net_profit_reconciliation.append(self._reconcile_history_net_profit(normalized))
+
+        return {
+            "operations": operations,
+            "accepted_history_rows": accepted_rows,
+            "rejected_rows": rejected_rows,
+            "unsupported_rows": unsupported_rows,
+            "partial_rows": partial_rows,
+            "net_profit_reconciliation": net_profit_reconciliation,
+            "summary": {
+                "rows": len(rows),
+                "compatible": len(accepted_rows),
+                "unsupported": len(unsupported_rows),
+                "partial": len(partial_rows),
+                "operations": len(operations),
+            },
+            "period": {"from": min(periods) if periods else None, "to": max(periods) if periods else None},
+        }
 
     def build_snapshot(self, portfolio_payload: Dict[str, Any], pnl_payload: Dict[str, Any], metadata_by_instrument: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
         metadata_by_instrument = metadata_by_instrument or {}
@@ -411,6 +554,116 @@ class EtoroAdapter:
         if self.environment == "demo":
             return "/trading/info/demo/pnl"
         return "/trading/info/real/pnl"
+
+    def _history_path(self) -> str:
+        if self.environment == "demo":
+            return "/trading/info/trade/demo/history"
+        return "/trading/info/trade/history"
+
+    def _history_identity(self, row: Dict[str, Any]) -> Tuple[str, str]:
+        primary = str(self._first(row, ["positionId", "positionID"]) or "")
+        if not primary:
+            primary = f"missing:{self._first(row, ['instrumentId', 'instrumentID']) or ''}:{self._first(row, ['openTimestamp']) or ''}:{self._first(row, ['closeTimestamp']) or ''}"
+        fingerprint = hashlib.sha256(json.dumps(row, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+        return primary, fingerprint
+
+    def _history_instrument_id(self, raw: Dict[str, Any]) -> str:
+        return str(self._first(raw, ["instrumentId", "instrumentID", "instrument_id"]) or "")
+
+    def _history_ticker(self, raw: Dict[str, Any], metadata: Dict[str, Any], mappings: Dict[str, str]) -> Optional[str]:
+        instrument_id = self._history_instrument_id(raw)
+        metadata_symbol = str(self._first(metadata, ["symbol", "ticker", "name", "instrumentDisplayName"]) or "")
+        return (mappings.get(instrument_id) or mappings.get(metadata_symbol) or mappings.get(metadata_symbol.upper()) or metadata_symbol or "").upper() or None
+
+    def _classify_history_row(self, raw: Dict[str, Any]) -> Tuple[str, str]:
+        if raw.get("_etoro_identity_conflict"):
+            return "UNSUPPORTED", "Repeated positionId has different payload; manual review required."
+        if self._first(raw, ["parentPositionId", "parentPositionID"]) or self._first(raw, ["socialTradeId", "socialTradeID"]):
+            return "PARTIAL_DATA", "Copy/Mirror/social trade history is ambiguous for normal ledger import."
+        leverage = self._num(self._first(raw, ["leverage"]) or 1)
+        if leverage != 1:
+            return "UNSUPPORTED", "Leveraged/CFD trade is read-only reconciliation only."
+        is_buy = self._first(raw, ["isBuy"])
+        if is_buy is False or str(is_buy).lower() == "false":
+            return "UNSUPPORTED", "Short/sell-open trade is read-only reconciliation only."
+        required = ["positionId", "instrumentId", "openTimestamp", "closeTimestamp", "openRate", "closeRate", "units"]
+        missing = [key for key in required if self._first(raw, [key, key.replace("Id", "ID")]) in {None, ""}]
+        if missing:
+            return "PARTIAL_DATA", f"Missing required eToro history fields: {', '.join(missing)}."
+        return "SUPPORTED_DIRECT", ""
+
+    def _history_row_to_operations(self, row: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        quantity = abs(float(row.get("units") or 0))
+        open_rate = float(row.get("openRate") or 0)
+        close_rate = float(row.get("closeRate") or 0)
+        investment = abs(float(row.get("investment") or row.get("initialInvestment") or quantity * open_rate))
+        proceeds = abs(quantity * close_rate)
+        fees_raw = float(row.get("fees") or 0)
+        fee_cost = abs(fees_raw)
+        base_external_id = f"{self.source}:{self.environment.upper()}:history:{row.get('positionId')}"
+        common_metadata = {
+            "source": self.source,
+            "environment": self.environment.upper(),
+            "positionId": row.get("positionId"),
+            "parentPositionId": row.get("parentPositionId"),
+            "orderId": row.get("orderId"),
+            "instrumentId": row.get("instrumentId"),
+            "socialTradeId": row.get("socialTradeId"),
+            "fees_raw": fees_raw,
+            "netProfit": row.get("netProfit"),
+            "provenance": row.get("provenance"),
+        }
+        # eToro reports closed-trade fees once for the position. Keep the signed raw
+        # value in both legs for traceability, but assign the positive ledger cost
+        # only to CLOSE so FIFO realized P&L does not count fees twice.
+        buy = {
+            "occurred_at": self._date(row.get("openTimestamp")),
+            "ticker": row.get("ticker"),
+            "operation_type": "BUY",
+            "quantity": quantity,
+            "price": open_rate,
+            "amount": investment,
+            "fee": 0,
+            "currency": "USD",
+            "source": self.source,
+            "external_id": f"{base_external_id}:OPEN",
+            "notes": "eToro history dry-run BUY",
+            "metadata": {**common_metadata, "history_leg": "BUY"},
+        }
+        sell = {
+            "occurred_at": self._date(row.get("closeTimestamp")),
+            "ticker": row.get("ticker"),
+            "operation_type": "SELL",
+            "quantity": quantity,
+            "price": close_rate,
+            "amount": proceeds,
+            "fee": fee_cost,
+            "currency": "USD",
+            "source": self.source,
+            "external_id": f"{base_external_id}:CLOSE",
+            "notes": "eToro history dry-run SELL",
+            "metadata": {**common_metadata, "history_leg": "SELL"},
+        }
+        return buy, sell
+
+    def _reconcile_history_net_profit(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        quantity = abs(float(row.get("units") or 0))
+        finance_pnl = quantity * float(row.get("closeRate") or 0) - abs(float(row.get("investment") or row.get("initialInvestment") or quantity * float(row.get("openRate") or 0))) - abs(float(row.get("fees") or 0))
+        external_pnl = row.get("netProfit")
+        if external_pnl is None:
+            status = "NOT_COMPARABLE"
+            difference = None
+        else:
+            difference = round(finance_pnl - float(external_pnl or 0), 2)
+            status = "MATCH" if abs(difference) <= self.reconciliation_tolerance else ("ROUNDING_DIFFERENCE" if abs(difference) <= 0.5 else "MISMATCH")
+        return {
+            "positionId": row.get("positionId"),
+            "ticker": row.get("ticker"),
+            "finance_realized_pnl": round(finance_pnl, 2),
+            "etoro_netProfit": external_pnl,
+            "difference": difference,
+            "status": status,
+        }
 
     def _extract_positions(self, payload: Any) -> List[Dict[str, Any]]:
         if isinstance(payload, list):

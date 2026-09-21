@@ -4,7 +4,8 @@ import urllib.error
 import pytest
 
 from backend.integrations.etoro_adapter import EtoroAdapter, EtoroNetworkError, EtoroRateLimitError
-from backend.app import _etoro_mapping_suggestions
+import backend.app as app_module
+from backend.app import _etoro_dry_run, _etoro_mapping_suggestions
 from database.db_manager import DatabaseManager
 
 
@@ -76,6 +77,8 @@ def test_etoro_routes_are_explicit_for_demo_and_real():
     assert real._portfolio_path() == "/trading/info/portfolio"
     assert real._pnl_path() == "/trading/info/real/pnl"
     assert "/real/portfolio" not in real._portfolio_path()
+    assert demo._history_path() == "/trading/info/trade/demo/history"
+    assert real._history_path() == "/trading/info/trade/history"
 
 
 def test_etoro_request_id_is_unique_per_request(monkeypatch):
@@ -106,13 +109,106 @@ def test_etoro_request_id_is_unique_per_request(monkeypatch):
     assert request_ids[0] != request_ids[1]
 
 
-def test_etoro_history_is_unavailable_without_calling_fictional_endpoint():
+def history_row(**overrides):
+    row = {
+        "positionId": "p1",
+        "parentPositionId": None,
+        "orderId": 0,
+        "instrumentId": "i1",
+        "socialTradeId": None,
+        "openTimestamp": "2026-01-01T10:00:00Z",
+        "closeTimestamp": "2026-01-10T10:00:00Z",
+        "openRate": 10,
+        "closeRate": 20,
+        "units": 1,
+        "investment": 10,
+        "initialInvestment": 10,
+        "fees": -1.2,
+        "netProfit": 8.8,
+        "isBuy": True,
+        "leverage": 1,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_etoro_history_fetch_starts_at_page_one_and_does_not_stop_on_partial_page():
+    adapter = EtoroAdapter(api_key="api", user_key="user", environment="demo")
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append((path, params))
+        page = params["page"]
+        if page == 1:
+            return {"history": [history_row(positionId="p1")]}, {}
+        if page == 2:
+            return {"history": [history_row(positionId="p2", orderId=0)]}, {}
+        return {"history": []}, {}
+
+    adapter._get = fake_get
+    result = adapter.fetch_history(min_date="2026-01-01", page_size=50, max_pages=5)
+
+    assert [params["page"] for _, params in calls] == [1, 2, 3]
+    assert 0 not in [params["page"] for _, params in calls]
+    assert all(path == "/trading/info/trade/demo/history" for path, _ in calls)
+    assert calls[0][1]["minDate"] == "2026-01-01"
+    assert result["history_status"] == "READY"
+    assert result["rows_downloaded"] == 2
+    assert result["stop_reason"] == "EMPTY_PAGE"
+
+
+def test_etoro_history_fetch_stops_on_no_new_identities_and_keeps_identity_conflicts():
     adapter = EtoroAdapter(api_key="api", user_key="user")
 
-    result = adapter.fetch_history()
+    def fake_get_conflict(path, params=None):
+        if params["page"] == 1:
+            return {"history": [history_row(positionId="same", closeRate=20), history_row(positionId="same", closeRate=21)]}, {}
+        return {"history": []}, {}
 
-    assert result["history_status"] == "NOT_AVAILABLE"
-    assert result["items"] == []
+    adapter._get = fake_get_conflict
+    conflict = adapter.fetch_history(page_size=100, max_pages=2)
+    assert conflict["rows_downloaded"] == 2
+    assert conflict["identity_conflicts"] == 1
+    assert any(row.get("_etoro_identity_conflict") for row in conflict["items"])
+
+    def fake_get_duplicate(path, params=None):
+        if params["page"] in {1, 2}:
+            return {"history": [history_row(positionId="dup", orderId=0)]}, {}
+        return {"history": []}, {}
+
+    adapter._get = fake_get_duplicate
+    duplicate = adapter.fetch_history(page_size=100, max_pages=5)
+    assert duplicate["rows_downloaded"] == 1
+    assert duplicate["duplicate_rows"] == 1
+    assert duplicate["stop_reason"] == "NO_NEW_IDENTITIES"
+
+
+def test_etoro_history_fetch_respects_max_page_guardrail():
+    adapter = EtoroAdapter(api_key="api", user_key="user")
+
+    def fake_get(path, params=None):
+        return {"history": [history_row(positionId=f"p{params['page']}")]}, {}
+
+    adapter._get = fake_get
+    result = adapter.fetch_history(page_size=1, max_pages=3)
+
+    assert result["pages"] == 3
+    assert result["rows_downloaded"] == 3
+    assert result["stop_reason"] == "MAX_PAGES"
+
+
+def test_etoro_history_fetch_always_sends_required_min_date():
+    adapter = EtoroAdapter(api_key="api", user_key="user")
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append(params)
+        return {"history": []}, {}
+
+    adapter._get = fake_get
+    adapter.fetch_history(max_pages=1)
+
+    assert calls[0]["minDate"] == "2000-01-01"
 
 
 def test_etoro_instrument_metadata_uses_instrument_id():
@@ -127,6 +223,68 @@ def test_etoro_instrument_metadata_uses_instrument_id():
     adapter.fetch_instrument_metadata("123")
 
     assert calls == [("/market-data/search", {"instrumentId": "123", "pageSize": 1})]
+
+
+def test_etoro_metadata_batch_fetches_each_instrument_once():
+    adapter = EtoroAdapter(api_key="api", user_key="user")
+    calls = []
+
+    def fake_get(path, params=None):
+        calls.append(params["instrumentId"])
+        return {"instruments": [{"instrumentID": params["instrumentId"], "symbol": f"T{params['instrumentId']}"}]}, {}
+
+    adapter._get = fake_get
+    metadata = adapter.fetch_metadata_for_instruments(["2", "1", "2"])
+
+    assert calls == ["1", "2"]
+    assert metadata["1"]["symbol"] == "T1"
+
+
+def test_etoro_history_normalization_preserves_signed_fees_and_reconciles_netprofit():
+    adapter = EtoroAdapter(api_key="api", user_key="user", environment="demo")
+    normalized = adapter.normalize_history_rows(
+        [history_row()],
+        {"i1": {"symbol": "AAPL"}},
+        {"i1": "AAPL"},
+    )
+
+    assert normalized["summary"]["compatible"] == 1
+    assert normalized["summary"]["operations"] == 2
+    buy, sell = normalized["operations"]
+    assert buy["external_id"] == "ETORO:DEMO:history:p1:OPEN"
+    assert sell["external_id"] == "ETORO:DEMO:history:p1:CLOSE"
+    assert buy["external_id"] != sell["external_id"]
+    assert buy["fee"] == 0
+    assert sell["fee"] == 1.2
+    assert buy["metadata"]["fees_raw"] == -1.2
+    assert sell["metadata"]["fees_raw"] == -1.2
+    assert normalized["net_profit_reconciliation"][0]["status"] == "MATCH"
+
+    missing_reference = adapter.normalize_history_rows([history_row(positionId="p2", netProfit=None)], {"i1": {"symbol": "AAPL"}}, {"i1": "AAPL"})
+    assert missing_reference["net_profit_reconciliation"][0]["status"] == "NOT_COMPARABLE"
+
+    mismatch_reference = adapter.normalize_history_rows([history_row(positionId="p3", netProfit=99)], {"i1": {"symbol": "AAPL"}}, {"i1": "AAPL"})
+    assert mismatch_reference["net_profit_reconciliation"][0]["status"] == "MISMATCH"
+
+
+def test_etoro_history_classification_rejects_leverage_short_copy_and_partial_data():
+    adapter = EtoroAdapter(api_key="api", user_key="user")
+    normalized = adapter.normalize_history_rows(
+        [
+            history_row(positionId="lev", leverage=2),
+            history_row(positionId="short", isBuy=False),
+            history_row(positionId="copy", socialTradeId="social-1"),
+            history_row(positionId="partial", closeTimestamp=None),
+        ],
+        {"i1": {"symbol": "AAPL"}},
+        {"i1": "AAPL"},
+    )
+
+    assert normalized["summary"]["compatible"] == 0
+    assert normalized["summary"]["unsupported"] == 2
+    assert normalized["summary"]["partial"] == 2
+    assert {row["classification"] for row in normalized["unsupported_rows"]} == {"UNSUPPORTED"}
+    assert {row["classification"] for row in normalized["partial_rows"]} == {"PARTIAL_DATA"}
 
 
 def test_etoro_multi_currency_income_fee_and_mapping():
@@ -488,3 +646,43 @@ def test_etoro_opening_position_required_coverage():
     reconciliation = adapter.reconcile_positions(positions, [])
 
     assert reconciliation["rows"][0]["reconciliation_status"] == "INSUFFICIENT_HISTORY"
+
+
+def test_etoro_dry_run_does_not_mutate_database_and_reports_opening_suggestion(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINANCE_SEED_DEMO", "0")
+    test_db = DatabaseManager(str(tmp_path / "finance.local.db"))
+    monkeypatch.setattr(app_module, "db", test_db)
+    operation = {
+        "occurred_at": "2026-01-01",
+        "ticker": "AAPL",
+        "operation_type": "BUY",
+        "quantity": 1,
+        "price": 100,
+        "amount": 100,
+        "fee": 0,
+        "currency": "USD",
+        "source": "ETORO",
+        "external_id": "ETORO:DEMO:history:p1:OPEN",
+        "metadata": {"netProfit": 0},
+    }
+    positions = [{
+        "ticker": "AAPL",
+        "external_instrument_id": "i1",
+        "external_name": "Apple",
+        "quantity": 2,
+        "status": "READY",
+    }]
+
+    result = _etoro_dry_run([operation], positions, [{"positionId": "p1", "status": "NOT_COMPARABLE"}])
+
+    assert result["status"] == "DRY_RUN_ONLY"
+    assert result["db_unchanged"] is True
+    assert result["db_before"] == result["db_after"]
+    assert result["db_before"]["investment_transactions"] == 0
+    assert result["db_before"]["sha256"]
+    assert test_db.get_investment_transactions() == []
+    assert result["new_operations"] == 1
+    assert result["coverage_summary"]["OPENING_POSITION_REQUIRED"] == 1
+    assert result["opening_position_suggestions"][0]["opened_at"] is None
+    assert result["opening_position_suggestions"][0]["requires_user_cost_basis"] is True
+    assert result["net_profit_reconciliation"][0]["status"] == "NOT_COMPARABLE"

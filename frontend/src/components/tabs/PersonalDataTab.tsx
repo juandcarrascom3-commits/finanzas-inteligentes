@@ -314,8 +314,12 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   };
 
   const saveOpeningFromSuggestion = async (suggestion: NonNullable<EtoroPreview['dry_run']>['opening_position_suggestions'][number]) => {
-    const openedAt = window.prompt('Fecha de posición inicial (YYYY-MM-DD)', suggestion.opened_at) || suggestion.opened_at;
+    const openedAt = window.prompt('Fecha de posición inicial (YYYY-MM-DD)', suggestion.opened_at || '') || '';
     const unitCost = Number(window.prompt('Costo unitario confirmado', '0') || 0);
+    if (!openedAt) {
+      setFeedback('Opening position no guardada: falta fecha confirmada.');
+      return;
+    }
     if (unitCost <= 0) {
       setFeedback('Opening position no guardada: falta costo unitario confirmado.');
       return;
@@ -499,7 +503,7 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
           <div className="flex gap-2">
             <button disabled={etoroBusy} onClick={runEtoroTest} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Probar</button>
             <button disabled={etoroBusy || !etoroStatus?.configured} onClick={previewEtoro} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Preview</button>
-            <button disabled={etoroBusy || !etoroPreview || etoroPreview.history_status !== 'READY' || (etoroPreview.ready_to_import_count ?? etoroPreview.new_count) === 0 || (etoroPreview.local_conflict_count ?? 0) > 0 || etoroPreview.unmapped_count > 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
+            <button disabled={etoroBusy || !etoroPreview || !etoroPreview.import_enabled || etoroPreview.history_status !== 'READY' || (etoroPreview.ready_to_import_count ?? etoroPreview.new_count) === 0 || (etoroPreview.local_conflict_count ?? 0) > 0 || etoroPreview.unmapped_count > 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
           </div>
         </div>
         <div className="text-xs text-gray-400">
@@ -529,9 +533,23 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Historial</div><div className="text-amber-300 font-bold">{etoroPreview.history_status || 'NOT_AVAILABLE'}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">PnL cuenta</div><div className="text-white font-bold">{etoroPreview.snapshot?.account_pnl_reconciliation?.status || '-'}</div></div>
             </div>
+            {etoroPreview.history_summary && (
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
+                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rows history</div><div className="text-white font-bold">{etoroPreview.history_summary.rows_downloaded ?? etoroPreview.history_summary.rows ?? 0}</div></div>
+                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Compatibles</div><div className="text-emerald-300 font-bold">{etoroPreview.history_summary.compatible ?? 0}</div></div>
+                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Parciales</div><div className="text-amber-300 font-bold">{etoroPreview.history_summary.partial ?? 0}</div></div>
+                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Conflictos ID</div><div className="text-red-300 font-bold">{etoroPreview.history_summary.identity_conflicts ?? 0}</div></div>
+                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Stop</div><div className="text-gray-200 font-bold">{etoroPreview.history_summary.stop_reason || '-'}</div></div>
+              </div>
+            )}
             {etoroPreview.history_status !== 'READY' && (
               <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
                 Historial eToro no disponible/no validado todavía. La importación permanece deshabilitada y no se muestran falsos 0 históricos.
+              </div>
+            )}
+            {etoroPreview.history_status === 'READY' && !etoroPreview.import_enabled && (
+              <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                Historial eToro disponible en modo dry-run. La importación real permanece deshabilitada en esta fase.
               </div>
             )}
             {etoroPreview.snapshot && (
@@ -607,7 +625,7 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
                   {etoroPreview.dry_run.opening_position_suggestions.slice(0, 4).map((item) => (
                     <div key={item.ticker} className="flex items-center justify-between gap-2">
                       <span>{item.ticker} · {item.quantity}</span>
-                      <button onClick={() => saveOpeningFromSuggestion(item)} className="text-emerald-300">Crear</button>
+                      <button disabled={item.requires_user_cost_basis || item.requires_user_opened_at} onClick={() => saveOpeningFromSuggestion(item)} className="text-emerald-300 disabled:text-gray-500">Requiere datos</button>
                     </div>
                   ))}
                   {etoroPreview.dry_run.opening_position_suggestions.length === 0 && <div className="text-gray-500">Sin sugerencias.</div>}

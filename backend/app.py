@@ -11,6 +11,8 @@ Exposes endpoints for:
 - Executive Diagnostic Reports & Geopolitical Risk radar
 """
 
+import hashlib
+import json
 import os
 import uuid
 import datetime
@@ -814,16 +816,33 @@ def _etoro_opening_position_suggestions(coverage: List[Dict[str, Any]], position
             "quantity": missing_qty,
             "currency": pos.get("currency") or "USD",
             "source": "ETORO",
-            "opened_at": row.get("first_operation_at") or datetime.datetime.now().date().isoformat(),
+            "opened_at": None,
             "unit_cost": 0,
             "total_cost": 0,
-            "notes": "Prefill eToro: confirme fecha y cost basis antes de guardar.",
+            "notes": "Prefill eToro: complete fecha y cost basis antes de guardar.",
             "requires_user_cost_basis": True,
+            "requires_user_opened_at": True,
         })
     return suggestions
 
-def _etoro_dry_run(operations: List[Dict[str, Any]], positions: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _etoro_db_dry_run_fingerprint() -> Dict[str, Any]:
+    payload = {
+        "investment_transactions": db.get_investment_transactions(),
+        "opening_positions": db.get_opening_positions(),
+        "etoro_mappings": db.get_source_mappings("ETORO", "instrument"),
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str)
+    return {
+        "sha256": hashlib.sha256(encoded.encode("utf-8")).hexdigest(),
+        "investment_transactions": len(payload["investment_transactions"]),
+        "opening_positions": len(payload["opening_positions"]),
+        "etoro_mappings": len(payload["etoro_mappings"]),
+    }
+
+def _etoro_dry_run(operations: List[Dict[str, Any]], positions: List[Dict[str, Any]], net_profit_reconciliation: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     current_operations = db.get_investment_transactions()
+    before_db_count = len(current_operations)
+    before_fingerprint = _etoro_db_dry_run_fingerprint()
     openings = db.get_opening_positions()
     before_positions = derive_positions(current_operations, openings)
     before_pnl = get_realized_pnl(current_operations, opening_positions=openings)
@@ -841,18 +860,33 @@ def _etoro_dry_run(operations: List[Dict[str, Any]], positions: List[Dict[str, A
     adapter = get_etoro_adapter()
     reconciliation = adapter.reconcile_positions(positions, after_positions["positions"])
     coverage = _etoro_history_coverage(positions, simulated_operations, openings)
+    after_db_count = len(db.get_investment_transactions())
+    after_fingerprint = _etoro_db_dry_run_fingerprint()
     return {
+        "status": "DRY_RUN_ONLY",
         "new_operations": preview["new_count"],
         "update_candidates": preview.get("update_count", 0),
         "duplicates": preview["duplicate_count"],
         "local_conflicts": preview.get("local_conflict_count", 0),
+        "accepted_operations": preview["accepted_count"],
+        "rejected_operations": preview["rejected_count"],
         "before_positions": before_positions["positions"],
         "after_positions": after_positions["positions"],
         "before_realized_pnl": before_pnl,
         "after_realized_pnl": after_pnl,
         "expected_reconciliation": reconciliation,
         "history_coverage": coverage,
+        "coverage_summary": {
+            "COMPLETE": len([row for row in coverage if row["coverage"] == "COMPLETE"]),
+            "OPENING_POSITION_REQUIRED": len([row for row in coverage if row["coverage"] == "OPENING_POSITION_REQUIRED"]),
+            "INCOMPLETE": len([row for row in coverage if row["coverage"] == "INCOMPLETE"]),
+            "UNSUPPORTED": len([row for row in coverage if row["coverage"] == "UNSUPPORTED"]),
+        },
         "opening_position_suggestions": _etoro_opening_position_suggestions(coverage, positions),
+        "net_profit_reconciliation": net_profit_reconciliation or [],
+        "db_before": before_fingerprint,
+        "db_after": after_fingerprint,
+        "db_unchanged": before_db_count == after_db_count and before_fingerprint == after_fingerprint,
     }
 
 def _build_etoro_preview() -> Dict[str, Any]:
@@ -868,8 +902,15 @@ def _build_etoro_preview() -> Dict[str, Any]:
         pnl, pnl_meta = {}, {}
         optional_warnings.append(f"PnL eToro no disponible para esta API/cuenta: {exc}")
 
+    history_result = adapter.fetch_history()
+    history_rows = history_result.get("items", [])
+
     metadata_by_instrument: Dict[str, Dict[str, Any]] = {}
-    instrument_ids = sorted({str(row.get("instrumentID") or row.get("instrumentId") or "") for row in adapter._extract_positions(portfolio) if row.get("instrumentID") or row.get("instrumentId")})
+    instrument_ids = sorted({
+        str(row.get("instrumentID") or row.get("instrumentId") or "")
+        for row in [*adapter._extract_positions(portfolio), *history_rows]
+        if row.get("instrumentID") or row.get("instrumentId")
+    })
     for instrument_id in instrument_ids:
         try:
             metadata_payload, _ = adapter.fetch_instrument_metadata(instrument_id)
@@ -880,64 +921,76 @@ def _build_etoro_preview() -> Dict[str, Any]:
 
     snapshot = adapter.build_snapshot(portfolio, pnl, metadata_by_instrument)
     normalized_positions = adapter.normalize_positions({"positions": snapshot["direct_positions"]}, mappings)
-    history_result = adapter.fetch_history()
-    operation_preview = {
-        "accepted_rows": [],
-        "rejected_rows": [],
-        "accepted_count": 0,
-        "rejected_count": 0,
-        "duplicate_count": 0,
-        "update_count": 0,
-        "local_conflict_count": 0,
-        "new_count": 0,
-        "classifications": [],
-    }
+    normalized_history = adapter.normalize_history_rows(history_rows, metadata_by_instrument, mappings)
+    operation_preview = db.preview_investment_operations(normalized_history["operations"], "ETORO")
     ledger_positions = derive_positions(db.get_investment_transactions(), db.get_opening_positions())["positions"]
     reconciliation = adapter.reconcile_positions(normalized_positions["positions"], ledger_positions)
+    dry_run = _etoro_dry_run(operation_preview["accepted_rows"], normalized_positions["positions"], normalized_history["net_profit_reconciliation"])
     meta = {
         **portfolio_meta,
         **pnl_meta,
         **history_result.get("meta", {}),
         "environment": adapter.environment,
         "history_status": history_result.get("history_status"),
+        "trade_history_endpoint": history_result.get("meta", {}).get("endpoint"),
     }
-    unknown_currencies = sorted({row.get("currency") for row in normalized_positions["positions"] if row.get("currency") and row.get("currency") not in {"USD", "EUR", "COP", "GBP"}})
+    unknown_currencies = sorted({
+        row.get("currency")
+        for row in [*normalized_positions["positions"], *operation_preview["accepted_rows"]]
+        if row.get("currency") and row.get("currency") not in {"USD", "EUR", "COP", "GBP"}
+    })
+    missing_fx = _etoro_missing_fx(operation_preview["accepted_rows"])
+    rejected_rows = [*normalized_history["rejected_rows"], *operation_preview["rejected_rows"]]
+    unsupported_count = len(normalized_positions["unsupported"]) + len(normalized_history["unsupported_rows"])
     return {
         **operation_preview,
         "source": "ETORO",
         "environment": adapter.environment,
         "environment_label": f"ETORO {adapter.environment.upper()}",
         "snapshot_status": snapshot["snapshot_status"],
-        "history_status": snapshot["history_status"],
+        "history_status": history_result.get("history_status"),
+        "trade_history_status": history_result.get("trade_history_status"),
+        "import_enabled": False,
         "snapshot": snapshot,
         "positions": normalized_positions["positions"],
-        "operations": [],
+        "operations": operation_preview["accepted_rows"],
         "operation_classifications": operation_preview["classifications"],
-        "adapter_rejected_rows": [],
-        "rejected_rows": [],
-        "rejected_count": 0,
+        "adapter_rejected_rows": normalized_history["rejected_rows"],
+        "rejected_rows": rejected_rows,
+        "rejected_count": len(rejected_rows),
         "positions_found": len(normalized_positions["positions"]),
-        "operations_found": None,
-        "ready_to_import_count": 0,
-        "update_candidate_count": 0,
-        "local_conflict_count": 0,
-        "unsupported_instruments": normalized_positions["unsupported"],
+        "operations_found": history_result.get("rows_downloaded", len(history_rows)),
+        "history_summary": {
+            **normalized_history["summary"],
+            "rows_downloaded": history_result.get("rows_downloaded", len(history_rows)),
+            "duplicate_rows": history_result.get("duplicate_rows", 0),
+            "identity_conflicts": history_result.get("identity_conflicts", 0),
+            "pages": history_result.get("pages", 0),
+            "stop_reason": history_result.get("stop_reason"),
+        },
+        "ready_to_import_count": operation_preview["new_count"],
+        "update_candidate_count": operation_preview.get("update_count", 0),
+        "local_conflict_count": operation_preview.get("local_conflict_count", 0),
+        "unsupported_instruments": [*normalized_positions["unsupported"], *normalized_history["unsupported_rows"]],
         "unmapped_instruments": normalized_positions["unmapped"],
-        "unsupported_count": len(normalized_positions["unsupported"]),
+        "unsupported_count": unsupported_count,
         "unmapped_count": len(normalized_positions["unmapped"]),
         "unknown_currencies": unknown_currencies,
-        "missing_fx": [],
-        "period": {"from": None, "to": None, "status": "NOT_EVALUATED_HISTORY_UNAVAILABLE"},
+        "missing_fx": missing_fx,
+        "period": {**normalized_history["period"], "status": "READY" if history_result.get("history_status") == "READY" else "NOT_AVAILABLE"},
         "reconciliation": reconciliation,
         "mapping_suggestions": _etoro_mapping_suggestions(normalized_positions["positions"]),
-        "dry_run": {"status": "NOT_EVALUATED_HISTORY_UNAVAILABLE"},
+        "dry_run": dry_run,
+        "net_profit_reconciliation": normalized_history["net_profit_reconciliation"],
         "data_quality": {
             "missing_mapping": len(normalized_positions["unmapped"]),
-            "unsupported_instrument": len(normalized_positions["unsupported"]),
-            "missing_fx": 0,
-            "duplicate": 0,
-            "local_conflict": 0,
-            "position_mismatch": len(reconciliation["issues"]),
+            "unsupported_instrument": unsupported_count,
+            "partial_history": len(normalized_history["partial_rows"]),
+            "identity_conflict": history_result.get("identity_conflicts", 0),
+            "missing_fx": len(missing_fx),
+            "duplicate": operation_preview["duplicate_count"] + history_result.get("duplicate_rows", 0),
+            "local_conflict": operation_preview.get("local_conflict_count", 0),
+            "position_mismatch": len(dry_run["expected_reconciliation"]["issues"]),
         },
         "optional_warnings": optional_warnings,
         "meta": meta,
@@ -996,7 +1049,7 @@ def preview_etoro_import():
 
 @app.post("/api/etoro/import")
 def import_etoro_preview(payload: EtoroImportInput):
-    raise HTTPException(status_code=409, detail="eToro import is disabled while history_status is not READY.")
+    raise HTTPException(status_code=409, detail="eToro import is disabled in Phase 13C; preview is dry-run only.")
 
 @app.get("/api/etoro/reconciliation")
 def get_etoro_reconciliation():

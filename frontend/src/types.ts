@@ -299,8 +299,22 @@ export interface EtoroPreview {
   environment_label?: string;
   snapshot_status?: 'READY' | 'PARTIAL_DATA' | string;
   history_status?: 'READY' | 'NOT_AVAILABLE' | string;
+  trade_history_status?: 'READY' | 'NOT_AVAILABLE' | string;
+  import_enabled?: boolean;
   positions_found: number;
   operations_found: number | null;
+  history_summary?: {
+    rows?: number;
+    compatible?: number;
+    unsupported?: number;
+    partial?: number;
+    operations?: number;
+    rows_downloaded?: number;
+    duplicate_rows?: number;
+    identity_conflicts?: number;
+    pages?: number;
+    stop_reason?: string;
+  };
   snapshot?: {
     direct_summary?: { positions: number; unrealized_pnl: number };
     mirror_summary?: { mirrors: number; internal_positions: number; unrealized_pnl: number };
@@ -332,6 +346,7 @@ export interface EtoroPreview {
   dry_run?: EtoroDryRun;
   data_quality?: Record<string, number>;
   optional_warnings?: string[];
+  net_profit_reconciliation?: Array<{ positionId?: string; ticker?: string; finance_realized_pnl: number; etoro_netProfit?: number | null; difference?: number | null; status: string }>;
   reconciliation?: {
     rows: Array<{ ticker?: string; external_name?: string; quantity: number; ledger_quantity_diff?: number | null; reconciliation_status: string; reason?: string }>;
     issues: Array<{ type: string; ticker?: string; message: string; action: string }>;
@@ -370,13 +385,19 @@ export interface EtoroDryRun {
   update_candidates: number;
   duplicates: number;
   local_conflicts: number;
+  accepted_operations?: number;
+  rejected_operations?: number;
+  status?: string;
+  coverage_summary?: Record<string, number>;
+  db_unchanged?: boolean;
+  net_profit_reconciliation?: Array<{ positionId?: string; ticker?: string; finance_realized_pnl: number; etoro_netProfit?: number | null; difference?: number | null; status: string }>;
   before_positions: Array<{ ticker: string; quantity: number; remaining_cost_basis?: number; avg_cost?: number; currency?: string }>;
   after_positions: Array<{ ticker: string; quantity: number; remaining_cost_basis?: number; avg_cost?: number; currency?: string }>;
   before_realized_pnl: Record<string, unknown>;
   after_realized_pnl: Record<string, unknown>;
   expected_reconciliation: EtoroPreview['reconciliation'];
   history_coverage: Array<{ ticker?: string; external_id?: string; external_name?: string; first_operation_at?: string | null; last_operation_at?: string | null; known_operations: number; etoro_quantity: number; ledger_quantity: number; coverage: string }>;
-  opening_position_suggestions: Array<{ ticker: string; quantity: number; currency: string; source: string; opened_at: string; unit_cost: number; total_cost: number; notes: string; requires_user_cost_basis: boolean }>;
+  opening_position_suggestions: Array<{ ticker: string; quantity: number; currency: string; source: string; opened_at?: string | null; unit_cost: number; total_cost: number; notes: string; requires_user_cost_basis: boolean; requires_user_opened_at?: boolean }>;
 }
 
 export interface MappingConfig {
