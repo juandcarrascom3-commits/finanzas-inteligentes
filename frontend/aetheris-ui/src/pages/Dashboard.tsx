@@ -1,19 +1,29 @@
-﻿import DashboardRightPanel from '../components/DashboardRightPanel';
-import React, { useEffect, useRef } from 'react';
+﻿import React, { useEffect, useRef, useState } from 'react';
+import DashboardRightPanel from '../components/DashboardRightPanel';
+import { fetchDashboardData } from '../services/api';
 
 const Dashboard: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [dashboardData, setDashboardData] = useState<any>(null);
+  const [loading, setLoading] = useState<boolean>(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    fetchDashboardData().then((res) => {
+      if (isMounted && res) {
+        setDashboardData(res);
+        setLoading(false);
+      }
+    });
+    return () => { isMounted = false; };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
-    let width: number;
-    let height: number;
-    let animationFrame: number;
+    let width: number, height: number, animationFrame: number;
 
     function resize(): void {
       if (!canvas) return;
@@ -24,35 +34,24 @@ const Dashboard: React.FC = () => {
     window.addEventListener('resize', resize);
     resize();
 
-    // Dot matrix parameters
-    const cols = 75;
-    const rows = 35;
+    const cols = 75, rows = 35;
     let phase = 0;
 
     function draw(): void {
       if (!ctx) return;
       ctx.clearRect(0, 0, width, height);
-
-      const startX = width * 0.05;
-      const endX = width * 0.98;
-      const startY = height * 0.25;
-      const gridWidth = endX - startX;
-      const gridHeight = height * 0.55;
+      const startX = width * 0.05, endX = width * 0.98, startY = height * 0.25;
+      const gridWidth = endX - startX, gridHeight = height * 0.55;
 
       for (let r = 0; r < rows; r++) {
         const rowNorm = r / rows;
-
         for (let c = 0; c < cols; c++) {
           const colNorm = c / cols;
-
-          // Generate undulating multi-frequency sine wave landscape
           const wave1 = Math.sin(colNorm * 7 + phase + rowNorm * 3);
           const wave2 = Math.cos(colNorm * 4 - phase * 0.7 + rowNorm * 2);
           const elevation = wave1 * 38 + wave2 * 28 + rowNorm * 70;
-
           const x = startX + colNorm * gridWidth;
           const y = startY + rowNorm * gridHeight + elevation;
-
           const isMagenta = colNorm > 0.52;
           const centerFactor = Math.sin(colNorm * Math.PI);
 
@@ -70,13 +69,11 @@ const Dashboard: React.FC = () => {
           ctx.fill();
         }
       }
-
       phase += 0.008;
       animationFrame = requestAnimationFrame(draw);
     }
 
     draw();
-
     return () => {
       cancelAnimationFrame(animationFrame);
       window.removeEventListener('resize', resize);
@@ -84,25 +81,27 @@ const Dashboard: React.FC = () => {
   }, []);
 
   const metricClass = "transition-all duration-300 hover:border-white/20 hover:bg-white/[0.04] border border-transparent rounded-2xl p-3 -m-3";
+  const netWorthUsd = dashboardData?.kpis?.net_worth?.net_worth_usd ?? 1245300;
+  const twrPct = dashboardData?.kpis?.twr_pct ?? 1.2;
 
-return (
+  return (
     <div className="relative overflow-y-auto flex flex-col justify-start h-full p-4 md:p-8" data-purpose="dashboard-content">
-      {/* Fondo de Canvas */}
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full pointer-events-none z-0 opacity-85" />
 
-      {/* Contenedor principal de 2 columnas */}
       <div className="relative z-10 w-full max-w-[1600px] mx-auto flex flex-col xl:flex-row gap-6 items-start">
-        
-        {/* COLUMNA IZQUIERDA: Tu panel actual del Dashboard intacto */}
         <div className="flex-1 w-full min-w-0 glass-panel rounded-[32px] p-8 md:p-10 flex flex-col justify-between shadow-2xl transition-all duration-300 hover:border-white/20 hover:bg-white/[0.04]">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6 items-start">
             <div className={metricClass}>
               <p className="text-xs md:text-sm font-normal text-gray-400 mb-1">Total Asset Value</p>
-              <h2 className="text-3xl lg:text-4xl font-light tracking-tight text-white">$1,245,300</h2>
+              <h2 className="text-3xl lg:text-4xl font-light tracking-tight text-white">
+                {loading ? '...' : `$${netWorthUsd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
+              </h2>
             </div>
             <div className={metricClass}>
-              <p className="text-xs md:text-sm font-normal text-gray-400 mb-1">Daily Change</p>
-              <span className="text-2xl lg:text-3xl font-medium tracking-tight text-[#38e1e7]">+1.2%</span>
+              <p className="text-xs md:text-sm font-normal text-gray-400 mb-1">TWR (Rendimiento)</p>
+              <span className="text-2xl lg:text-3xl font-medium tracking-tight text-[#38e1e7]">
+                {loading ? '...' : `${twrPct > 0 ? '+' : ''}${twrPct}%`}
+              </span>
             </div>
             <div className={metricClass}>
               <p className="text-xs md:text-sm font-normal text-gray-400 mb-2">Spliner Chart</p>
@@ -119,7 +118,6 @@ return (
                   <path d="m4.5 19.5 15-15m0 0H8.25m11.25 0v11.25" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
                 <span className="text-xs font-semibold uppercase tracking-wider">Bullish</span>
-                <span className="text-xs opacity-70 ml-0.5">&#128070;</span>
               </div>
             </div>
           </div>
@@ -148,11 +146,15 @@ return (
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 pt-4 border-t border-white/[0.04]">
             <div className={metricClass}>
               <p className="text-xs md:text-sm font-normal text-gray-400 mb-1">Total Asset Value:</p>
-              <p className="text-2xl md:text-4xl font-light text-white tracking-tight">$1,245,300</p>
+              <p className="text-2xl md:text-4xl font-light text-white tracking-tight">
+                {loading ? '...' : `$${netWorthUsd.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`}
+              </p>
             </div>
             <div className={metricClass}>
-              <p className="text-xs md:text-sm font-normal text-gray-400 mb-1">Daily Change:</p>
-              <p className="text-2xl md:text-4xl font-light text-[#38e1e7] tracking-tight">+1.2%</p>
+              <p className="text-xs md:text-sm font-normal text-gray-400 mb-1">TWR (Rendimiento):</p>
+              <p className="text-2xl md:text-4xl font-light text-[#38e1e7] tracking-tight">
+                {loading ? '...' : `${twrPct > 0 ? '+' : ''}${twrPct}%`}
+              </p>
             </div>
             <div className={metricClass}>
               <p className="text-xs md:text-sm font-normal text-gray-400 mb-1">Market Sentiment:</p>
@@ -161,11 +163,9 @@ return (
           </div>
         </div>
 
-        {/* COLUMNA DERECHA: El panel lateral HUD con el mapa y métricas */}
         <div className="w-full xl:w-80 shrink-0">
           <DashboardRightPanel />
         </div>
-
       </div>
     </div>
   );
