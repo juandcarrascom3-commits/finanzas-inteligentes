@@ -227,12 +227,13 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
 
   const importEtoro = async () => {
     if (!etoroPreview) return;
+    if (!window.confirm(`Importar eToro ${etoroPreview.environment.toUpperCase()} localmente con backup previo?`)) return;
     setEtoroBusy(true);
     try {
       const result = await onImportEtoro(etoroPreview);
       setEtoroPreview({ ...etoroPreview, ...result });
       setEtoroStatus(await onFetchEtoroStatus());
-      setFeedback(`eToro importado: ${result.imported_count ?? 0} operaciones nuevas; ${result.updated_count ?? 0} actualizadas.`);
+      setFeedback(`eToro importado: ${result.imported_count ?? 0} nuevas; backup ${result.backup?.created ? 'valido' : 'no reportado'}.`);
     } catch (err: any) {
       setFeedback(err.message);
     } finally {
@@ -503,7 +504,7 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
           <div className="flex gap-2">
             <button disabled={etoroBusy} onClick={runEtoroTest} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Probar</button>
             <button disabled={etoroBusy || !etoroStatus?.configured} onClick={previewEtoro} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Preview</button>
-            <button disabled={etoroBusy || !etoroPreview || !etoroPreview.import_enabled || etoroPreview.history_status !== 'READY' || (etoroPreview.ready_to_import_count ?? etoroPreview.new_count) === 0 || (etoroPreview.local_conflict_count ?? 0) > 0 || etoroPreview.unmapped_count > 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
+            <button disabled={etoroBusy || !etoroPreview || !etoroPreview.import_enabled || etoroPreview.history_status !== 'READY' || (etoroPreview.local_conflict_count ?? 0) > 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
           </div>
         </div>
         <div className="text-xs text-gray-400">
@@ -533,6 +534,16 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Historial</div><div className="text-amber-300 font-bold">{etoroPreview.history_status || 'NOT_AVAILABLE'}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">PnL cuenta</div><div className="text-white font-bold">{etoroPreview.snapshot?.account_pnl_reconciliation?.status || '-'}</div></div>
             </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Preview</div><div className={etoroPreview.preview_valid ? 'text-emerald-300 font-bold' : 'text-red-300 font-bold'}>{etoroPreview.preview_valid ? 'VALIDO' : 'STALE'}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Gates</div><div className={etoroPreview.import_gates?.status === 'PASS' ? 'text-emerald-300 font-bold' : 'text-amber-300 font-bold'}>{etoroPreview.import_gates?.status || '-'}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Backup/import</div><div className="text-white font-bold">{etoroPreview.backup?.created ? 'BACKUP OK' : etoroPreview.import_status || '-'}</div></div>
+            </div>
+            {etoroPreview.import_gates?.failures?.length ? (
+              <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                {etoroPreview.import_gates.failures.join(' · ')}
+              </div>
+            ) : null}
             {etoroPreview.history_summary && (
               <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
                 <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rows history</div><div className="text-white font-bold">{etoroPreview.history_summary.rows_downloaded ?? etoroPreview.history_summary.rows ?? 0}</div></div>

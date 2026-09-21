@@ -301,6 +301,10 @@ export interface EtoroPreview {
   history_status?: 'READY' | 'NOT_AVAILABLE' | string;
   trade_history_status?: 'READY' | 'NOT_AVAILABLE' | string;
   import_enabled?: boolean;
+  preview_hash?: string;
+  preview_valid?: boolean;
+  import_gates?: { status: string; failures: string[] };
+  import_status?: string;
   positions_found: number;
   operations_found: number | null;
   history_summary?: {
@@ -346,6 +350,8 @@ export interface EtoroPreview {
   dry_run?: EtoroDryRun;
   data_quality?: Record<string, number>;
   optional_warnings?: string[];
+  backup?: { created: boolean; path: string; validation: Record<string, unknown> };
+  post_import?: { status: string; issues: Array<Record<string, unknown>>; expected_new: number; inserted: number; holdings?: Array<Record<string, unknown>>; realized_pnl?: Record<string, unknown>; reconciliation?: Record<string, unknown> };
   net_profit_reconciliation?: Array<{ positionId?: string; ticker?: string; finance_realized_pnl: number; etoro_netProfit?: number | null; difference?: number | null; status: string }>;
   reconciliation?: {
     rows: Array<{ ticker?: string; external_name?: string; quantity: number; ledger_quantity_diff?: number | null; reconciliation_status: string; reason?: string }>;

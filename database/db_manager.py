@@ -1935,6 +1935,10 @@ class DatabaseManager:
             "market_data_config",
             "market_symbol_mappings",
             "price_authority",
+            "investment_transactions",
+            "opening_positions",
+            "position_authority",
+            "reconciliation_audit_events",
             "schema_migrations",
         ]
         with self.get_connection() as conn:

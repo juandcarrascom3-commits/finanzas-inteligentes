@@ -686,3 +686,176 @@ def test_etoro_dry_run_does_not_mutate_database_and_reports_opening_suggestion(t
     assert result["opening_position_suggestions"][0]["opened_at"] is None
     assert result["opening_position_suggestions"][0]["requires_user_cost_basis"] is True
     assert result["net_profit_reconciliation"][0]["status"] == "NOT_COMPARABLE"
+
+
+def etoro_import_operations():
+    return [
+        {
+            "occurred_at": "2026-01-01T10:00:00",
+            "ticker": "AAPL",
+            "operation_type": "BUY",
+            "quantity": 1,
+            "price": 100,
+            "amount": 100,
+            "fee": 0,
+            "currency": "USD",
+            "source": "ETORO",
+            "external_id": "ETORO:DEMO:history:p-safe:OPEN",
+            "metadata": {"provenance": "ETORO_HISTORY_DIRECT", "fees_raw": -1.5, "netProfit": 18.5},
+        },
+        {
+            "occurred_at": "2026-02-01T10:00:00",
+            "ticker": "AAPL",
+            "operation_type": "SELL",
+            "quantity": 1,
+            "price": 120,
+            "amount": 120,
+            "fee": 1.5,
+            "currency": "USD",
+            "source": "ETORO",
+            "external_id": "ETORO:DEMO:history:p-safe:CLOSE",
+            "metadata": {"provenance": "ETORO_HISTORY_DIRECT", "fees_raw": -1.5, "netProfit": 18.5},
+        },
+    ]
+
+
+def build_safe_etoro_preview(operations):
+    operation_preview = app_module.db.preview_investment_operations(operations, "ETORO")
+    positions = []
+    dry_run = app_module._etoro_dry_run(operation_preview["accepted_rows"], positions, [{"positionId": "p-safe", "status": "MATCH"}])
+    preview = {
+        **operation_preview,
+        "source": "ETORO",
+        "environment": "demo",
+        "trade_history_status": "READY",
+        "history_status": "READY",
+        "positions": positions,
+        "operations": operation_preview["accepted_rows"],
+        "operation_classifications": operation_preview["classifications"],
+        "rejected_rows": [],
+        "rejected_count": 0,
+        "positions_found": 0,
+        "operations_found": len(operations),
+        "history_summary": {"rows_downloaded": len(operations) // 2, "compatible": len(operations) // 2, "partial": 0, "unsupported": 0, "identity_conflicts": 0},
+        "ready_to_import_count": operation_preview["new_count"],
+        "update_candidate_count": operation_preview.get("update_count", 0),
+        "local_conflict_count": operation_preview.get("local_conflict_count", 0),
+        "unsupported_count": 0,
+        "unmapped_count": 0,
+        "unsupported_instruments": [],
+        "unmapped_instruments": [],
+        "unknown_currencies": [],
+        "missing_fx": [],
+        "period": {"from": "2026-01-01", "to": "2026-02-01", "status": "READY"},
+        "reconciliation": {"rows": [], "issues": [], "summary": {"positions": 0, "issues": 0}},
+        "mapping_suggestions": [],
+        "dry_run": dry_run,
+        "net_profit_reconciliation": [{"positionId": "p-safe", "status": "MATCH", "finance_realized_pnl": 18.5, "etoro_netProfit": 18.5, "difference": 0}],
+        "data_quality": {"missing_mapping": 0, "unsupported_instrument": 0, "partial_history": 0, "identity_conflict": 0, "missing_fx": 0, "duplicate": operation_preview["duplicate_count"], "local_conflict": operation_preview.get("local_conflict_count", 0), "position_mismatch": 0},
+        "optional_warnings": [],
+        "meta": {"environment": "demo"},
+    }
+    preview_hash = app_module._etoro_preview_hash(preview)
+    gates = app_module._etoro_import_gates(preview)
+    preview["preview_hash"] = preview_hash
+    preview["preview_valid"] = True
+    preview["import_gates"] = gates
+    preview["import_enabled"] = gates["status"] == "PASS"
+    preview["meta"] = {**preview["meta"], "preview_hash": preview_hash}
+    return preview
+
+
+def test_etoro_safe_import_is_atomic_idempotent_and_backed_up(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINANCE_SEED_DEMO", "0")
+    test_db = DatabaseManager(str(tmp_path / "finance.local.db"))
+    monkeypatch.setattr(app_module, "db", test_db)
+    operations = etoro_import_operations()
+    monkeypatch.setattr(app_module, "_build_etoro_preview", lambda: build_safe_etoro_preview(operations))
+
+    preview = build_safe_etoro_preview(operations)
+    assert preview["import_enabled"] is True
+    first = app_module.import_etoro_preview(app_module.EtoroImportInput(preview_hash=preview["preview_hash"], confirm_import=True))
+
+    assert first["imported_count"] == 2
+    assert first["post_import"]["status"] == "MATCH"
+    assert first["backup"]["created"] is True
+    assert first["backup"]["validation"]["valid"] is True
+    assert len(test_db.get_investment_transactions()) == 2
+    assert test_db.get_opening_positions() == []
+    assert first["ready_to_import_count"] == 0
+
+    second_preview = build_safe_etoro_preview(operations)
+    assert second_preview["new_count"] == 0
+    second = app_module.import_etoro_preview(app_module.EtoroImportInput(preview_hash=second_preview["preview_hash"], confirm_import=True))
+    assert second["imported_count"] == 0
+    assert len(test_db.get_investment_transactions()) == 2
+
+
+def test_etoro_safe_import_rejects_stale_preview_when_mapping_changes(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINANCE_SEED_DEMO", "0")
+    test_db = DatabaseManager(str(tmp_path / "finance.local.db"))
+    monkeypatch.setattr(app_module, "db", test_db)
+    operations = etoro_import_operations()
+    monkeypatch.setattr(app_module, "_build_etoro_preview", lambda: build_safe_etoro_preview(operations))
+
+    preview = build_safe_etoro_preview(operations)
+    test_db.save_source_mapping({"source": "ETORO", "external_type": "instrument", "external_id": "i1", "external_name": "Apple", "local_id": "AAPL", "local_type": "ticker"})
+
+    with pytest.raises(Exception) as exc:
+        app_module.import_etoro_preview(app_module.EtoroImportInput(preview_hash=preview["preview_hash"], confirm_import=True))
+    assert getattr(exc.value, "status_code", None) == 409
+    assert exc.value.detail["code"] == "STALE_PREVIEW"
+    assert test_db.get_investment_transactions() == []
+
+
+def test_etoro_safe_import_blocks_conflicts_and_real_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINANCE_SEED_DEMO", "0")
+    test_db = DatabaseManager(str(tmp_path / "finance.local.db"))
+    monkeypatch.setattr(app_module, "db", test_db)
+    preview = build_safe_etoro_preview(etoro_import_operations())
+    preview["local_conflict_count"] = 1
+    assert app_module._etoro_import_gates(preview)["status"] == "BLOCKED"
+
+    real_preview = build_safe_etoro_preview(etoro_import_operations())
+    real_preview["environment"] = "real"
+    assert "REAL_IMPORT_REQUIRES_EXPLICIT_USER_CONFIRMATION" in app_module._etoro_import_gates(real_preview)["failures"]
+
+
+def test_etoro_batch_import_rolls_back_on_mid_batch_failure(tmp_path, monkeypatch):
+    monkeypatch.setenv("FINANCE_SEED_DEMO", "0")
+    test_db = DatabaseManager(str(tmp_path / "finance.local.db"))
+    operations = etoro_import_operations()
+    original_get_connection = test_db.get_connection
+
+    class FailingConnection:
+        def __init__(self):
+            self.conn = original_get_connection()
+            self.inserts = 0
+
+        def __enter__(self):
+            self.conn.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self.conn.__exit__(*args)
+
+        def execute(self, sql, params=()):
+            if "INSERT INTO investment_transactions" in sql:
+                self.inserts += 1
+                if self.inserts == 2:
+                    raise RuntimeError("simulated mid-batch failure")
+            return self.conn.execute(sql, params)
+
+        def commit(self):
+            return self.conn.commit()
+
+        def rollback(self):
+            return self.conn.rollback()
+
+    monkeypatch.setattr(test_db, "get_connection", lambda: FailingConnection())
+
+    with pytest.raises(Exception):
+        test_db.import_investment_operations(operations, "ETORO")
+
+    monkeypatch.setattr(test_db, "get_connection", original_get_connection)
+    assert test_db.get_investment_transactions() == []

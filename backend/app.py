@@ -239,6 +239,8 @@ class EtoroImportInput(BaseModel):
     operations: List[Dict[str, Any]] = []
     positions: List[Dict[str, Any]] = []
     meta: Dict[str, Any] = {}
+    preview_hash: Optional[str] = None
+    confirm_import: bool = False
 
 class EtoroBulkMappingInput(BaseModel):
     mappings: List[SourceMappingInput]
@@ -839,6 +841,101 @@ def _etoro_db_dry_run_fingerprint() -> Dict[str, Any]:
         "etoro_mappings": len(payload["etoro_mappings"]),
     }
 
+def _etoro_preview_hash_payload(preview: Dict[str, Any]) -> Dict[str, Any]:
+    def metadata(row: Dict[str, Any]) -> Dict[str, Any]:
+        value = row.get("metadata") or {}
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return value if isinstance(value, dict) else {}
+
+    return {
+        "environment": preview.get("environment"),
+        "trade_history_status": preview.get("trade_history_status"),
+        "operations": [
+            {
+                "external_id": row.get("external_id"),
+                "occurred_at": row.get("occurred_at"),
+                "ticker": row.get("ticker"),
+                "operation_type": row.get("operation_type"),
+                "quantity": round(float(row.get("quantity") or 0), 10),
+                "price": round(float(row.get("price") or 0), 10),
+                "amount": round(float(row.get("amount") or 0), 10),
+                "fee": round(float(row.get("fee") or 0), 10),
+                "currency": row.get("currency"),
+                "source": row.get("source"),
+                "provenance": metadata(row).get("provenance"),
+                "fees_raw": metadata(row).get("fees_raw"),
+            }
+            for row in sorted(preview.get("accepted_rows") or preview.get("operations") or [], key=lambda item: str(item.get("external_id") or ""))
+        ],
+        "classifications": sorted(
+            [
+                {
+                    "external_id": row.get("external_id"),
+                    "operation_type": row.get("operation_type"),
+                    "classification": row.get("classification"),
+                    "differences": row.get("differences") or {},
+                }
+                for row in preview.get("operation_classifications", [])
+            ],
+            key=lambda item: f"{item.get('external_id')}-{item.get('operation_type')}",
+        ),
+        "history_summary": preview.get("history_summary"),
+        "data_quality": preview.get("data_quality"),
+        "mappings": [
+            {
+                "external_id": row.get("external_id"),
+                "local_id": row.get("local_id"),
+                "is_active": row.get("is_active"),
+            }
+            for row in db.get_source_mappings("ETORO", "instrument")
+        ],
+        "db": _etoro_db_dry_run_fingerprint(),
+    }
+
+def _etoro_preview_hash(preview: Dict[str, Any]) -> str:
+    encoded = json.dumps(_etoro_preview_hash_payload(preview), sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+def _etoro_import_gates(preview: Dict[str, Any]) -> Dict[str, Any]:
+    def metadata(row: Dict[str, Any]) -> Dict[str, Any]:
+        value = row.get("metadata") or {}
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return value if isinstance(value, dict) else {}
+
+    failures = []
+    operations = preview.get("accepted_rows") or preview.get("operations") or []
+    classifications = preview.get("operation_classifications") or []
+    if preview.get("environment") != "demo":
+        failures.append("REAL_IMPORT_REQUIRES_EXPLICIT_USER_CONFIRMATION")
+    if preview.get("trade_history_status") != "READY":
+        failures.append("TRADE_HISTORY_NOT_READY")
+    if preview.get("local_conflict_count", 0) > 0:
+        failures.append("LOCAL_CONFLICTS")
+    if preview.get("update_candidate_count", 0) > 0:
+        failures.append("UPDATE_CANDIDATES_BLOCKED")
+    if any(not row.get("ticker") for row in operations):
+        failures.append("MAPPINGS_REQUIRED")
+    if any(row.get("classification") == "local_conflict" for row in classifications):
+        failures.append("BLOCKING_CONFLICT_CLASSIFICATION")
+    allowed_external_ids = {row.get("external_id") for row in operations}
+    if any(not str(external_id or "").endswith((":OPEN", ":CLOSE")) for external_id in allowed_external_ids):
+        failures.append("INVALID_EXTERNAL_ID_CONTRACT")
+    if any(metadata(row).get("provenance") != "ETORO_HISTORY_DIRECT" for row in operations):
+        failures.append("UNSUPPORTED_PROVENANCE")
+    if preview.get("dry_run", {}).get("db_unchanged") is not True:
+        failures.append("DRY_RUN_MUTATED_DB")
+    return {"status": "PASS" if not failures else "BLOCKED", "failures": sorted(set(failures))}
+
 def _etoro_dry_run(operations: List[Dict[str, Any]], positions: List[Dict[str, Any]], net_profit_reconciliation: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     current_operations = db.get_investment_transactions()
     before_db_count = len(current_operations)
@@ -942,7 +1039,7 @@ def _build_etoro_preview() -> Dict[str, Any]:
     missing_fx = _etoro_missing_fx(operation_preview["accepted_rows"])
     rejected_rows = [*normalized_history["rejected_rows"], *operation_preview["rejected_rows"]]
     unsupported_count = len(normalized_positions["unsupported"]) + len(normalized_history["unsupported_rows"])
-    return {
+    preview = {
         **operation_preview,
         "source": "ETORO",
         "environment": adapter.environment,
@@ -950,7 +1047,6 @@ def _build_etoro_preview() -> Dict[str, Any]:
         "snapshot_status": snapshot["snapshot_status"],
         "history_status": history_result.get("history_status"),
         "trade_history_status": history_result.get("trade_history_status"),
-        "import_enabled": False,
         "snapshot": snapshot,
         "positions": normalized_positions["positions"],
         "operations": operation_preview["accepted_rows"],
@@ -994,6 +1090,46 @@ def _build_etoro_preview() -> Dict[str, Any]:
         },
         "optional_warnings": optional_warnings,
         "meta": meta,
+    }
+    preview_hash = _etoro_preview_hash(preview)
+    gates = _etoro_import_gates(preview)
+    preview["preview_hash"] = preview_hash
+    preview["preview_valid"] = True
+    preview["import_gates"] = gates
+    preview["import_enabled"] = gates["status"] == "PASS"
+    preview["meta"] = {**preview["meta"], "preview_hash": preview_hash}
+    return preview
+
+def _etoro_post_import_check(preview: Dict[str, Any], import_result: Dict[str, Any]) -> Dict[str, Any]:
+    operations = db.get_investment_transactions()
+    openings = db.get_opening_positions()
+    positions = preview.get("positions", [])
+    after_positions = derive_positions(operations, openings)
+    after_pnl = get_realized_pnl(operations, opening_positions=openings)
+    reconciliation = get_etoro_adapter().reconcile_positions(positions, after_positions["positions"])
+    expected = preview.get("dry_run", {})
+    expected_new = int(expected.get("new_operations") or 0)
+    inserted = int(import_result.get("imported_count") or 0)
+    status = "MATCH"
+    issues = []
+    if expected_new != inserted:
+        issues.append({"type": "EXPECTED_INSERTED_MISMATCH", "expected_new": expected_new, "inserted": inserted})
+    if json.dumps(expected.get("after_positions", []), sort_keys=True, default=str) != json.dumps(after_positions["positions"], sort_keys=True, default=str):
+        issues.append({"type": "HOLDINGS_MISMATCH"})
+    if json.dumps(expected.get("after_realized_pnl", {}), sort_keys=True, default=str) != json.dumps(after_pnl, sort_keys=True, default=str):
+        issues.append({"type": "REALIZED_PNL_MISMATCH"})
+    if json.dumps(expected.get("expected_reconciliation", {}), sort_keys=True, default=str) != json.dumps(reconciliation, sort_keys=True, default=str):
+        issues.append({"type": "RECONCILIATION_MISMATCH"})
+    if issues:
+        status = "POST_IMPORT_MISMATCH"
+    return {
+        "status": status,
+        "issues": issues,
+        "expected_new": expected_new,
+        "inserted": inserted,
+        "holdings": after_positions["positions"],
+        "realized_pnl": after_pnl,
+        "reconciliation": reconciliation,
     }
 
 @app.get("/api/etoro/status")
@@ -1049,7 +1185,51 @@ def preview_etoro_import():
 
 @app.post("/api/etoro/import")
 def import_etoro_preview(payload: EtoroImportInput):
-    raise HTTPException(status_code=409, detail="eToro import is disabled in Phase 13C; preview is dry-run only.")
+    try:
+        if not payload.confirm_import:
+            raise HTTPException(status_code=400, detail="CONFIRMATION_REQUIRED")
+        current_preview = _build_etoro_preview()
+        current_hash = current_preview.get("preview_hash")
+        requested_hash = payload.preview_hash or payload.meta.get("preview_hash")
+        if not requested_hash or requested_hash != current_hash:
+            raise HTTPException(status_code=409, detail={"code": "STALE_PREVIEW", "current_preview_hash": current_hash})
+
+        gates = current_preview.get("import_gates", {})
+        if gates.get("status") != "PASS":
+            raise HTTPException(status_code=409, detail={"code": "IMPORT_GATES_BLOCKED", "failures": gates.get("failures", [])})
+
+        backup = db.export_backup()
+        backup_validation = db.validate_backup(backup["db_backup_path"])
+        if not backup_validation.get("valid"):
+            raise HTTPException(status_code=409, detail={"code": "BACKUP_INVALID"})
+
+        import_result = db.import_investment_operations(current_preview["accepted_rows"], "ETORO")
+        post_import = _etoro_post_import_check(current_preview, import_result)
+        if post_import["status"] != "MATCH":
+            return {
+                **current_preview,
+                **import_result,
+                "backup": {"created": True, "path": backup["db_backup_path"], "validation": backup_validation},
+                "post_import": post_import,
+                "import_status": "POST_IMPORT_MISMATCH",
+                "import_enabled": False,
+            }
+
+        refreshed_preview = _build_etoro_preview()
+        return {
+            **refreshed_preview,
+            "imported_count": import_result.get("imported_count", 0),
+            "updated_count": import_result.get("updated_count", 0),
+            "duplicate_count": import_result.get("duplicate_count", 0),
+            "backup": {"created": True, "path": backup["db_backup_path"], "validation": backup_validation},
+            "post_import": post_import,
+            "import_status": "IMPORTED",
+            "import_enabled": refreshed_preview.get("import_enabled", False),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.get("/api/etoro/reconciliation")
 def get_etoro_reconciliation():

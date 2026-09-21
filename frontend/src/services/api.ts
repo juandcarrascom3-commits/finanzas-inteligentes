@@ -246,7 +246,13 @@ export async function importEtoroPreview(preview: EtoroPreview): Promise<EtoroPr
   const res = await fetch(`${API_BASE}/etoro/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ operations: preview.operations || preview.accepted_rows || [], positions: preview.positions || [], meta: preview.meta })
+    body: JSON.stringify({
+      operations: preview.operations || preview.accepted_rows || [],
+      positions: preview.positions || [],
+      meta: preview.meta,
+      preview_hash: preview.preview_hash,
+      confirm_import: true
+    })
   });
   return readJson<EtoroPreview>(res, 'Error al importar eToro.');
 }
