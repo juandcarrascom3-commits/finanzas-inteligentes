@@ -296,22 +296,33 @@ export interface BudgetBakersPreview {
 export interface EtoroPreview {
   source: 'ETORO';
   environment: string;
+  environment_label?: string;
   positions_found: number;
   operations_found: number;
+  positions?: EtoroInstrument[];
   operations: Partial<InvestmentOperation>[];
   accepted_rows: Partial<InvestmentOperation>[];
   rejected_rows: Array<{ row_number: number; row: Record<string, unknown>; error: string }>;
+  operation_classifications?: Array<{ external_id?: string; ticker?: string; operation_type?: string; classification: string; differences?: Record<string, unknown> }>;
   accepted_count: number;
   rejected_count: number;
   duplicate_count: number;
+  ready_to_import_count?: number;
+  update_candidate_count?: number;
+  local_conflict_count?: number;
   new_count: number;
   imported_count?: number;
   updated_count?: number;
   unsupported_count: number;
   unmapped_count: number;
-  unsupported_instruments: Array<{ external_id: string; external_name: string; ticker?: string; reason?: string }>;
-  unmapped_instruments: Array<{ external_instrument_id: string; external_name: string; ticker?: string; reason?: string }>;
+  unsupported_instruments: EtoroInstrument[];
+  unmapped_instruments: EtoroInstrument[];
   unknown_currencies: string[];
+  missing_fx?: string[];
+  period?: { from?: string | null; to?: string | null };
+  mapping_suggestions?: EtoroMappingSuggestion[];
+  dry_run?: EtoroDryRun;
+  data_quality?: Record<string, number>;
   optional_warnings?: string[];
   reconciliation?: {
     rows: Array<{ ticker?: string; external_name?: string; quantity: number; ledger_quantity_diff?: number | null; reconciliation_status: string; reason?: string }>;
@@ -319,6 +330,53 @@ export interface EtoroPreview {
     summary: { positions: number; issues: number };
   };
   meta: Record<string, unknown>;
+}
+
+export interface EtoroInstrument {
+  external_id?: string;
+  external_instrument_id?: string;
+  external_name: string;
+  symbol?: string;
+  instrument_type?: string;
+  currency?: string;
+  ticker?: string;
+  status?: string;
+  reason?: string;
+}
+
+export interface EtoroMappingSuggestion {
+  external_id: string;
+  external_name: string;
+  symbol?: string;
+  instrument_type?: string;
+  currency?: string;
+  current_mapping?: string;
+  status?: string;
+  warnings: string[];
+  confirmed: boolean;
+  suggested: Array<{ ticker: string; name?: string; confidence: string; reason: string }>;
+}
+
+export interface EtoroDryRun {
+  new_operations: number;
+  update_candidates: number;
+  duplicates: number;
+  local_conflicts: number;
+  before_positions: Array<{ ticker: string; quantity: number; remaining_cost_basis?: number; avg_cost?: number; currency?: string }>;
+  after_positions: Array<{ ticker: string; quantity: number; remaining_cost_basis?: number; avg_cost?: number; currency?: string }>;
+  before_realized_pnl: Record<string, unknown>;
+  after_realized_pnl: Record<string, unknown>;
+  expected_reconciliation: EtoroPreview['reconciliation'];
+  history_coverage: Array<{ ticker?: string; external_id?: string; external_name?: string; first_operation_at?: string | null; last_operation_at?: string | null; known_operations: number; etoro_quantity: number; ledger_quantity: number; coverage: string }>;
+  opening_position_suggestions: Array<{ ticker: string; quantity: number; currency: string; source: string; opened_at: string; unit_cost: number; total_cost: number; notes: string; requires_user_cost_basis: boolean }>;
+}
+
+export interface MappingConfig {
+  version?: number;
+  exported_at?: string;
+  etoro_instrument_mappings: SourceMapping[];
+  market_symbol_mappings: Array<Record<string, unknown>>;
+  price_authority: Array<Record<string, unknown>>;
 }
 
 export interface SourceMapping {

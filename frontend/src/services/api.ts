@@ -15,6 +15,7 @@ import type {
   EtoroStatus,
   InvestmentThesis,
   InvestmentOperation,
+  MappingConfig,
   PanoramaData,
   MonthlyReview,
   MarketDataSyncResult,
@@ -245,9 +246,55 @@ export async function importEtoroPreview(preview: EtoroPreview): Promise<EtoroPr
   const res = await fetch(`${API_BASE}/etoro/import`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ operations: preview.operations || preview.accepted_rows || [], meta: preview.meta })
+    body: JSON.stringify({ operations: preview.operations || preview.accepted_rows || [], positions: preview.positions || [], meta: preview.meta })
   });
   return readJson<EtoroPreview>(res, 'Error al importar eToro.');
+}
+
+export async function fetchEtoroMappings(): Promise<{ mappings: SourceMapping[]; assets: Asset[]; market_symbol_mappings: Array<Record<string, unknown>> }> {
+  const res = await fetch(`${API_BASE}/etoro/mappings`);
+  return readJson<{ mappings: SourceMapping[]; assets: Asset[]; market_symbol_mappings: Array<Record<string, unknown>> }>(res, 'Error al cargar mappings eToro.');
+}
+
+export async function confirmEtoroMappings(mappings: SourceMapping[]): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/etoro/mappings/bulk-confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mappings })
+  });
+  return readJson<unknown>(res, 'Error al confirmar mappings eToro.');
+}
+
+export async function markEtoroUnsupported(mapping: SourceMapping): Promise<SourceMapping> {
+  const res = await fetch(`${API_BASE}/etoro/mappings/unsupported`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapping)
+  });
+  return readJson<SourceMapping>(res, 'Error al marcar unsupported.');
+}
+
+export async function exportMappingConfig(): Promise<MappingConfig> {
+  const res = await fetch(`${API_BASE}/mapping-config/export`);
+  return readJson<MappingConfig>(res, 'Error al exportar configuración.');
+}
+
+export async function validateMappingConfig(config: MappingConfig): Promise<{ valid: boolean; errors: string[]; counts: Record<string, number> }> {
+  const res = await fetch(`${API_BASE}/mapping-config/validate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config })
+  });
+  return readJson<{ valid: boolean; errors: string[]; counts: Record<string, number> }>(res, 'Error al validar configuración.');
+}
+
+export async function importMappingConfig(config: MappingConfig): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/mapping-config/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ config })
+  });
+  return readJson<unknown>(res, 'Error al importar configuración.');
 }
 
 export async function fetchReconciliation(): Promise<ReconciliationSummary> {

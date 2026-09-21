@@ -235,7 +235,14 @@ class CanonicalImportInput(BaseModel):
 
 class EtoroImportInput(BaseModel):
     operations: List[Dict[str, Any]] = []
+    positions: List[Dict[str, Any]] = []
     meta: Dict[str, Any] = {}
+
+class EtoroBulkMappingInput(BaseModel):
+    mappings: List[SourceMappingInput]
+
+class MappingConfigInput(BaseModel):
+    config: Dict[str, Any]
 
 class BudgetInput(BaseModel):
     id: Optional[str] = None
@@ -698,6 +705,156 @@ def _etoro_instrument_mappings() -> Dict[str, str]:
                 mappings[item["external_name"].upper()] = item["local_id"]
     return mappings
 
+def _etoro_mapping_suggestions(instruments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    assets = db.get_assets(include_watchlist=True)
+    assets_by_ticker = {asset["ticker"].upper(): asset for asset in assets}
+    suggestions = []
+    seen = set()
+    for item in instruments:
+        external_id = item.get("external_instrument_id") or item.get("external_id") or ""
+        external_name = item.get("external_name") or item.get("symbol") or ""
+        key = external_id or external_name
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        candidates = []
+        tokens = {str(external_id).upper(), str(external_name).upper()}
+        for token in list(tokens):
+            if "." in token:
+                tokens.add(token.split(".")[0])
+        for token in tokens:
+            if token in assets_by_ticker:
+                candidates.append({
+                    "ticker": token,
+                    "name": assets_by_ticker[token].get("name"),
+                    "confidence": "EXACT",
+                    "reason": "Coincidencia exacta con ticker Finance.",
+                })
+        if not candidates:
+            name_upper = str(external_name).upper()
+            for asset in assets:
+                if asset["ticker"].upper() in name_upper or name_upper in asset.get("name", "").upper():
+                    candidates.append({
+                        "ticker": asset["ticker"],
+                        "name": asset.get("name"),
+                        "confidence": "SUGGESTED",
+                        "reason": "Coincidencia por símbolo o nombre.",
+                    })
+        suggestions.append({
+            "external_id": external_id,
+            "external_name": external_name,
+            "symbol": item.get("symbol") or external_name,
+            "instrument_type": item.get("instrument_type") or "",
+            "currency": item.get("currency") or "USD",
+            "current_mapping": item.get("ticker"),
+            "status": item.get("status"),
+            "warnings": [item.get("reason")] if item.get("reason") else [],
+            "suggested": candidates[:3],
+            "confirmed": False,
+        })
+    return suggestions
+
+def _etoro_missing_fx(operations: List[Dict[str, Any]]) -> List[str]:
+    currencies = sorted({row.get("currency") for row in operations if row.get("currency") and row.get("currency") != "USD"})
+    missing = []
+    for currency in currencies:
+        if not db.get_fx_rates(base_currency=currency, quote_currency="USD"):
+            missing.append(currency)
+    return missing
+
+def _etoro_history_coverage(positions: List[Dict[str, Any]], operations: List[Dict[str, Any]], openings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    derived = {row["ticker"]: row for row in derive_positions(operations, openings)["positions"]}
+    ops_by_ticker: Dict[str, List[Dict[str, Any]]] = {}
+    for op in operations:
+        if op.get("ticker"):
+            ops_by_ticker.setdefault(op["ticker"], []).append(op)
+    rows = []
+    for pos in positions:
+        ticker = pos.get("ticker")
+        if pos.get("status") == "UNSUPPORTED_INSTRUMENT":
+            coverage = "UNSUPPORTED"
+        elif not ticker:
+            coverage = "INCOMPLETE"
+        else:
+            ledger_qty = float(derived.get(ticker, {}).get("quantity") or 0)
+            etoro_qty = float(pos.get("quantity") or 0)
+            has_opening = any(opening["ticker"] == ticker for opening in openings)
+            if abs(etoro_qty - ledger_qty) <= 1e-6:
+                coverage = "COMPLETE"
+            elif has_opening:
+                coverage = "INCOMPLETE"
+            else:
+                coverage = "OPENING_POSITION_REQUIRED"
+        ticker_ops = ops_by_ticker.get(ticker or "", [])
+        rows.append({
+            "ticker": ticker,
+            "external_id": pos.get("external_instrument_id"),
+            "external_name": pos.get("external_name"),
+            "first_operation_at": min([op["occurred_at"] for op in ticker_ops], default=None),
+            "last_operation_at": max([op["occurred_at"] for op in ticker_ops], default=None),
+            "known_operations": len(ticker_ops),
+            "etoro_quantity": pos.get("quantity"),
+            "ledger_quantity": derived.get(ticker or "", {}).get("quantity", 0),
+            "coverage": coverage,
+        })
+    return rows
+
+def _etoro_opening_position_suggestions(coverage: List[Dict[str, Any]], positions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    position_by_ticker = {row.get("ticker"): row for row in positions if row.get("ticker")}
+    suggestions = []
+    for row in coverage:
+        if row["coverage"] != "OPENING_POSITION_REQUIRED" or not row.get("ticker"):
+            continue
+        missing_qty = round(float(row.get("etoro_quantity") or 0) - float(row.get("ledger_quantity") or 0), 8)
+        if missing_qty <= 0:
+            continue
+        pos = position_by_ticker.get(row["ticker"], {})
+        suggestions.append({
+            "ticker": row["ticker"],
+            "quantity": missing_qty,
+            "currency": pos.get("currency") or "USD",
+            "source": "ETORO",
+            "opened_at": row.get("first_operation_at") or datetime.datetime.now().date().isoformat(),
+            "unit_cost": 0,
+            "total_cost": 0,
+            "notes": "Prefill eToro: confirme fecha y cost basis antes de guardar.",
+            "requires_user_cost_basis": True,
+        })
+    return suggestions
+
+def _etoro_dry_run(operations: List[Dict[str, Any]], positions: List[Dict[str, Any]]) -> Dict[str, Any]:
+    current_operations = db.get_investment_transactions()
+    openings = db.get_opening_positions()
+    before_positions = derive_positions(current_operations, openings)
+    before_pnl = get_realized_pnl(current_operations, opening_positions=openings)
+    preview = db.preview_investment_operations(operations, "ETORO")
+    importable = [
+        row for row, classification in zip(preview["accepted_rows"], preview["classifications"])
+        if classification["classification"] in {"ready_to_import", "update_candidate"}
+    ]
+    simulated_by_key = {(row.get("source"), row.get("external_id")): row for row in current_operations}
+    for row in importable:
+        simulated_by_key[(row.get("source"), row.get("external_id"))] = row
+    simulated_operations = list(simulated_by_key.values())
+    after_positions = derive_positions(simulated_operations, openings)
+    after_pnl = get_realized_pnl(simulated_operations, opening_positions=openings)
+    adapter = get_etoro_adapter()
+    reconciliation = adapter.reconcile_positions(positions, after_positions["positions"])
+    coverage = _etoro_history_coverage(positions, simulated_operations, openings)
+    return {
+        "new_operations": preview["new_count"],
+        "update_candidates": preview.get("update_count", 0),
+        "duplicates": preview["duplicate_count"],
+        "local_conflicts": preview.get("local_conflict_count", 0),
+        "before_positions": before_positions["positions"],
+        "after_positions": after_positions["positions"],
+        "before_realized_pnl": before_pnl,
+        "after_realized_pnl": after_pnl,
+        "expected_reconciliation": reconciliation,
+        "history_coverage": coverage,
+        "opening_position_suggestions": _etoro_opening_position_suggestions(coverage, positions),
+    }
+
 def _build_etoro_preview() -> Dict[str, Any]:
     adapter = get_etoro_adapter()
     if not adapter.is_configured():
@@ -726,6 +883,9 @@ def _build_etoro_preview() -> Dict[str, Any]:
     operation_preview = db.preview_investment_operations(normalized_operations["operations"], "ETORO")
     ledger_positions = derive_positions(db.get_investment_transactions(), db.get_opening_positions())["positions"]
     reconciliation = adapter.reconcile_positions(normalized_positions["positions"], ledger_positions)
+    missing_fx = _etoro_missing_fx(operation_preview["accepted_rows"])
+    dry_run = _etoro_dry_run(operation_preview["accepted_rows"], normalized_positions["positions"])
+    period_dates = [row["occurred_at"][:10] for row in operation_preview["accepted_rows"] if row.get("occurred_at")]
     meta = {
         **portfolio_meta,
         **pnl_meta,
@@ -738,19 +898,36 @@ def _build_etoro_preview() -> Dict[str, Any]:
         **operation_preview,
         "source": "ETORO",
         "environment": adapter.environment,
+        "environment_label": f"ETORO {adapter.environment.upper()}",
         "positions": normalized_positions["positions"],
         "operations": operation_preview["accepted_rows"],
+        "operation_classifications": operation_preview["classifications"],
         "adapter_rejected_rows": normalized_operations["rejected_rows"],
         "rejected_rows": operation_preview["rejected_rows"] + normalized_operations["rejected_rows"],
         "rejected_count": operation_preview["rejected_count"] + len(normalized_operations["rejected_rows"]),
         "positions_found": len(normalized_positions["positions"]),
         "operations_found": len(raw_operations),
+        "ready_to_import_count": sum(1 for item in operation_preview["classifications"] if item["classification"] == "ready_to_import"),
+        "update_candidate_count": operation_preview.get("update_count", 0),
+        "local_conflict_count": operation_preview.get("local_conflict_count", 0),
         "unsupported_instruments": normalized_positions["unsupported"],
         "unmapped_instruments": normalized_positions["unmapped"],
         "unsupported_count": len(normalized_positions["unsupported"]),
         "unmapped_count": len(normalized_positions["unmapped"]),
         "unknown_currencies": unknown_currencies,
+        "missing_fx": missing_fx,
+        "period": {"from": min(period_dates) if period_dates else None, "to": max(period_dates) if period_dates else None},
         "reconciliation": reconciliation,
+        "mapping_suggestions": _etoro_mapping_suggestions(normalized_positions["positions"] + normalized_operations["operations"]),
+        "dry_run": dry_run,
+        "data_quality": {
+            "missing_mapping": len(normalized_positions["unmapped"]),
+            "unsupported_instrument": len(normalized_positions["unsupported"]),
+            "missing_fx": len(missing_fx),
+            "duplicate": operation_preview["duplicate_count"],
+            "local_conflict": operation_preview.get("local_conflict_count", 0),
+            "position_mismatch": len(reconciliation["issues"]),
+        },
         "optional_warnings": optional_warnings,
         "meta": meta,
     }
@@ -810,6 +987,11 @@ def preview_etoro_import():
 def import_etoro_preview(payload: EtoroImportInput):
     try:
         result = db.import_investment_operations(payload.operations, "ETORO")
+        positions = payload.positions or []
+        post_reconciliation = get_etoro_adapter().reconcile_positions(
+            positions,
+            derive_positions(db.get_investment_transactions(), db.get_opening_positions())["positions"],
+        ) if positions else None
         status = "SYNCED" if result.get("rejected_count", 0) == 0 else "PARTIAL"
         db.set_sync_state("ETORO", {
             "status": status,
@@ -817,7 +999,7 @@ def import_etoro_preview(payload: EtoroImportInput):
             "last_success_at": datetime.datetime.now().isoformat(),
             "last_error": None if status == "SYNCED" else f"{result.get('rejected_count')} operaciones rechazadas.",
         })
-        return {**result, "source": "ETORO", "meta": payload.meta}
+        return {**result, "source": "ETORO", "meta": payload.meta, "post_import_reconciliation": post_reconciliation}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -828,6 +1010,49 @@ def get_etoro_reconciliation():
         return preview["reconciliation"]
     except Exception as exc:
         return etoro_error_response(exc)
+
+@app.get("/api/etoro/mappings")
+def get_etoro_mappings():
+    return {
+        "mappings": db.get_source_mappings("ETORO", "instrument"),
+        "assets": db.get_assets(include_watchlist=True),
+        "market_symbol_mappings": db.get_symbol_mappings(provider="YFINANCE"),
+    }
+
+@app.post("/api/etoro/mappings/bulk-suggest")
+def suggest_etoro_mappings(payload: Dict[str, Any]):
+    return {"suggestions": _etoro_mapping_suggestions(payload.get("instruments", []))}
+
+@app.post("/api/etoro/mappings/bulk-confirm")
+def confirm_etoro_mappings(payload: EtoroBulkMappingInput):
+    saved = []
+    for mapping in payload.mappings:
+        item = mapping.model_dump()
+        if item.get("source") != "ETORO" or item.get("external_type") != "instrument":
+            raise HTTPException(status_code=400, detail="Only ETORO instrument mappings are accepted here.")
+        saved.append(db.save_source_mapping(item))
+    return {"status": "CONFIRMED", "saved_count": len(saved), "mappings": saved}
+
+@app.post("/api/etoro/mappings/unsupported")
+def mark_etoro_mapping_unsupported(mapping: SourceMappingInput):
+    payload = mapping.model_dump()
+    payload.update({"source": "ETORO", "external_type": "instrument", "local_id": None, "local_type": "unsupported", "is_active": False})
+    return db.save_source_mapping(payload)
+
+@app.get("/api/mapping-config/export")
+def export_mapping_config():
+    return db.export_mapping_config()
+
+@app.post("/api/mapping-config/validate")
+def validate_mapping_config(payload: MappingConfigInput):
+    return db.validate_mapping_config(payload.config)
+
+@app.post("/api/mapping-config/import")
+def import_mapping_config(payload: MappingConfigInput):
+    try:
+        return db.import_mapping_config(payload.config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.get("/api/wealth")
 def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Optional[str] = None):

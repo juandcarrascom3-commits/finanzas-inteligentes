@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Account, Asset, BackupResult, BackupValidation, BudgetBakersPreview, BudgetBakersStatus, Category, CsvImportResult, DataSourceInfo, EtoroPreview, EtoroStatus, ReconciliationSummary, SourceMapping, Transaction } from '../../types';
+import { Account, Asset, BackupResult, BackupValidation, BudgetBakersPreview, BudgetBakersStatus, Category, CsvImportResult, DataSourceInfo, EtoroMappingSuggestion, EtoroPreview, EtoroStatus, MappingConfig, ReconciliationSummary, SourceMapping, Transaction } from '../../types';
 
 interface PersonalDataTabProps {
   accounts: Account[];
@@ -26,8 +26,15 @@ interface PersonalDataTabProps {
   onTestEtoro: () => Promise<unknown>;
   onPreviewEtoro: () => Promise<EtoroPreview>;
   onImportEtoro: (preview: EtoroPreview) => Promise<EtoroPreview>;
+  onFetchEtoroMappings: () => Promise<{ mappings: SourceMapping[]; assets: Asset[]; market_symbol_mappings: Array<Record<string, unknown>> }>;
+  onConfirmEtoroMappings: (mappings: SourceMapping[]) => Promise<unknown>;
+  onMarkEtoroUnsupported: (mapping: SourceMapping) => Promise<SourceMapping>;
+  onExportMappingConfig: () => Promise<MappingConfig>;
+  onValidateMappingConfig: (config: MappingConfig) => Promise<{ valid: boolean; errors: string[]; counts: Record<string, number> }>;
+  onImportMappingConfig: (config: MappingConfig) => Promise<unknown>;
   onFetchReconciliation: () => Promise<ReconciliationSummary>;
   onSaveSourceMapping: (mapping: SourceMapping) => Promise<SourceMapping>;
+  onSaveOpeningPosition: (position: { ticker: string; opened_at: string; quantity: number; unit_cost?: number; total_cost?: number; currency: string; notes?: string }) => Promise<void>;
   privacyMode: boolean;
 }
 
@@ -58,8 +65,15 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   onTestEtoro,
   onPreviewEtoro,
   onImportEtoro,
+  onFetchEtoroMappings,
+  onConfirmEtoroMappings,
+  onMarkEtoroUnsupported,
+  onExportMappingConfig,
+  onValidateMappingConfig,
+  onImportMappingConfig,
   onFetchReconciliation,
   onSaveSourceMapping,
+  onSaveOpeningPosition,
   privacyMode
 }) => {
   const [accountForm, setAccountForm] = useState<Partial<Account>>({ name: '', account_type: 'cash', currency: 'USD', opening_balance: 0, current_balance: 0 });
@@ -71,6 +85,10 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   const [walletPreview, setWalletPreview] = useState<BudgetBakersPreview | null>(null);
   const [etoroStatus, setEtoroStatus] = useState<EtoroStatus | null>(null);
   const [etoroPreview, setEtoroPreview] = useState<EtoroPreview | null>(null);
+  const [etoroMappings, setEtoroMappings] = useState<SourceMapping[]>([]);
+  const [selectedEtoroIds, setSelectedEtoroIds] = useState<string[]>([]);
+  const [etoroTargets, setEtoroTargets] = useState<Record<string, string>>({});
+  const [mappingConfigText, setMappingConfigText] = useState('');
   const [reconciliation, setReconciliation] = useState<ReconciliationSummary | null>(null);
   const [backupPath, setBackupPath] = useState('');
   const [walletBusy, setWalletBusy] = useState(false);
@@ -80,8 +98,9 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   useEffect(() => {
     onFetchWalletStatus().then(setWalletStatus).catch((err) => setFeedback(err.message));
     onFetchEtoroStatus().then(setEtoroStatus).catch(() => undefined);
+    onFetchEtoroMappings().then((result) => setEtoroMappings(result.mappings)).catch(() => undefined);
     onFetchReconciliation().then(setReconciliation).catch(() => undefined);
-  }, [onFetchWalletStatus, onFetchEtoroStatus]);
+  }, [onFetchWalletStatus, onFetchEtoroStatus, onFetchEtoroMappings]);
 
   const money = (value: number) => privacyMode ? '••••' : value.toLocaleString();
 
@@ -187,6 +206,17 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
     try {
       const preview = await onPreviewEtoro();
       setEtoroPreview(preview);
+      const exactTargets: Record<string, string> = {};
+      const selected: string[] = [];
+      (preview.mapping_suggestions || []).forEach((item) => {
+        const exact = item.suggested.find((candidate) => candidate.confidence === 'EXACT');
+        if (exact) {
+          exactTargets[item.external_id || item.external_name] = exact.ticker;
+          selected.push(item.external_id || item.external_name);
+        }
+      });
+      setEtoroTargets(exactTargets);
+      setSelectedEtoroIds(selected);
       setFeedback('Preview de eToro listo. Revise mappings, CFDs y diferencias antes de importar.');
     } catch (err: any) {
       setFeedback(err.message);
@@ -208,6 +238,116 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
     } finally {
       setEtoroBusy(false);
     }
+  };
+
+  const etoroKey = (item: EtoroMappingSuggestion) => item.external_id || item.external_name;
+
+  const toggleEtoroSelection = (key: string) => {
+    setSelectedEtoroIds((current) => current.includes(key) ? current.filter((item) => item !== key) : [...current, key]);
+  };
+
+  const confirmSelectedEtoroMappings = async () => {
+    if (!etoroPreview) return;
+    const mappings = (etoroPreview.mapping_suggestions || [])
+      .filter((item) => selectedEtoroIds.includes(etoroKey(item)) && etoroTargets[etoroKey(item)])
+      .map((item) => ({
+        source: 'ETORO' as const,
+        external_type: 'instrument' as const,
+        external_id: item.external_id || item.external_name,
+        external_name: item.external_name,
+        local_id: etoroTargets[etoroKey(item)].toUpperCase(),
+        local_type: 'ticker',
+        is_active: true
+      }));
+    if (mappings.length === 0) return;
+    await onConfirmEtoroMappings(mappings);
+    setEtoroMappings((await onFetchEtoroMappings()).mappings);
+    setFeedback(`${mappings.length} mappings eToro confirmados. Ejecute Preview otra vez para revalidar.`);
+  };
+
+  const saveSingleEtoroMapping = async (item: EtoroMappingSuggestion) => {
+    const target = etoroTargets[etoroKey(item)];
+    if (!target) return;
+    await onSaveSourceMapping({
+      source: 'ETORO',
+      external_type: 'instrument',
+      external_id: item.external_id || item.external_name,
+      external_name: item.external_name,
+      local_id: target.toUpperCase(),
+      local_type: 'ticker',
+      is_active: true
+    });
+    setEtoroMappings((await onFetchEtoroMappings()).mappings);
+    setFeedback(`Mapping eToro confirmado para ${item.external_name}.`);
+  };
+
+  const markUnsupported = async (item: EtoroMappingSuggestion) => {
+    await onMarkEtoroUnsupported({
+      source: 'ETORO',
+      external_type: 'instrument',
+      external_id: item.external_id || item.external_name,
+      external_name: item.external_name,
+      local_type: 'unsupported',
+      is_active: false
+    });
+    setEtoroMappings((await onFetchEtoroMappings()).mappings);
+    setFeedback(`${item.external_name} marcado como unsupported.`);
+  };
+
+  const createAssetFromEtoro = async (item: EtoroMappingSuggestion) => {
+    const ticker = (etoroTargets[etoroKey(item)] || item.symbol || item.external_id || '').toUpperCase();
+    if (!ticker) return;
+    await onSaveAsset({
+      ticker,
+      name: item.external_name || ticker,
+      asset_type: item.instrument_type || 'Renta Variable',
+      sector: 'General',
+      country: 'Global',
+      quantity: 0,
+      avg_price: 0,
+      current_price: 0,
+      currency: item.currency || 'USD',
+      source: 'MANUAL'
+    });
+    setEtoroTargets({ ...etoroTargets, [etoroKey(item)]: ticker });
+    setFeedback(`Activo ${ticker} creado. Confirme el mapping antes de importar.`);
+  };
+
+  const saveOpeningFromSuggestion = async (suggestion: NonNullable<EtoroPreview['dry_run']>['opening_position_suggestions'][number]) => {
+    const openedAt = window.prompt('Fecha de posición inicial (YYYY-MM-DD)', suggestion.opened_at) || suggestion.opened_at;
+    const unitCost = Number(window.prompt('Costo unitario confirmado', '0') || 0);
+    if (unitCost <= 0) {
+      setFeedback('Opening position no guardada: falta costo unitario confirmado.');
+      return;
+    }
+    await onSaveOpeningPosition({
+      ticker: suggestion.ticker,
+      opened_at: openedAt,
+      quantity: suggestion.quantity,
+      unit_cost: unitCost,
+      currency: suggestion.currency,
+      notes: suggestion.notes
+    });
+    setFeedback(`Opening position preparada para ${suggestion.ticker}. Ejecute Preview otra vez.`);
+  };
+
+  const exportConfig = async () => {
+    const config = await onExportMappingConfig();
+    setMappingConfigText(JSON.stringify(config, null, 2));
+    setFeedback('Configuración de mappings exportada en JSON.');
+  };
+
+  const validateConfig = async () => {
+    const parsed = JSON.parse(mappingConfigText);
+    const result = await onValidateMappingConfig(parsed);
+    setFeedback(result.valid ? `Config válida: ${JSON.stringify(result.counts)}` : `Config inválida: ${result.errors.join(', ')}`);
+  };
+
+  const importConfig = async () => {
+    const parsed = JSON.parse(mappingConfigText);
+    await onImportMappingConfig(parsed);
+    setEtoroMappings((await onFetchEtoroMappings()).mappings);
+    setFeedback('Configuración de mappings importada.');
   };
 
   const saveAccountMapping = async (externalId: string, externalName: string, localId: string) => {
@@ -359,7 +499,7 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
           <div className="flex gap-2">
             <button disabled={etoroBusy} onClick={runEtoroTest} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Probar</button>
             <button disabled={etoroBusy || !etoroStatus?.configured} onClick={previewEtoro} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Preview</button>
-            <button disabled={etoroBusy || !etoroPreview || etoroPreview.new_count === 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
+            <button disabled={etoroBusy || !etoroPreview || (etoroPreview.ready_to_import_count ?? etoroPreview.new_count) === 0 || (etoroPreview.local_conflict_count ?? 0) > 0 || etoroPreview.unmapped_count > 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
           </div>
         </div>
         <div className="text-xs text-gray-400">
@@ -371,18 +511,92 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Posiciones</div><div className="text-white font-bold">{etoroPreview.positions_found}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Operaciones</div><div className="text-white font-bold">{etoroPreview.operations_found}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Nuevas</div><div className="text-emerald-300 font-bold">{etoroPreview.new_count}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Importables</div><div className="text-emerald-300 font-bold">{etoroPreview.ready_to_import_count ?? etoroPreview.new_count}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Duplicadas</div><div className="text-amber-300 font-bold">{etoroPreview.duplicate_count}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rechazadas</div><div className="text-red-300 font-bold">{etoroPreview.rejected_count}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Sin mapping</div><div className="text-amber-300 font-bold">{etoroPreview.unmapped_count}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Unsupported</div><div className="text-red-300 font-bold">{etoroPreview.unsupported_count}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Reconciliación</div><div className="text-white font-bold">{etoroPreview.reconciliation?.summary.issues ?? 0} alertas</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Conflictos</div><div className="text-red-300 font-bold">{etoroPreview.local_conflict_count ?? 0}</div></div>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Updates</div><div className="text-white font-bold">{etoroPreview.update_candidate_count ?? 0}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Periodo</div><div className="text-white">{etoroPreview.period?.from || '-'} / {etoroPreview.period?.to || '-'}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">FX faltante</div><div className="text-amber-300 font-bold">{etoroPreview.missing_fx?.join(', ') || '-'}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Ambiente</div><div className="text-white font-bold">{etoroPreview.environment_label || `ETORO ${etoroPreview.environment.toUpperCase()}`}</div></div>
             </div>
             {etoroPreview.optional_warnings?.length ? (
               <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
                 {etoroPreview.optional_warnings.slice(0, 3).map((warning) => <div key={warning}>{warning}</div>)}
               </div>
             ) : null}
+            {etoroPreview.mapping_suggestions?.length ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-xs font-bold text-gray-300">Instrument mapping eToro → Finance</div>
+                  <button onClick={confirmSelectedEtoroMappings} className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Confirmar seleccionados</button>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead className="text-gray-400 uppercase text-[10px]">
+                      <tr><th></th><th>External</th><th>Nombre</th><th>Tipo</th><th>Moneda</th><th>Estado</th><th>Mapping</th><th>Acciones</th></tr>
+                    </thead>
+                    <tbody className="divide-y divide-gray-800">
+                      {etoroPreview.mapping_suggestions.map((item) => {
+                        const key = etoroKey(item);
+                        const current = etoroMappings.find((mapping) => mapping.external_id === item.external_id);
+                        return (
+                          <tr key={key}>
+                            <td className="py-2"><input type="checkbox" checked={selectedEtoroIds.includes(key)} onChange={() => toggleEtoroSelection(key)} /></td>
+                            <td className="font-mono text-gray-400">{item.external_id || '-'}</td>
+                            <td>{item.external_name}<div className="text-gray-500">{item.symbol || ''}</div></td>
+                            <td>{item.instrument_type || '-'}</td>
+                            <td>{item.currency || '-'}</td>
+                            <td><span className={item.status === 'READY' ? 'text-emerald-300' : 'text-amber-300'}>{current?.is_active === 0 ? 'UNSUPPORTED' : item.status}</span></td>
+                            <td>
+                              <select className={inputClass} value={etoroTargets[key] || current?.local_id || ''} onChange={(e) => setEtoroTargets({ ...etoroTargets, [key]: e.target.value })}>
+                                <option value="">Seleccionar...</option>
+                                {item.suggested.map((candidate) => <option key={`${key}-${candidate.ticker}`} value={candidate.ticker}>{candidate.ticker} · {candidate.confidence}</option>)}
+                                {assets.map((asset) => <option key={`${key}-${asset.ticker}`} value={asset.ticker}>{asset.ticker} · {asset.name}</option>)}
+                              </select>
+                              {item.suggested.length > 0 && <div className="text-[10px] text-gray-500">suggested ≠ confirmed</div>}
+                            </td>
+                            <td className="space-x-2 whitespace-nowrap">
+                              <button onClick={() => saveSingleEtoroMapping(item)} className="text-emerald-300">Guardar</button>
+                              <button onClick={() => createAssetFromEtoro(item)} className="text-gray-300">Crear asset</button>
+                              <button onClick={() => markUnsupported(item)} className="text-red-300">Unsupported</button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            ) : null}
+            {etoroPreview.dry_run && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+                <div className="bg-gray-900/60 rounded-lg p-2">
+                  <div className="text-gray-400 font-bold mb-1">Dry-run ledger</div>
+                  <div>Nuevas: <span className="text-emerald-300">{etoroPreview.dry_run.new_operations}</span></div>
+                  <div>Updates: <span className="text-amber-300">{etoroPreview.dry_run.update_candidates}</span></div>
+                  <div>Conflictos: <span className="text-red-300">{etoroPreview.dry_run.local_conflicts}</span></div>
+                </div>
+                <div className="bg-gray-900/60 rounded-lg p-2">
+                  <div className="text-gray-400 font-bold mb-1">Coverage</div>
+                  {etoroPreview.dry_run.history_coverage.slice(0, 5).map((row) => <div key={`${row.ticker}-${row.external_id}`} className="flex justify-between gap-2"><span>{row.ticker || row.external_name}</span><span className="text-gray-300">{row.coverage}</span></div>)}
+                </div>
+                <div className="bg-gray-900/60 rounded-lg p-2">
+                  <div className="text-gray-400 font-bold mb-1">Opening position assist</div>
+                  {etoroPreview.dry_run.opening_position_suggestions.slice(0, 4).map((item) => (
+                    <div key={item.ticker} className="flex items-center justify-between gap-2">
+                      <span>{item.ticker} · {item.quantity}</span>
+                      <button onClick={() => saveOpeningFromSuggestion(item)} className="text-emerald-300">Crear</button>
+                    </div>
+                  ))}
+                  {etoroPreview.dry_run.opening_position_suggestions.length === 0 && <div className="text-gray-500">Sin sugerencias.</div>}
+                </div>
+              </div>
+            )}
             {(etoroPreview.unmapped_instruments.length > 0 || etoroPreview.unsupported_instruments.length > 0 || (etoroPreview.reconciliation?.issues.length || 0) > 0) && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
                 <div className="bg-gray-900/60 rounded-lg p-2">
@@ -404,6 +618,14 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
             )}
           </div>
         )}
+        <div className="space-y-2 pt-2 border-t border-gray-800">
+          <div className="flex items-center gap-2">
+            <button onClick={exportConfig} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs">Exportar config mappings</button>
+            <button disabled={!mappingConfigText} onClick={validateConfig} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Validar JSON</button>
+            <button disabled={!mappingConfigText} onClick={importConfig} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Importar config</button>
+          </div>
+          <textarea className={`${inputClass} w-full min-h-24`} placeholder="JSON de config eToro/Market Data/Price Authority" value={mappingConfigText} onChange={(e) => setMappingConfigText(e.target.value)} />
+        </div>
       </section>
 
       <section className="bg-[#111827] border border-gray-800 rounded-xl p-4">

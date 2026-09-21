@@ -21,6 +21,7 @@ import {
   fetchCategories,
   fetchDataSource,
   fetchEtoroStatus,
+  fetchEtoroMappings,
   fetchTheses,
   fetchTransactions,
   fetchWealth,
@@ -47,9 +48,13 @@ import {
   importBudgetBakersPlan,
   importBudgetBakersPreview,
   importEtoroPreview,
+  importMappingConfig,
+  exportMappingConfig,
   previewBudgetBakersImport,
   previewEtoroImport,
   saveSourceMapping,
+  confirmEtoroMappings,
+  markEtoroUnsupported,
   saveBudget,
   saveMonthlyReviewSnapshot,
   saveMarketDataConfig,
@@ -60,6 +65,7 @@ import {
   saveSymbolMapping,
   testBudgetBakersConnection,
   testEtoroConnection,
+  validateMappingConfig,
   updateRecurringStatus,
   validateBackup
 } from './services/api';
@@ -316,8 +322,15 @@ export const App: React.FC = () => {
                 onTestEtoro={testEtoroConnection}
                 onPreviewEtoro={previewEtoroImport}
                 onImportEtoro={async (preview) => { const result = await importEtoroPreview(preview); await refreshAfterMutation(); return result; }}
+                onFetchEtoroMappings={fetchEtoroMappings}
+                onConfirmEtoroMappings={confirmEtoroMappings}
+                onMarkEtoroUnsupported={markEtoroUnsupported}
+                onExportMappingConfig={exportMappingConfig}
+                onValidateMappingConfig={validateMappingConfig}
+                onImportMappingConfig={async (config) => { const result = await importMappingConfig(config); await refreshAfterMutation(); return result; }}
                 onFetchReconciliation={fetchReconciliation}
                 onSaveSourceMapping={saveSourceMapping}
+                onSaveOpeningPosition={async (position) => { await saveOpeningPosition(position); await refreshAfterMutation(); }}
                 privacyMode={privacyMode}
               />
             )}

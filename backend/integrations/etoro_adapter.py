@@ -90,6 +90,9 @@ class EtoroAdapter:
                 "external_id": position_id,
                 "external_instrument_id": external_id,
                 "external_name": external_name,
+                "symbol": external_name,
+                "instrument_type": self._instrument_type(raw),
+                "account_external_id": self._account_external_id(raw),
                 "ticker": mapped_ticker,
                 "quantity": quantity,
                 "avg_price": avg_price,
@@ -221,8 +224,20 @@ class EtoroAdapter:
             "currency": self._currency(raw),
             "source": self.source,
             "external_id": external_id,
+            "external_instrument_id": external_instrument_id,
+            "external_name": external_name,
+            "symbol": external_name,
+            "instrument_type": self._instrument_type(raw),
+            "account_external_id": self._account_external_id(raw),
             "notes": f"eToro {operation_type.lower()} read-only import",
-            "metadata": {"source_payload": raw, "external_instrument_id": external_instrument_id, "external_name": external_name},
+            "metadata": {
+                "source": self.source,
+                "environment": self.environment,
+                "external_instrument_id": external_instrument_id,
+                "external_name": external_name,
+                "account_external_id": self._account_external_id(raw),
+                "instrument_type": self._instrument_type(raw),
+            },
         }
 
     def _operation_type(self, raw: Dict[str, Any]) -> Optional[str]:
@@ -256,6 +271,20 @@ class EtoroAdapter:
         if not ticker:
             return "MISSING_MAPPING", "eToro instrument must be mapped before import."
         return "READY", ""
+
+    def _instrument_type(self, raw: Dict[str, Any]) -> str:
+        instrument = raw.get("instrument")
+        if isinstance(instrument, dict):
+            value = self._first(instrument, ["assetType", "instrumentType", "type", "category"])
+        else:
+            value = self._first(raw, ["assetType", "instrumentType", "type", "category"])
+        return str(value or "").upper()
+
+    def _account_external_id(self, raw: Dict[str, Any]) -> str:
+        account = raw.get("account") or raw.get("portfolio") or raw.get("portfolioContext")
+        if isinstance(account, dict):
+            return str(self._first(account, ["id", "accountId", "portfolioId", "name"]) or "")
+        return str(self._first(raw, ["accountId", "portfolioId", "portfolioName", "accountName"]) or "")
 
     def _mapped_ticker(self, external_id: str, external_name: str, mappings: Dict[str, str]) -> Optional[str]:
         return (mappings.get(external_id) or mappings.get(external_name) or mappings.get(external_name.upper()) or "").upper() or None

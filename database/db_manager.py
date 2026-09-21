@@ -1011,15 +1011,31 @@ class DatabaseManager:
         return {**preview, "imported_count": imported, "duplicate_count": max(preview["duplicate_count"], duplicates)}
 
     def preview_investment_operations(self, operations: List[Dict[str, Any]], source: str = "ETORO") -> Dict[str, Any]:
-        accepted, rejected, duplicate_count = [], [], 0
+        accepted, rejected, duplicate_count, update_count, conflict_count = [], [], 0, 0, 0
+        classifications = []
         clean_source = self._clean_source(source)
         with self.get_connection() as conn:
             for index, operation in enumerate(operations, start=1):
                 try:
                     payload = self._normalize_investment_transaction({**operation, "source": operation.get("source") or clean_source})
-                    if self._investment_transaction_exists(conn, payload):
+                    existing = self._get_investment_transaction_by_external_id(conn, payload["source"], payload.get("external_id"))
+                    classification = "ready_to_import"
+                    differences: Dict[str, Any] = {}
+                    if existing:
                         duplicate_count += 1
+                        classification, differences = self._classify_investment_update(existing, payload)
+                        if classification == "update_candidate":
+                            update_count += 1
+                        elif classification == "local_conflict":
+                            conflict_count += 1
                     accepted.append(payload)
+                    classifications.append({
+                        "external_id": payload.get("external_id"),
+                        "ticker": payload.get("ticker"),
+                        "operation_type": payload.get("operation_type"),
+                        "classification": classification,
+                        "differences": differences,
+                    })
                 except Exception as exc:
                     rejected.append({"row_number": index, "row": operation, "error": str(exc)})
         return {
@@ -1028,48 +1044,154 @@ class DatabaseManager:
             "accepted_count": len(accepted),
             "rejected_count": len(rejected),
             "duplicate_count": duplicate_count,
+            "update_count": update_count,
+            "local_conflict_count": conflict_count,
             "new_count": max(len(accepted) - duplicate_count, 0),
+            "classifications": classifications,
         }
 
     def import_investment_operations(self, operations: List[Dict[str, Any]], source: str = "ETORO") -> Dict[str, Any]:
         preview = self.preview_investment_operations(operations, source=source)
+        if preview.get("local_conflict_count", 0) > 0:
+            raise ValueError("Local conflicts detected. Resolve conflicts before importing.")
         imported, duplicates, updated = 0, 0, 0
         with self.get_connection() as conn:
-            for row in preview["accepted_rows"]:
-                existing = None
-                if row.get("external_id"):
-                    existing = conn.execute(
-                        "SELECT id FROM investment_transactions WHERE source = ? AND external_id = ?",
-                        (row["source"], row["external_id"]),
-                    ).fetchone()
-                if existing:
-                    row["id"] = existing["id"]
-                    updated += 1
-                conn.execute(
-                    """
-                    INSERT INTO investment_transactions (
-                        id, occurred_at, ticker, account_id, operation_type, quantity, price,
-                        amount, fee, currency, source, external_id, notes, metadata, updated_at
+            try:
+                for row, classification in zip(preview["accepted_rows"], preview["classifications"]):
+                    if classification["classification"] == "unchanged":
+                        duplicates += 1
+                        continue
+                    existing = None
+                    if row.get("external_id"):
+                        existing = conn.execute(
+                            "SELECT id FROM investment_transactions WHERE source = ? AND external_id = ?",
+                            (row["source"], row["external_id"]),
+                        ).fetchone()
+                    if existing:
+                        row["id"] = existing["id"]
+                        updated += 1
+                    conn.execute(
+                        """
+                        INSERT INTO investment_transactions (
+                            id, occurred_at, ticker, account_id, operation_type, quantity, price,
+                            amount, fee, currency, source, external_id, notes, metadata, updated_at
+                        )
+                        VALUES (
+                            :id, :occurred_at, :ticker, :account_id, :operation_type, :quantity, :price,
+                            :amount, :fee, :currency, :source, :external_id, :notes, :metadata, datetime('now')
+                        )
+                        ON CONFLICT(id) DO UPDATE SET
+                            occurred_at = excluded.occurred_at, ticker = excluded.ticker, account_id = excluded.account_id,
+                            operation_type = excluded.operation_type, quantity = excluded.quantity, price = excluded.price,
+                            amount = excluded.amount, fee = excluded.fee, currency = excluded.currency, source = excluded.source,
+                            external_id = excluded.external_id, notes = excluded.notes, metadata = excluded.metadata,
+                            updated_at = datetime('now')
+                        """,
+                        row,
                     )
-                    VALUES (
-                        :id, :occurred_at, :ticker, :account_id, :operation_type, :quantity, :price,
-                        :amount, :fee, :currency, :source, :external_id, :notes, :metadata, datetime('now')
-                    )
-                    ON CONFLICT(id) DO UPDATE SET
-                        occurred_at = excluded.occurred_at, ticker = excluded.ticker, account_id = excluded.account_id,
-                        operation_type = excluded.operation_type, quantity = excluded.quantity, price = excluded.price,
-                        amount = excluded.amount, fee = excluded.fee, currency = excluded.currency, source = excluded.source,
-                        external_id = excluded.external_id, notes = excluded.notes, metadata = excluded.metadata,
-                        updated_at = datetime('now')
-                    """,
-                    row,
-                )
-                if existing:
-                    duplicates += 1
-                else:
-                    imported += 1
-            conn.commit()
+                    if not existing:
+                        imported += 1
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
         return {**preview, "imported_count": imported, "updated_count": updated, "duplicate_count": max(preview["duplicate_count"], duplicates)}
+
+    def export_mapping_config(self) -> Dict[str, Any]:
+        return {
+            "version": 1,
+            "exported_at": datetime.now().isoformat(),
+            "etoro_instrument_mappings": self.get_source_mappings("ETORO", "instrument"),
+            "market_symbol_mappings": self.get_symbol_mappings(),
+            "price_authority": self.get_price_authority(),
+        }
+
+    def validate_mapping_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        required = {"etoro_instrument_mappings", "market_symbol_mappings", "price_authority"}
+        missing = sorted(required - set(payload.keys()))
+        errors = [f"Missing {key}" for key in missing]
+        counts = {key: len(payload.get(key) or []) for key in required if isinstance(payload.get(key) or [], list)}
+        return {"valid": not errors, "errors": errors, "counts": counts}
+
+    def import_mapping_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        validation = self.validate_mapping_config(payload)
+        if not validation["valid"]:
+            raise ValueError("; ".join(validation["errors"]))
+        imported = {"etoro_instrument_mappings": 0, "market_symbol_mappings": 0, "price_authority": 0}
+        with self.get_connection() as conn:
+            try:
+                for mapping in payload.get("etoro_instrument_mappings", []):
+                    clean = {
+                        "id": mapping.get("id") or str(uuid.uuid4()),
+                        "source": "ETORO",
+                        "external_type": "instrument",
+                        "external_id": str(mapping["external_id"]),
+                        "external_name": mapping.get("external_name", ""),
+                        "local_id": mapping.get("local_id"),
+                        "local_type": mapping.get("local_type") or "ticker",
+                        "is_active": 1 if mapping.get("is_active", True) else 0,
+                    }
+                    conn.execute(
+                        """
+                        INSERT INTO source_mappings (id, source, external_type, external_id, external_name, local_id, local_type, is_active, updated_at)
+                        VALUES (:id, :source, :external_type, :external_id, :external_name, :local_id, :local_type, :is_active, datetime('now'))
+                        ON CONFLICT(source, external_type, external_id) DO UPDATE SET
+                            external_name = excluded.external_name, local_id = excluded.local_id,
+                            local_type = excluded.local_type, is_active = excluded.is_active, updated_at = datetime('now')
+                        """,
+                        clean,
+                    )
+                    imported["etoro_instrument_mappings"] += 1
+                for mapping in payload.get("market_symbol_mappings", []):
+                    clean = {
+                        "id": mapping.get("id") or str(uuid.uuid4()),
+                        "internal_symbol": mapping["internal_symbol"].strip().upper(),
+                        "provider": (mapping.get("provider") or "YFINANCE").strip().upper(),
+                        "provider_symbol": mapping["provider_symbol"].strip().upper(),
+                        "instrument_type": (mapping.get("instrument_type") or "EQUITY").strip().upper(),
+                        "expected_currency": (mapping.get("expected_currency") or "").strip().upper() or None,
+                        "status": (mapping.get("status") or "ACTIVE").strip().upper(),
+                        "notes": mapping.get("notes") or "",
+                    }
+                    conn.execute(
+                        """
+                        INSERT INTO market_symbol_mappings (id, internal_symbol, provider, provider_symbol, instrument_type, expected_currency, status, notes, updated_at)
+                        VALUES (:id, :internal_symbol, :provider, :provider_symbol, :instrument_type, :expected_currency, :status, :notes, datetime('now'))
+                        ON CONFLICT(internal_symbol, provider) DO UPDATE SET
+                            provider_symbol = excluded.provider_symbol, instrument_type = excluded.instrument_type,
+                            expected_currency = excluded.expected_currency, status = excluded.status,
+                            notes = excluded.notes, updated_at = datetime('now')
+                        """,
+                        clean,
+                    )
+                    imported["market_symbol_mappings"] += 1
+                for authority in payload.get("price_authority", []):
+                    clean = {
+                        "id": authority.get("id") or str(uuid.uuid4()),
+                        "ticker": authority["ticker"].strip().upper(),
+                        "authority_mode": (authority.get("authority_mode") or "AUTO").upper(),
+                        "manual_price": authority.get("manual_price"),
+                        "manual_currency": authority.get("manual_currency"),
+                        "manual_updated_at": authority.get("manual_updated_at"),
+                        "notes": authority.get("notes") or "",
+                    }
+                    conn.execute(
+                        """
+                        INSERT INTO price_authority (id, ticker, authority_mode, manual_price, manual_currency, manual_updated_at, notes, updated_at)
+                        VALUES (:id, :ticker, :authority_mode, :manual_price, :manual_currency, :manual_updated_at, :notes, datetime('now'))
+                        ON CONFLICT(ticker) DO UPDATE SET
+                            authority_mode = excluded.authority_mode, manual_price = excluded.manual_price,
+                            manual_currency = excluded.manual_currency, manual_updated_at = excluded.manual_updated_at,
+                            notes = excluded.notes, updated_at = datetime('now')
+                        """,
+                        clean,
+                    )
+                    imported["price_authority"] += 1
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return {"status": "IMPORTED", "imported": imported}
 
     def get_opening_positions(self, ticker: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, params = [], []
@@ -2071,6 +2193,34 @@ class DatabaseManager:
             if found:
                 return True
         return False
+
+    def _get_investment_transaction_by_external_id(self, conn: sqlite3.Connection, source: str, external_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not external_id:
+            return None
+        row = conn.execute(
+            "SELECT * FROM investment_transactions WHERE source = ? AND external_id = ? LIMIT 1",
+            (source, external_id),
+        ).fetchone()
+        return self._decode_investment_transaction(dict(row)) if row else None
+
+    def _classify_investment_update(self, existing: Dict[str, Any], incoming: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+        fields = ["occurred_at", "ticker", "account_id", "operation_type", "quantity", "price", "amount", "fee", "currency"]
+        differences = {}
+        for field in fields:
+            old_value = existing.get(field)
+            new_value = incoming.get(field)
+            if isinstance(old_value, float) or isinstance(new_value, float):
+                if round(float(old_value or 0), 8) != round(float(new_value or 0), 8):
+                    differences[field] = {"local": old_value, "incoming": new_value}
+            elif old_value != new_value:
+                differences[field] = {"local": old_value, "incoming": new_value}
+        if not differences:
+            return "unchanged", {}
+        metadata = existing.get("metadata") or {}
+        notes = existing.get("notes") or ""
+        if existing.get("source") == "ETORO" and "manual" not in notes.lower():
+            return "update_candidate", differences
+        return "local_conflict", differences
 
     def _investment_transaction_fingerprint(self, operation: Dict[str, Any]) -> str:
         raw = "|".join(str(operation.get(key, "")) for key in ["occurred_at", "ticker", "operation_type", "quantity", "price", "amount", "fee", "currency", "account_id"])
