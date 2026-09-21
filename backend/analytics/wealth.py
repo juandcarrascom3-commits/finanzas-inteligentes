@@ -322,7 +322,8 @@ def get_concentration(allocation: Dict[str, Any], thresholds: Optional[Dict[str,
     if top3_pct > limits["top3_pct"]:
         alerts.append({"type": "top3", "severity": "medium", "message": f"Top 3 representa {top3_pct}% de la cartera.", "action": "Revisar concentración."})
     for dimension, limit_key in [("sector", "sector_pct"), ("country", "country_pct"), ("currency", "currency_pct")]:
-        top = allocation["dimensions"].get(dimension, [None])[0]
+        rows = allocation.get("dimensions", {}).get(dimension) or []
+        top = rows[0] if rows else None
         if top and top["allocation_pct"] > limits[limit_key]:
             alerts.append({"type": dimension, "severity": "medium", "message": f"{top['name']} representa {top['allocation_pct']}% de la cartera.", "action": "Revisar exposición."})
     return {"top_asset": top1, "top3_pct": top3_pct, "top5_pct": top5_pct, "alerts": alerts}

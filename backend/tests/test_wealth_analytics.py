@@ -77,6 +77,25 @@ def test_allocation_concentration_quality_and_rebalancing():
     assert sum(row["contribution_usd"] for row in rebalancing["new_contribution"]) == 300
 
 
+def test_concentration_handles_empty_dimension_rows():
+    allocation = {
+        "total_value_usd": 0,
+        "dimensions": {
+            "sector": [],
+            "country": [],
+            "currency": [],
+        },
+        "holdings": [],
+    }
+
+    concentration = get_concentration(allocation)
+
+    assert concentration["top_asset"] is None
+    assert concentration["top3_pct"] == 0
+    assert concentration["top5_pct"] == 0
+    assert concentration["alerts"] == []
+
+
 def test_attribution_and_benchmark_foundation():
     attribution = get_performance_attribution(assets_fixture(), valuations_fixture(), start="2026-01-01", end="2026-03-01")
     assert attribution["status"] == "AVAILABLE"

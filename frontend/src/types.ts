@@ -297,8 +297,16 @@ export interface EtoroPreview {
   source: 'ETORO';
   environment: string;
   environment_label?: string;
+  snapshot_status?: 'READY' | 'PARTIAL_DATA' | string;
+  history_status?: 'READY' | 'NOT_AVAILABLE' | string;
   positions_found: number;
-  operations_found: number;
+  operations_found: number | null;
+  snapshot?: {
+    direct_summary?: { positions: number; unrealized_pnl: number };
+    mirror_summary?: { mirrors: number; internal_positions: number; unrealized_pnl: number };
+    account_pnl_reconciliation?: { direct_pnl: number; mirror_pnl: number; reconstructed_total_pnl: number; etoro_account_pnl?: number | null; difference?: number | null; status: string };
+    warnings?: Array<{ type: string; count?: number; message: string }>;
+  };
   positions?: EtoroInstrument[];
   operations: Partial<InvestmentOperation>[];
   accepted_rows: Partial<InvestmentOperation>[];

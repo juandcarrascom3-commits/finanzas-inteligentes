@@ -499,7 +499,7 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
           <div className="flex gap-2">
             <button disabled={etoroBusy} onClick={runEtoroTest} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Probar</button>
             <button disabled={etoroBusy || !etoroStatus?.configured} onClick={previewEtoro} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Preview</button>
-            <button disabled={etoroBusy || !etoroPreview || (etoroPreview.ready_to_import_count ?? etoroPreview.new_count) === 0 || (etoroPreview.local_conflict_count ?? 0) > 0 || etoroPreview.unmapped_count > 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
+            <button disabled={etoroBusy || !etoroPreview || etoroPreview.history_status !== 'READY' || (etoroPreview.ready_to_import_count ?? etoroPreview.new_count) === 0 || (etoroPreview.local_conflict_count ?? 0) > 0 || etoroPreview.unmapped_count > 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
           </div>
         </div>
         <div className="text-xs text-gray-400">
@@ -510,7 +510,7 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
           <div className="space-y-3">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Posiciones</div><div className="text-white font-bold">{etoroPreview.positions_found}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Operaciones</div><div className="text-white font-bold">{etoroPreview.operations_found}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Operaciones</div><div className="text-white font-bold">{etoroPreview.operations_found ?? 'No evaluado'}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Importables</div><div className="text-emerald-300 font-bold">{etoroPreview.ready_to_import_count ?? etoroPreview.new_count}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Duplicadas</div><div className="text-amber-300 font-bold">{etoroPreview.duplicate_count}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rechazadas</div><div className="text-red-300 font-bold">{etoroPreview.rejected_count}</div></div>
@@ -524,6 +524,23 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">FX faltante</div><div className="text-amber-300 font-bold">{etoroPreview.missing_fx?.join(', ') || '-'}</div></div>
               <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Ambiente</div><div className="text-white font-bold">{etoroPreview.environment_label || `ETORO ${etoroPreview.environment.toUpperCase()}`}</div></div>
             </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Snapshot</div><div className="text-white font-bold">{etoroPreview.snapshot_status || '-'}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Historial</div><div className="text-amber-300 font-bold">{etoroPreview.history_status || 'NOT_AVAILABLE'}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">PnL cuenta</div><div className="text-white font-bold">{etoroPreview.snapshot?.account_pnl_reconciliation?.status || '-'}</div></div>
+            </div>
+            {etoroPreview.history_status !== 'READY' && (
+              <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                Historial eToro no disponible/no validado todavía. La importación permanece deshabilitada y no se muestran falsos 0 históricos.
+              </div>
+            )}
+            {etoroPreview.snapshot && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Direct</div><div className="text-white">{etoroPreview.snapshot.direct_summary?.positions ?? 0} posiciones · PnL {money(etoroPreview.snapshot.direct_summary?.unrealized_pnl ?? 0)}</div></div>
+                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Mirrors</div><div className="text-white">{etoroPreview.snapshot.mirror_summary?.mirrors ?? 0} mirrors · {etoroPreview.snapshot.mirror_summary?.internal_positions ?? 0} internas</div></div>
+                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">PnL reconstruido</div><div className="text-white">{money(etoroPreview.snapshot.account_pnl_reconciliation?.reconstructed_total_pnl ?? 0)}</div></div>
+              </div>
+            )}
             {etoroPreview.optional_warnings?.length ? (
               <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
                 {etoroPreview.optional_warnings.slice(0, 3).map((warning) => <div key={warning}>{warning}</div>)}

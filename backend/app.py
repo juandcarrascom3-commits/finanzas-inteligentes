@@ -867,65 +867,76 @@ def _build_etoro_preview() -> Dict[str, Any]:
     except EtoroNetworkError as exc:
         pnl, pnl_meta = {}, {}
         optional_warnings.append(f"PnL eToro no disponible para esta API/cuenta: {exc}")
-    try:
-        history_result = adapter.fetch_history()
-        raw_operations = history_result["items"]
-        history_meta = history_result.get("meta", {})
-    except EtoroNetworkError as exc:
-        raw_operations = []
-        history_result = {"pages": 0}
-        history_meta = {}
-        optional_warnings.append(f"Historial eToro no disponible para esta API/cuenta: {exc}")
 
-    position_payload = portfolio if adapter.extract_items(portfolio, "positions") else pnl
-    normalized_positions = adapter.normalize_positions(position_payload, mappings)
-    normalized_operations = adapter.normalize_operations({"orders": raw_operations}, mappings)
-    operation_preview = db.preview_investment_operations(normalized_operations["operations"], "ETORO")
+    metadata_by_instrument: Dict[str, Dict[str, Any]] = {}
+    instrument_ids = sorted({str(row.get("instrumentID") or row.get("instrumentId") or "") for row in adapter._extract_positions(portfolio) if row.get("instrumentID") or row.get("instrumentId")})
+    for instrument_id in instrument_ids:
+        try:
+            metadata_payload, _ = adapter.fetch_instrument_metadata(instrument_id)
+            metadata_items = adapter.extract_items(metadata_payload, "instruments")
+            metadata_by_instrument[instrument_id] = metadata_items[0] if metadata_items else metadata_payload
+        except EtoroNetworkError as exc:
+            optional_warnings.append(f"Metadata eToro no disponible para instrumentID {instrument_id}: {exc}")
+
+    snapshot = adapter.build_snapshot(portfolio, pnl, metadata_by_instrument)
+    normalized_positions = adapter.normalize_positions({"positions": snapshot["direct_positions"]}, mappings)
+    history_result = adapter.fetch_history()
+    operation_preview = {
+        "accepted_rows": [],
+        "rejected_rows": [],
+        "accepted_count": 0,
+        "rejected_count": 0,
+        "duplicate_count": 0,
+        "update_count": 0,
+        "local_conflict_count": 0,
+        "new_count": 0,
+        "classifications": [],
+    }
     ledger_positions = derive_positions(db.get_investment_transactions(), db.get_opening_positions())["positions"]
     reconciliation = adapter.reconcile_positions(normalized_positions["positions"], ledger_positions)
-    missing_fx = _etoro_missing_fx(operation_preview["accepted_rows"])
-    dry_run = _etoro_dry_run(operation_preview["accepted_rows"], normalized_positions["positions"])
-    period_dates = [row["occurred_at"][:10] for row in operation_preview["accepted_rows"] if row.get("occurred_at")]
     meta = {
         **portfolio_meta,
         **pnl_meta,
-        **history_meta,
+        **history_result.get("meta", {}),
         "environment": adapter.environment,
-        "history_pages": history_result.get("pages", 0),
+        "history_status": history_result.get("history_status"),
     }
-    unknown_currencies = sorted({row.get("currency") for row in normalized_positions["positions"] + normalized_operations["operations"] if row.get("currency") and row.get("currency") not in {"USD", "EUR", "COP", "GBP"}})
+    unknown_currencies = sorted({row.get("currency") for row in normalized_positions["positions"] if row.get("currency") and row.get("currency") not in {"USD", "EUR", "COP", "GBP"}})
     return {
         **operation_preview,
         "source": "ETORO",
         "environment": adapter.environment,
         "environment_label": f"ETORO {adapter.environment.upper()}",
+        "snapshot_status": snapshot["snapshot_status"],
+        "history_status": snapshot["history_status"],
+        "snapshot": snapshot,
         "positions": normalized_positions["positions"],
-        "operations": operation_preview["accepted_rows"],
+        "operations": [],
         "operation_classifications": operation_preview["classifications"],
-        "adapter_rejected_rows": normalized_operations["rejected_rows"],
-        "rejected_rows": operation_preview["rejected_rows"] + normalized_operations["rejected_rows"],
-        "rejected_count": operation_preview["rejected_count"] + len(normalized_operations["rejected_rows"]),
+        "adapter_rejected_rows": [],
+        "rejected_rows": [],
+        "rejected_count": 0,
         "positions_found": len(normalized_positions["positions"]),
-        "operations_found": len(raw_operations),
-        "ready_to_import_count": sum(1 for item in operation_preview["classifications"] if item["classification"] == "ready_to_import"),
-        "update_candidate_count": operation_preview.get("update_count", 0),
-        "local_conflict_count": operation_preview.get("local_conflict_count", 0),
+        "operations_found": None,
+        "ready_to_import_count": 0,
+        "update_candidate_count": 0,
+        "local_conflict_count": 0,
         "unsupported_instruments": normalized_positions["unsupported"],
         "unmapped_instruments": normalized_positions["unmapped"],
         "unsupported_count": len(normalized_positions["unsupported"]),
         "unmapped_count": len(normalized_positions["unmapped"]),
         "unknown_currencies": unknown_currencies,
-        "missing_fx": missing_fx,
-        "period": {"from": min(period_dates) if period_dates else None, "to": max(period_dates) if period_dates else None},
+        "missing_fx": [],
+        "period": {"from": None, "to": None, "status": "NOT_EVALUATED_HISTORY_UNAVAILABLE"},
         "reconciliation": reconciliation,
-        "mapping_suggestions": _etoro_mapping_suggestions(normalized_positions["positions"] + normalized_operations["operations"]),
-        "dry_run": dry_run,
+        "mapping_suggestions": _etoro_mapping_suggestions(normalized_positions["positions"]),
+        "dry_run": {"status": "NOT_EVALUATED_HISTORY_UNAVAILABLE"},
         "data_quality": {
             "missing_mapping": len(normalized_positions["unmapped"]),
             "unsupported_instrument": len(normalized_positions["unsupported"]),
-            "missing_fx": len(missing_fx),
-            "duplicate": operation_preview["duplicate_count"],
-            "local_conflict": operation_preview.get("local_conflict_count", 0),
+            "missing_fx": 0,
+            "duplicate": 0,
+            "local_conflict": 0,
             "position_mismatch": len(reconciliation["issues"]),
         },
         "optional_warnings": optional_warnings,
@@ -985,23 +996,7 @@ def preview_etoro_import():
 
 @app.post("/api/etoro/import")
 def import_etoro_preview(payload: EtoroImportInput):
-    try:
-        result = db.import_investment_operations(payload.operations, "ETORO")
-        positions = payload.positions or []
-        post_reconciliation = get_etoro_adapter().reconcile_positions(
-            positions,
-            derive_positions(db.get_investment_transactions(), db.get_opening_positions())["positions"],
-        ) if positions else None
-        status = "SYNCED" if result.get("rejected_count", 0) == 0 else "PARTIAL"
-        db.set_sync_state("ETORO", {
-            "status": status,
-            "last_sync_at": datetime.datetime.now().isoformat(),
-            "last_success_at": datetime.datetime.now().isoformat(),
-            "last_error": None if status == "SYNCED" else f"{result.get('rejected_count')} operaciones rechazadas.",
-        })
-        return {**result, "source": "ETORO", "meta": payload.meta, "post_import_reconciliation": post_reconciliation}
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    raise HTTPException(status_code=409, detail="eToro import is disabled while history_status is not READY.")
 
 @app.get("/api/etoro/reconciliation")
 def get_etoro_reconciliation():
