@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Account, Asset, BackupResult, BackupValidation, BudgetBakersPreview, BudgetBakersStatus, Category, CsvImportResult, DataSourceInfo, ReconciliationSummary, SourceMapping, Transaction } from '../../types';
+import { Account, Asset, BackupResult, BackupValidation, BudgetBakersPreview, BudgetBakersStatus, Category, CsvImportResult, DataSourceInfo, EtoroPreview, EtoroStatus, ReconciliationSummary, SourceMapping, Transaction } from '../../types';
 
 interface PersonalDataTabProps {
   accounts: Account[];
@@ -22,6 +22,10 @@ interface PersonalDataTabProps {
   onTestWallet: () => Promise<unknown>;
   onPreviewWallet: () => Promise<BudgetBakersPreview>;
   onImportWallet: (preview: BudgetBakersPreview) => Promise<BudgetBakersPreview>;
+  onFetchEtoroStatus: () => Promise<EtoroStatus>;
+  onTestEtoro: () => Promise<unknown>;
+  onPreviewEtoro: () => Promise<EtoroPreview>;
+  onImportEtoro: (preview: EtoroPreview) => Promise<EtoroPreview>;
   onFetchReconciliation: () => Promise<ReconciliationSummary>;
   onSaveSourceMapping: (mapping: SourceMapping) => Promise<SourceMapping>;
   privacyMode: boolean;
@@ -50,6 +54,10 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   onTestWallet,
   onPreviewWallet,
   onImportWallet,
+  onFetchEtoroStatus,
+  onTestEtoro,
+  onPreviewEtoro,
+  onImportEtoro,
   onFetchReconciliation,
   onSaveSourceMapping,
   privacyMode
@@ -61,15 +69,19 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   const [csvResult, setCsvResult] = useState<CsvImportResult | null>(null);
   const [walletStatus, setWalletStatus] = useState<BudgetBakersStatus | null>(null);
   const [walletPreview, setWalletPreview] = useState<BudgetBakersPreview | null>(null);
+  const [etoroStatus, setEtoroStatus] = useState<EtoroStatus | null>(null);
+  const [etoroPreview, setEtoroPreview] = useState<EtoroPreview | null>(null);
   const [reconciliation, setReconciliation] = useState<ReconciliationSummary | null>(null);
   const [backupPath, setBackupPath] = useState('');
   const [walletBusy, setWalletBusy] = useState(false);
+  const [etoroBusy, setEtoroBusy] = useState(false);
   const [feedback, setFeedback] = useState<string>('');
 
   useEffect(() => {
     onFetchWalletStatus().then(setWalletStatus).catch((err) => setFeedback(err.message));
+    onFetchEtoroStatus().then(setEtoroStatus).catch(() => undefined);
     onFetchReconciliation().then(setReconciliation).catch(() => undefined);
-  }, [onFetchWalletStatus]);
+  }, [onFetchWalletStatus, onFetchEtoroStatus]);
 
   const money = (value: number) => privacyMode ? '••••' : value.toLocaleString();
 
@@ -153,6 +165,48 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
       setFeedback(err.message);
     } finally {
       setWalletBusy(false);
+    }
+  };
+
+  const runEtoroTest = async () => {
+    setEtoroBusy(true);
+    try {
+      await onTestEtoro();
+      setEtoroStatus(await onFetchEtoroStatus());
+      setFeedback('eToro conectado en modo solo lectura.');
+    } catch (err: any) {
+      setFeedback(err.message);
+      setEtoroStatus(await onFetchEtoroStatus().catch(() => null));
+    } finally {
+      setEtoroBusy(false);
+    }
+  };
+
+  const previewEtoro = async () => {
+    setEtoroBusy(true);
+    try {
+      const preview = await onPreviewEtoro();
+      setEtoroPreview(preview);
+      setFeedback('Preview de eToro listo. Revise mappings, CFDs y diferencias antes de importar.');
+    } catch (err: any) {
+      setFeedback(err.message);
+    } finally {
+      setEtoroBusy(false);
+    }
+  };
+
+  const importEtoro = async () => {
+    if (!etoroPreview) return;
+    setEtoroBusy(true);
+    try {
+      const result = await onImportEtoro(etoroPreview);
+      setEtoroPreview({ ...etoroPreview, ...result });
+      setEtoroStatus(await onFetchEtoroStatus());
+      setFeedback(`eToro importado: ${result.imported_count ?? 0} operaciones nuevas; ${result.updated_count ?? 0} actualizadas.`);
+    } catch (err: any) {
+      setFeedback(err.message);
+    } finally {
+      setEtoroBusy(false);
     }
   };
 
@@ -288,6 +342,66 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
             <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rango</div><div className="text-white">{walletPreview.date_range?.from || '-'} / {walletPreview.date_range?.to || '-'}</div></div>
             <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Cuentas nuevas</div><div className="text-white font-bold">{walletPreview.new_accounts}</div></div>
             <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Fuente</div><div className="text-white font-bold">BUDGETBAKERS</div></div>
+          </div>
+        )}
+      </section>
+
+      <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-white">eToro read-only</h3>
+            <p className="text-xs text-gray-400">
+              Fuente REAL solo lectura para inversión. Keys en backend: <span className={etoroStatus?.configured ? 'text-emerald-300' : 'text-amber-300'}>{etoroStatus?.configured ? 'configuradas' : 'no configuradas'}</span>
+              {etoroStatus?.environment ? ` · ${etoroStatus.environment}` : ''}
+              {etoroStatus?.last_success_at ? ` · ultimo import: ${etoroStatus.last_success_at}` : ''}
+            </p>
+          </div>
+          <div className="flex gap-2">
+            <button disabled={etoroBusy} onClick={runEtoroTest} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Probar</button>
+            <button disabled={etoroBusy || !etoroStatus?.configured} onClick={previewEtoro} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Preview</button>
+            <button disabled={etoroBusy || !etoroPreview || etoroPreview.new_count === 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
+          </div>
+        </div>
+        <div className="text-xs text-gray-400">
+          Estado: <span className="text-gray-200">{etoroStatus?.status || 'sin leer'}</span>
+          {etoroStatus?.last_error ? <span className="text-red-300"> · {etoroStatus.last_error}</span> : null}
+        </div>
+        {etoroPreview && (
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Posiciones</div><div className="text-white font-bold">{etoroPreview.positions_found}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Operaciones</div><div className="text-white font-bold">{etoroPreview.operations_found}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Nuevas</div><div className="text-emerald-300 font-bold">{etoroPreview.new_count}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Duplicadas</div><div className="text-amber-300 font-bold">{etoroPreview.duplicate_count}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rechazadas</div><div className="text-red-300 font-bold">{etoroPreview.rejected_count}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Sin mapping</div><div className="text-amber-300 font-bold">{etoroPreview.unmapped_count}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Unsupported</div><div className="text-red-300 font-bold">{etoroPreview.unsupported_count}</div></div>
+              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Reconciliación</div><div className="text-white font-bold">{etoroPreview.reconciliation?.summary.issues ?? 0} alertas</div></div>
+            </div>
+            {etoroPreview.optional_warnings?.length ? (
+              <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                {etoroPreview.optional_warnings.slice(0, 3).map((warning) => <div key={warning}>{warning}</div>)}
+              </div>
+            ) : null}
+            {(etoroPreview.unmapped_instruments.length > 0 || etoroPreview.unsupported_instruments.length > 0 || (etoroPreview.reconciliation?.issues.length || 0) > 0) && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+                <div className="bg-gray-900/60 rounded-lg p-2">
+                  <div className="text-gray-400 font-bold mb-1">Instrumentos sin mapping</div>
+                  {etoroPreview.unmapped_instruments.slice(0, 4).map((item) => <div key={`${item.external_instrument_id}-${item.external_name}`} className="text-amber-200 truncate">{item.external_name || item.external_instrument_id}</div>)}
+                  {etoroPreview.unmapped_instruments.length === 0 && <div className="text-gray-500">Sin pendientes.</div>}
+                </div>
+                <div className="bg-gray-900/60 rounded-lg p-2">
+                  <div className="text-gray-400 font-bold mb-1">CFD/leverage/short</div>
+                  {etoroPreview.unsupported_instruments.slice(0, 4).map((item) => <div key={`${item.external_id}-${item.external_name}`} className="text-red-200 truncate">{item.external_name || item.external_id}</div>)}
+                  {etoroPreview.unsupported_instruments.length === 0 && <div className="text-gray-500">Sin bloqueos.</div>}
+                </div>
+                <div className="bg-gray-900/60 rounded-lg p-2">
+                  <div className="text-gray-400 font-bold mb-1">Ledger vs eToro</div>
+                  {etoroPreview.reconciliation?.issues.slice(0, 4).map((item) => <div key={`${item.type}-${item.ticker}`} className="text-amber-200 truncate">{item.ticker || item.type}: {item.type}</div>)}
+                  {(!etoroPreview.reconciliation || etoroPreview.reconciliation.issues.length === 0) && <div className="text-gray-500">Sin diferencias.</div>}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </section>

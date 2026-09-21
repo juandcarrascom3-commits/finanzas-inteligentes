@@ -258,6 +258,16 @@ export interface BudgetBakersStatus {
   sync_in_progress?: string;
 }
 
+export interface EtoroStatus {
+  source: 'ETORO';
+  configured: boolean;
+  status: string;
+  environment?: string;
+  message?: string;
+  last_success_at?: string;
+  last_error?: string;
+}
+
 export interface BudgetBakersPreview {
   source: 'BUDGETBAKERS';
   accounts_detected: number;
@@ -283,10 +293,38 @@ export interface BudgetBakersPreview {
   updated_count?: number;
 }
 
+export interface EtoroPreview {
+  source: 'ETORO';
+  environment: string;
+  positions_found: number;
+  operations_found: number;
+  operations: Partial<InvestmentOperation>[];
+  accepted_rows: Partial<InvestmentOperation>[];
+  rejected_rows: Array<{ row_number: number; row: Record<string, unknown>; error: string }>;
+  accepted_count: number;
+  rejected_count: number;
+  duplicate_count: number;
+  new_count: number;
+  imported_count?: number;
+  updated_count?: number;
+  unsupported_count: number;
+  unmapped_count: number;
+  unsupported_instruments: Array<{ external_id: string; external_name: string; ticker?: string; reason?: string }>;
+  unmapped_instruments: Array<{ external_instrument_id: string; external_name: string; ticker?: string; reason?: string }>;
+  unknown_currencies: string[];
+  optional_warnings?: string[];
+  reconciliation?: {
+    rows: Array<{ ticker?: string; external_name?: string; quantity: number; ledger_quantity_diff?: number | null; reconciliation_status: string; reason?: string }>;
+    issues: Array<{ type: string; ticker?: string; message: string; action: string }>;
+    summary: { positions: number; issues: number };
+  };
+  meta: Record<string, unknown>;
+}
+
 export interface SourceMapping {
   id?: string;
   source: DataSource;
-  external_type: 'account' | 'category';
+  external_type: 'account' | 'category' | 'instrument';
   external_id: string;
   external_name?: string;
   local_id?: string;

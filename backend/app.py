@@ -36,6 +36,12 @@ from backend.integrations.budgetbakers_adapter import (
     BudgetBakersNetworkError,
     BudgetBakersRateLimitError,
 )
+from backend.integrations.etoro_adapter import (
+    EtoroAdapter,
+    EtoroAuthError,
+    EtoroNetworkError,
+    EtoroRateLimitError,
+)
 from backend.analytics.understand import (
     get_action_items,
     get_budget_risks,
@@ -227,6 +233,10 @@ class CanonicalImportInput(BaseModel):
     transactions: List[Dict[str, Any]] = []
     meta: Dict[str, Any] = {}
 
+class EtoroImportInput(BaseModel):
+    operations: List[Dict[str, Any]] = []
+    meta: Dict[str, Any] = {}
+
 class BudgetInput(BaseModel):
     id: Optional[str] = None
     category: str
@@ -290,6 +300,10 @@ def get_budgetbakers_adapter() -> BudgetBakersAdapter:
     return BudgetBakersAdapter()
 
 
+def get_etoro_adapter() -> EtoroAdapter:
+    return EtoroAdapter()
+
+
 def budgetbakers_error_response(exc: Exception):
     now = datetime.datetime.now().isoformat()
     if isinstance(exc, BudgetBakersAuthError):
@@ -307,6 +321,23 @@ def budgetbakers_error_response(exc: Exception):
         raise HTTPException(status_code=429, detail={"message": str(exc), "retry_after": exc.retry_after}, headers=headers)
     if isinstance(exc, BudgetBakersNetworkError):
         db.set_sync_state("BUDGETBAKERS", {"status": "NETWORK_ERROR", "last_sync_at": now, "last_error": str(exc)})
+        raise HTTPException(status_code=502, detail=str(exc))
+    raise exc
+
+
+def etoro_error_response(exc: Exception):
+    now = datetime.datetime.now().isoformat()
+    if isinstance(exc, EtoroAuthError):
+        db.set_sync_state("ETORO", {"status": "AUTH_ERROR", "last_sync_at": now, "last_error": str(exc)})
+        db.add_action_event("ETORO", "AUTH_ERROR", str(exc), "ERROR")
+        raise HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, EtoroRateLimitError):
+        db.set_sync_state("ETORO", {"status": "RATE_LIMITED", "last_sync_at": now, "last_error": str(exc)})
+        db.add_action_event("ETORO", "RATE_LIMITED", str(exc), "WARNING", {"retry_after": exc.retry_after})
+        headers = {"Retry-After": exc.retry_after} if exc.retry_after else None
+        raise HTTPException(status_code=429, detail={"message": str(exc), "retry_after": exc.retry_after}, headers=headers)
+    if isinstance(exc, EtoroNetworkError):
+        db.set_sync_state("ETORO", {"status": "NETWORK_ERROR", "last_sync_at": now, "last_error": str(exc)})
         raise HTTPException(status_code=502, detail=str(exc))
     raise exc
 
@@ -657,6 +688,147 @@ def effective_holdings():
         db.get_position_authority(),
     )
 
+def _etoro_instrument_mappings() -> Dict[str, str]:
+    mappings = {}
+    for item in db.get_source_mappings("ETORO", "instrument"):
+        if item.get("is_active") and item.get("local_id"):
+            mappings[item["external_id"]] = item["local_id"]
+            if item.get("external_name"):
+                mappings[item["external_name"]] = item["local_id"]
+                mappings[item["external_name"].upper()] = item["local_id"]
+    return mappings
+
+def _build_etoro_preview() -> Dict[str, Any]:
+    adapter = get_etoro_adapter()
+    if not adapter.is_configured():
+        raise EtoroAuthError("ETORO_API_KEY y ETORO_USER_KEY no están configurados.")
+    mappings = _etoro_instrument_mappings()
+    optional_warnings: List[str] = []
+    portfolio, portfolio_meta = adapter.fetch_portfolio()
+    try:
+        pnl, pnl_meta = adapter.fetch_pnl()
+    except EtoroNetworkError as exc:
+        pnl, pnl_meta = {}, {}
+        optional_warnings.append(f"PnL eToro no disponible para esta API/cuenta: {exc}")
+    try:
+        history_result = adapter.fetch_history()
+        raw_operations = history_result["items"]
+        history_meta = history_result.get("meta", {})
+    except EtoroNetworkError as exc:
+        raw_operations = []
+        history_result = {"pages": 0}
+        history_meta = {}
+        optional_warnings.append(f"Historial eToro no disponible para esta API/cuenta: {exc}")
+
+    position_payload = portfolio if adapter.extract_items(portfolio, "positions") else pnl
+    normalized_positions = adapter.normalize_positions(position_payload, mappings)
+    normalized_operations = adapter.normalize_operations({"orders": raw_operations}, mappings)
+    operation_preview = db.preview_investment_operations(normalized_operations["operations"], "ETORO")
+    ledger_positions = derive_positions(db.get_investment_transactions(), db.get_opening_positions())["positions"]
+    reconciliation = adapter.reconcile_positions(normalized_positions["positions"], ledger_positions)
+    meta = {
+        **portfolio_meta,
+        **pnl_meta,
+        **history_meta,
+        "environment": adapter.environment,
+        "history_pages": history_result.get("pages", 0),
+    }
+    unknown_currencies = sorted({row.get("currency") for row in normalized_positions["positions"] + normalized_operations["operations"] if row.get("currency") and row.get("currency") not in {"USD", "EUR", "COP", "GBP"}})
+    return {
+        **operation_preview,
+        "source": "ETORO",
+        "environment": adapter.environment,
+        "positions": normalized_positions["positions"],
+        "operations": operation_preview["accepted_rows"],
+        "adapter_rejected_rows": normalized_operations["rejected_rows"],
+        "rejected_rows": operation_preview["rejected_rows"] + normalized_operations["rejected_rows"],
+        "rejected_count": operation_preview["rejected_count"] + len(normalized_operations["rejected_rows"]),
+        "positions_found": len(normalized_positions["positions"]),
+        "operations_found": len(raw_operations),
+        "unsupported_instruments": normalized_positions["unsupported"],
+        "unmapped_instruments": normalized_positions["unmapped"],
+        "unsupported_count": len(normalized_positions["unsupported"]),
+        "unmapped_count": len(normalized_positions["unmapped"]),
+        "unknown_currencies": unknown_currencies,
+        "reconciliation": reconciliation,
+        "optional_warnings": optional_warnings,
+        "meta": meta,
+    }
+
+@app.get("/api/etoro/status")
+def get_etoro_status():
+    adapter = get_etoro_adapter()
+    state = db.get_sync_state("ETORO")
+    configured = adapter.is_configured()
+    if not configured:
+        return {
+            "source": "ETORO",
+            "configured": False,
+            "status": "NOT_CONFIGURED",
+            "environment": adapter.environment,
+            "message": "Configure ETORO_API_KEY y ETORO_USER_KEY en .env para lectura read-only.",
+            "sync_state": state,
+        }
+    return {
+        "source": "ETORO",
+        "configured": True,
+        "status": state.get("status") if state.get("status") != "NOT_CONFIGURED" else "CONFIGURED",
+        "environment": adapter.environment,
+        "last_success_at": state.get("last_success_at"),
+        "last_error": state.get("last_error"),
+        "sync_state": state,
+    }
+
+@app.post("/api/etoro/test")
+def test_etoro_connection():
+    try:
+        result = get_etoro_adapter().test_connection()
+        if result.get("status") == "CONNECTED":
+            db.set_sync_state("ETORO", {
+                "status": "CONNECTED",
+                "last_sync_at": datetime.datetime.now().isoformat(),
+                "last_error": None,
+            })
+        return result
+    except Exception as exc:
+        return etoro_error_response(exc)
+
+@app.post("/api/etoro/preview")
+def preview_etoro_import():
+    try:
+        preview = _build_etoro_preview()
+        db.set_sync_state("ETORO", {
+            "status": "PREVIEW_READY",
+            "last_sync_at": datetime.datetime.now().isoformat(),
+            "last_error": None if preview["rejected_count"] == 0 else f"{preview['rejected_count']} operaciones/instrumentos requieren atención.",
+        })
+        return preview
+    except Exception as exc:
+        return etoro_error_response(exc)
+
+@app.post("/api/etoro/import")
+def import_etoro_preview(payload: EtoroImportInput):
+    try:
+        result = db.import_investment_operations(payload.operations, "ETORO")
+        status = "SYNCED" if result.get("rejected_count", 0) == 0 else "PARTIAL"
+        db.set_sync_state("ETORO", {
+            "status": status,
+            "last_sync_at": datetime.datetime.now().isoformat(),
+            "last_success_at": datetime.datetime.now().isoformat(),
+            "last_error": None if status == "SYNCED" else f"{result.get('rejected_count')} operaciones rechazadas.",
+        })
+        return {**result, "source": "ETORO", "meta": payload.meta}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.get("/api/etoro/reconciliation")
+def get_etoro_reconciliation():
+    try:
+        preview = _build_etoro_preview()
+        return preview["reconciliation"]
+    except Exception as exc:
+        return etoro_error_response(exc)
+
 @app.get("/api/wealth")
 def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Optional[str] = None):
     assets = db.get_assets(include_watchlist=False)
@@ -696,6 +868,16 @@ def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Opti
     benchmark = compare_benchmark(history, db.get_benchmark_prices(benchmark_key=benchmark_symbol) if benchmark_symbol else [])
     ledger_positions = derive_positions(ledger_operations, openings)
     ledger_reconciliation = effective["reconciliation"]
+    action_items = get_wealth_action_items(data_quality, concentration, rebalancing, ledger_reconciliation, ledger_positions["issues"])
+    etoro_state = db.get_sync_state("ETORO")
+    if etoro_state.get("status") in {"AUTH_ERROR", "RATE_LIMITED", "NETWORK_ERROR", "PARTIAL"}:
+        action_items.append({
+            "type": "etoro_sync",
+            "severity": "medium",
+            "title": "eToro necesita atención",
+            "why": etoro_state.get("last_error") or etoro_state.get("status"),
+            "action": "Revisar conexión o mappings eToro en Datos.",
+        })
     return {
         "summary": get_portfolio_summary(effective_assets, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days),
         "history": history,
@@ -724,7 +906,7 @@ def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Opti
             "pricing_status": priced["status"],
             "issues": market_quality_issues,
         },
-        "action_items": get_wealth_action_items(data_quality, concentration, rebalancing, ledger_reconciliation, ledger_positions["issues"]),
+        "action_items": action_items[:20],
     }
 
 @app.get("/api/budgets")

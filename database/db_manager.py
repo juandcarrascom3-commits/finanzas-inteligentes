@@ -1010,6 +1010,67 @@ class DatabaseManager:
             conn.commit()
         return {**preview, "imported_count": imported, "duplicate_count": max(preview["duplicate_count"], duplicates)}
 
+    def preview_investment_operations(self, operations: List[Dict[str, Any]], source: str = "ETORO") -> Dict[str, Any]:
+        accepted, rejected, duplicate_count = [], [], 0
+        clean_source = self._clean_source(source)
+        with self.get_connection() as conn:
+            for index, operation in enumerate(operations, start=1):
+                try:
+                    payload = self._normalize_investment_transaction({**operation, "source": operation.get("source") or clean_source})
+                    if self._investment_transaction_exists(conn, payload):
+                        duplicate_count += 1
+                    accepted.append(payload)
+                except Exception as exc:
+                    rejected.append({"row_number": index, "row": operation, "error": str(exc)})
+        return {
+            "accepted_rows": accepted,
+            "rejected_rows": rejected,
+            "accepted_count": len(accepted),
+            "rejected_count": len(rejected),
+            "duplicate_count": duplicate_count,
+            "new_count": max(len(accepted) - duplicate_count, 0),
+        }
+
+    def import_investment_operations(self, operations: List[Dict[str, Any]], source: str = "ETORO") -> Dict[str, Any]:
+        preview = self.preview_investment_operations(operations, source=source)
+        imported, duplicates, updated = 0, 0, 0
+        with self.get_connection() as conn:
+            for row in preview["accepted_rows"]:
+                existing = None
+                if row.get("external_id"):
+                    existing = conn.execute(
+                        "SELECT id FROM investment_transactions WHERE source = ? AND external_id = ?",
+                        (row["source"], row["external_id"]),
+                    ).fetchone()
+                if existing:
+                    row["id"] = existing["id"]
+                    updated += 1
+                conn.execute(
+                    """
+                    INSERT INTO investment_transactions (
+                        id, occurred_at, ticker, account_id, operation_type, quantity, price,
+                        amount, fee, currency, source, external_id, notes, metadata, updated_at
+                    )
+                    VALUES (
+                        :id, :occurred_at, :ticker, :account_id, :operation_type, :quantity, :price,
+                        :amount, :fee, :currency, :source, :external_id, :notes, :metadata, datetime('now')
+                    )
+                    ON CONFLICT(id) DO UPDATE SET
+                        occurred_at = excluded.occurred_at, ticker = excluded.ticker, account_id = excluded.account_id,
+                        operation_type = excluded.operation_type, quantity = excluded.quantity, price = excluded.price,
+                        amount = excluded.amount, fee = excluded.fee, currency = excluded.currency, source = excluded.source,
+                        external_id = excluded.external_id, notes = excluded.notes, metadata = excluded.metadata,
+                        updated_at = datetime('now')
+                    """,
+                    row,
+                )
+                if existing:
+                    duplicates += 1
+                else:
+                    imported += 1
+            conn.commit()
+        return {**preview, "imported_count": imported, "updated_count": updated, "duplicate_count": max(preview["duplicate_count"], duplicates)}
+
     def get_opening_positions(self, ticker: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, params = [], []
         if ticker:

@@ -11,6 +11,8 @@ import type {
   CsvImportResult,
   DashboardSummary,
   DataSourceInfo,
+  EtoroPreview,
+  EtoroStatus,
   InvestmentThesis,
   InvestmentOperation,
   PanoramaData,
@@ -222,6 +224,30 @@ export async function importBudgetBakersPreview(preview: BudgetBakersPreview): P
     body: JSON.stringify({ accounts: preview.accounts, transactions: preview.transactions, meta: preview.meta })
   });
   return readJson<BudgetBakersPreview>(res, 'Error al importar Wallet.');
+}
+
+export async function fetchEtoroStatus(): Promise<EtoroStatus> {
+  const res = await fetch(`${API_BASE}/etoro/status`);
+  return readJson<EtoroStatus>(res, 'Error al leer estado de eToro.');
+}
+
+export async function testEtoroConnection(): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/etoro/test`, { method: 'POST' });
+  return readJson<unknown>(res, 'Error al probar eToro.');
+}
+
+export async function previewEtoroImport(): Promise<EtoroPreview> {
+  const res = await fetch(`${API_BASE}/etoro/preview`, { method: 'POST' });
+  return readJson<EtoroPreview>(res, 'Error al previsualizar eToro.');
+}
+
+export async function importEtoroPreview(preview: EtoroPreview): Promise<EtoroPreview> {
+  const res = await fetch(`${API_BASE}/etoro/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ operations: preview.operations || preview.accepted_rows || [], meta: preview.meta })
+  });
+  return readJson<EtoroPreview>(res, 'Error al importar eToro.');
 }
 
 export async function fetchReconciliation(): Promise<ReconciliationSummary> {

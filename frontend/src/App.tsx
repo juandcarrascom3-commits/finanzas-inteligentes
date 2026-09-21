@@ -20,6 +20,7 @@ import {
   fetchAssets,
   fetchCategories,
   fetchDataSource,
+  fetchEtoroStatus,
   fetchTheses,
   fetchTransactions,
   fetchWealth,
@@ -45,7 +46,9 @@ import {
   fetchUnderstand,
   importBudgetBakersPlan,
   importBudgetBakersPreview,
+  importEtoroPreview,
   previewBudgetBakersImport,
+  previewEtoroImport,
   saveSourceMapping,
   saveBudget,
   saveMonthlyReviewSnapshot,
@@ -56,6 +59,7 @@ import {
   syncMarketData,
   saveSymbolMapping,
   testBudgetBakersConnection,
+  testEtoroConnection,
   updateRecurringStatus,
   validateBackup
 } from './services/api';
@@ -308,6 +312,10 @@ export const App: React.FC = () => {
                 onTestWallet={testBudgetBakersConnection}
                 onPreviewWallet={previewBudgetBakersImport}
                 onImportWallet={async (preview) => { const result = await importBudgetBakersPreview(preview); await importBudgetBakersPlan(preview); await refreshAfterMutation(); return result; }}
+                onFetchEtoroStatus={fetchEtoroStatus}
+                onTestEtoro={testEtoroConnection}
+                onPreviewEtoro={previewEtoroImport}
+                onImportEtoro={async (preview) => { const result = await importEtoroPreview(preview); await refreshAfterMutation(); return result; }}
                 onFetchReconciliation={fetchReconciliation}
                 onSaveSourceMapping={saveSourceMapping}
                 privacyMode={privacyMode}
@@ -371,7 +379,7 @@ export const App: React.FC = () => {
 
       {/* FOOTER */}
       <footer className="border-t border-gray-800/80 bg-[#0B0F19] py-4 px-4 text-center text-xs text-gray-500 font-mono">
-        Finanzas Inteligentes &bull; SQLite local &bull; Fuentes: DEMO / MANUAL / CSV / BUDGETBAKERS
+        Finanzas Inteligentes &bull; SQLite local &bull; Fuentes: DEMO / MANUAL / CSV / BUDGETBAKERS / ETORO
       </footer>
     </div>
   );

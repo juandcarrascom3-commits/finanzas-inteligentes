@@ -42,6 +42,10 @@ FINANCE_DB_PATH=database/finance.local.db
 FINANCE_SEED_DEMO=0
 BUDGETBAKERS_API_TOKEN=
 BUDGETBAKERS_BASE_URL=https://rest.budgetbakers.com/wallet
+ETORO_API_KEY=
+ETORO_USER_KEY=
+ETORO_BASE_URL=https://public-api.etoro.com/api/v1
+ETORO_ENVIRONMENT=demo
 FINANCE_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173
 ```
 
@@ -132,6 +136,11 @@ Fase v0.9 agrega controles operativos:
 - Benchmark se configura desde Wealth y puede sincronizarse sin imponer un índice único.
 - FX manual reutiliza `fx_rates` como fallback local.
 - Quick refresh actualiza quotes/FX/benchmark reciente; Full history añade histórico incremental.
+
+## eToro read-only
+eToro usa `ETORO_API_KEY`, `ETORO_USER_KEY`, `ETORO_BASE_URL` y `ETORO_ENVIRONMENT=demo|real` en el backend. El flujo es: probar conexion, generar preview, revisar mappings/CFDs/diferencias de ledger y confirmar importacion. Finance no implementa trading, ordenes, depositos, retiros ni copy trading.
+
+La importacion al investment ledger es idempotente por `source + external_id`. Las posiciones leidas desde eToro se usan para reconciliacion contra el ledger, no para sobrescribir holdings efectivos. Instrumentos eToro deben mapearse de forma explicita con `source=ETORO`, `external_type=instrument`, `external_id` o nombre externo y `local_id` igual al ticker interno.
 
 ## CSV de transacciones
 Columnas soportadas: `date`, `amount`, `category`, `description`, `currency`, `account_id`, `external_id`.
