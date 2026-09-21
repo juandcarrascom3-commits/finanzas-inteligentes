@@ -44,6 +44,18 @@ from backend.analytics.understand import (
     get_recurring_transactions,
 )
 from backend.analytics.monthly_review import get_monthly_review
+from backend.analytics.wealth import (
+    compare_benchmark,
+    get_allocation,
+    get_concentration,
+    get_data_quality,
+    get_performance,
+    get_performance_attribution,
+    get_portfolio_history,
+    get_portfolio_summary,
+    get_rebalancing_plan,
+    get_wealth_action_items,
+)
 from backend.services.budgetbakers_client import BudgetBakersClient, DailyQuotaExceededError
 from backend.services.guardrail_service import GuardrailService, TradeGuardrailBlockedError
 
@@ -134,6 +146,26 @@ class CsvImportInput(BaseModel):
 class BackupPathInput(BaseModel):
     path: str
 
+class ValuationInput(BaseModel):
+    ticker: str
+    valuation_date: str
+    price: float = Field(gt=0)
+    currency: str = "USD"
+    source: str = "MANUAL"
+
+class ValuationCsvInput(BaseModel):
+    content: str
+    source: str = "MANUAL"
+
+class BenchmarkCsvInput(BaseModel):
+    content: str
+    benchmark_key: str
+    label: Optional[str] = None
+    source: str = "MANUAL"
+
+class RebalanceQueryInput(BaseModel):
+    contribution_usd: float = 0.0
+
 class SourceMappingInput(BaseModel):
     id: Optional[str] = None
     source: str
@@ -211,10 +243,23 @@ def get_dashboard_summary(exchange_rate: float = Query(USD_COP_EXCHANGE_RATE, ge
     monthly_expenses = tx_summary["expenses"]
     savings_data = calculate_savings_rate(monthly_income, monthly_expenses)
 
-    # 3. Returns/risk require historical valuations; keep deterministic zero until enough real history exists.
-    twr = 0.0
-    mwr = 0.0
-    risk_metrics = {"beta": 0.0, "sharpe_ratio": 0.0, "max_drawdown_pct": 0.0, "annualized_volatility_pct": 0.0}
+    # 3. Returns/risk require historical valuations; expose insufficient data explicitly.
+    valuations = db.get_asset_valuations()
+    wealth_history = get_portfolio_history(assets, valuations, db.get_transactions(limit=5000), exchange_rate=exchange_rate)
+    wealth_performance = get_performance(wealth_history)
+    twr = wealth_performance["twr"].get("value_pct")
+    mwr = wealth_performance["mwr"].get("value_pct")
+    risk_metrics = {
+        "beta": None,
+        "sharpe_ratio": wealth_performance["risk"]["sharpe"].get("value"),
+        "max_drawdown_pct": wealth_performance["risk"]["max_drawdown"].get("value_pct"),
+        "annualized_volatility_pct": wealth_performance["risk"]["volatility"].get("value_pct"),
+        "status": {
+            "twr": wealth_performance["twr"]["status"],
+            "mwr": wealth_performance["mwr"]["status"],
+            "beta": wealth_performance["risk"]["beta"]["status"],
+        }
+    }
 
     # 5. Central Visual: Asset Allocation Hierarchy (Sunburst / Treemap data)
     allocation_by_type: Dict[str, Dict[str, Any]] = {}
@@ -361,6 +406,52 @@ def delete_transaction(transaction_id: str):
 @app.get("/api/categories")
 def get_categories():
     return db.get_categories()
+
+@app.get("/api/valuations")
+def get_asset_valuations(ticker: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):
+    return db.get_asset_valuations(ticker=ticker, start=start, end=end)
+
+@app.post("/api/valuations")
+def save_asset_valuation(valuation: ValuationInput):
+    return db.save_asset_valuation(valuation.model_dump())
+
+@app.post("/api/valuations/import")
+def import_asset_valuations_csv(payload: ValuationCsvInput):
+    return db.import_asset_valuations_csv(payload.content, source=payload.source)
+
+@app.get("/api/benchmarks")
+def get_benchmark_prices(benchmark_key: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):
+    return db.get_benchmark_prices(benchmark_key=benchmark_key, start=start, end=end)
+
+@app.post("/api/benchmarks/import")
+def import_benchmark_prices_csv(payload: BenchmarkCsvInput):
+    return db.import_benchmark_prices_csv(payload.content, payload.benchmark_key, label=payload.label, source=payload.source)
+
+@app.get("/api/wealth")
+def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Optional[str] = None):
+    assets = db.get_assets(include_watchlist=False)
+    valuations = db.get_asset_valuations()
+    transactions = db.get_transactions(limit=5000)
+    history = get_portfolio_history(assets, valuations, transactions)
+    performance = get_performance(history, transactions)
+    allocation = get_allocation(assets)
+    concentration = get_concentration(allocation)
+    data_quality = get_data_quality(assets, valuations)
+    rebalancing = get_rebalancing_plan(assets, contribution_usd=contribution_usd)
+    attribution = get_performance_attribution(assets, valuations)
+    benchmark = compare_benchmark(history, db.get_benchmark_prices(benchmark_key=benchmark_key) if benchmark_key else [])
+    return {
+        "summary": get_portfolio_summary(assets),
+        "history": history,
+        "performance": performance,
+        "allocation": allocation,
+        "concentration": concentration,
+        "data_quality": data_quality,
+        "attribution": attribution,
+        "rebalancing": rebalancing,
+        "benchmark": benchmark,
+        "action_items": get_wealth_action_items(data_quality, concentration, rebalancing),
+    }
 
 @app.get("/api/budgets")
 def get_budgets():

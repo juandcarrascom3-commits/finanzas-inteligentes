@@ -378,6 +378,169 @@ class DatabaseManager:
             conn.execute("DELETE FROM assets WHERE ticker = ?", (ticker.upper(),))
             conn.commit()
 
+    def save_asset_valuation(self, valuation: Dict[str, Any]) -> Dict[str, Any]:
+        payload = {
+            "id": valuation.get("id") or str(uuid.uuid4()),
+            "ticker": valuation["ticker"].strip().upper(),
+            "price": float(valuation.get("price", 0) or 0),
+            "currency": valuation.get("currency", "USD").upper(),
+            "valuation_date": str(valuation["valuation_date"])[:10],
+            "source": self._clean_source(valuation.get("source", "MANUAL")),
+        }
+        with self.get_connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM asset_valuations
+                WHERE ticker = ? AND valuation_date = ? AND source = ?
+                """,
+                (payload["ticker"], payload["valuation_date"], payload["source"]),
+            ).fetchone()
+            if existing:
+                payload["id"] = existing["id"]
+            conn.execute(
+                """
+                INSERT INTO asset_valuations (id, ticker, price, currency, valuation_date, source)
+                VALUES (:id, :ticker, :price, :currency, :valuation_date, :source)
+                ON CONFLICT(ticker, valuation_date, source) DO UPDATE SET
+                    price = excluded.price, currency = excluded.currency
+                """,
+                payload,
+            )
+            conn.commit()
+        return payload
+
+    def get_asset_valuations(self, ticker: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        if ticker:
+            clauses.append("ticker = ?")
+            params.append(ticker.upper())
+        if start:
+            clauses.append("valuation_date >= ?")
+            params.append(start[:10])
+        if end:
+            clauses.append("valuation_date <= ?")
+            params.append(end[:10])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM asset_valuations {where} ORDER BY valuation_date, ticker, source",
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def import_asset_valuations_csv(self, content: str, source: str = "MANUAL") -> Dict[str, Any]:
+        rows = self._parse_csv_rows(content)
+        accepted, rejected = [], []
+        for index, row in enumerate(rows, start=2):
+            try:
+                payload = {
+                    "ticker": row.get("ticker") or row.get("symbol"),
+                    "valuation_date": row.get("valuation_date") or row.get("date") or row.get("fecha"),
+                    "price": float(row.get("price") or row.get("precio") or ""),
+                    "currency": row.get("currency") or row.get("moneda") or "USD",
+                    "source": row.get("source") or source,
+                }
+                if not payload["ticker"] or not payload["valuation_date"]:
+                    raise ValueError("ticker and valuation_date are required")
+                datetime.fromisoformat(str(payload["valuation_date"]).replace("Z", "+00:00"))
+                if payload["price"] <= 0:
+                    raise ValueError("price must be positive")
+                accepted.append(payload)
+            except Exception as exc:
+                rejected.append({"row_number": index, "row": row, "error": str(exc)})
+        for payload in accepted:
+            self.save_asset_valuation(payload)
+        return {
+            "accepted_rows": accepted,
+            "rejected_rows": rejected,
+            "accepted_count": len(accepted),
+            "rejected_count": len(rejected),
+            "imported_count": len(accepted),
+        }
+
+    def save_benchmark_price(self, price: Dict[str, Any]) -> Dict[str, Any]:
+        key = (price.get("benchmark_key") or price.get("ticker") or "BENCHMARK").strip().upper()
+        payload = {
+            "id": price.get("id") or str(uuid.uuid4()),
+            "benchmark_key": key,
+            "label": price.get("label") or key,
+            "price": float(price.get("price", 0) or 0),
+            "currency": price.get("currency", "USD").upper(),
+            "valuation_date": str(price["valuation_date"])[:10],
+            "source": self._clean_source(price.get("source", "MANUAL")),
+        }
+        with self.get_connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM benchmark_prices
+                WHERE benchmark_key = ? AND valuation_date = ? AND source = ?
+                """,
+                (payload["benchmark_key"], payload["valuation_date"], payload["source"]),
+            ).fetchone()
+            if existing:
+                payload["id"] = existing["id"]
+            conn.execute(
+                """
+                INSERT INTO benchmark_prices (id, benchmark_key, label, price, currency, valuation_date, source, updated_at)
+                VALUES (:id, :benchmark_key, :label, :price, :currency, :valuation_date, :source, datetime('now'))
+                ON CONFLICT(benchmark_key, valuation_date, source) DO UPDATE SET
+                    label = excluded.label, price = excluded.price, currency = excluded.currency, updated_at = datetime('now')
+                """,
+                payload,
+            )
+            conn.commit()
+        return payload
+
+    def get_benchmark_prices(self, benchmark_key: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        if benchmark_key:
+            clauses.append("benchmark_key = ?")
+            params.append(benchmark_key.upper())
+        if start:
+            clauses.append("valuation_date >= ?")
+            params.append(start[:10])
+        if end:
+            clauses.append("valuation_date <= ?")
+            params.append(end[:10])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM benchmark_prices {where} ORDER BY benchmark_key, valuation_date",
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def import_benchmark_prices_csv(self, content: str, benchmark_key: str, label: Optional[str] = None, source: str = "MANUAL") -> Dict[str, Any]:
+        rows = self._parse_csv_rows(content)
+        accepted, rejected = [], []
+        for index, row in enumerate(rows, start=2):
+            try:
+                payload = {
+                    "benchmark_key": benchmark_key,
+                    "label": row.get("label") or label or benchmark_key,
+                    "valuation_date": row.get("valuation_date") or row.get("date") or row.get("fecha"),
+                    "price": float(row.get("price") or row.get("precio") or ""),
+                    "currency": row.get("currency") or row.get("moneda") or "USD",
+                    "source": row.get("source") or source,
+                }
+                if not payload["valuation_date"]:
+                    raise ValueError("valuation_date is required")
+                datetime.fromisoformat(str(payload["valuation_date"]).replace("Z", "+00:00"))
+                if payload["price"] <= 0:
+                    raise ValueError("price must be positive")
+                accepted.append(payload)
+            except Exception as exc:
+                rejected.append({"row_number": index, "row": row, "error": str(exc)})
+        for payload in accepted:
+            self.save_benchmark_price(payload)
+        return {
+            "accepted_rows": accepted,
+            "rejected_rows": rejected,
+            "accepted_count": len(accepted),
+            "rejected_count": len(rejected),
+            "imported_count": len(accepted),
+        }
+
     def get_investment_theses(self) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             rows = conn.execute(

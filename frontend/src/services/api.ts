@@ -18,7 +18,8 @@ import type {
   ReconciliationSummary,
   SourceMapping,
   Transaction,
-  UnderstandSummary
+  UnderstandSummary,
+  WealthData
 } from '../types';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
@@ -292,4 +293,29 @@ export async function importBudgetBakersPlan(preview: BudgetBakersPreview): Prom
     body: JSON.stringify({ budgets: preview.budgets || [], standing_orders: preview.standing_orders || [] })
   });
   return readJson<unknown>(res, 'Error al importar plan Wallet.');
+}
+
+export async function fetchWealth(contributionUsd: number = 0, benchmarkKey?: string): Promise<WealthData> {
+  const params = new URLSearchParams({ contribution_usd: String(contributionUsd) });
+  if (benchmarkKey) params.set('benchmark_key', benchmarkKey);
+  const res = await fetch(`${API_BASE}/wealth?${params.toString()}`);
+  return readJson<WealthData>(res, 'Error al cargar Wealth.');
+}
+
+export async function importValuationsCsv(content: string, source: string = 'MANUAL'): Promise<CsvImportResult> {
+  const res = await fetch(`${API_BASE}/valuations/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, source })
+  });
+  return readJson<CsvImportResult>(res, 'Error al importar valoraciones.');
+}
+
+export async function importBenchmarkCsv(content: string, benchmarkKey: string, label?: string): Promise<CsvImportResult> {
+  const res = await fetch(`${API_BASE}/benchmarks/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, benchmark_key: benchmarkKey, label })
+  });
+  return readJson<CsvImportResult>(res, 'Error al importar benchmark.');
 }

@@ -5,8 +5,8 @@ import { NetWorthData, SavingsRateData, RiskMetrics } from '../types';
 interface TopKpiRowProps {
   netWorth: NetWorthData;
   savingsRate: SavingsRateData;
-  twrPct: number;
-  mwrPct: number;
+  twrPct: number | null;
+  mwrPct: number | null;
   riskMetrics: RiskMetrics;
   currency: 'USD' | 'COP';
   privacyMode?: boolean;
@@ -35,6 +35,7 @@ export const TopKpiRow: React.FC<TopKpiRowProps> = ({
     if (privacyMode) return masked;
     return `$${usdVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
+  const formatPct = (value: number | null) => value === null || value === undefined ? 'Datos insuf.' : `${value >= 0 ? '+' : ''}${value}%`;
 
   return (
     <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -114,14 +115,14 @@ export const TopKpiRow: React.FC<TopKpiRowProps> = ({
           <div className="bg-gray-900/60 p-2 rounded-lg border border-gray-800/60">
             <div className="text-[10px] uppercase font-semibold text-gray-400">TWR (Tiempo)</div>
             <div className="text-lg font-bold text-emerald-400 mono-number mt-0.5">
-              +{twrPct}%
+              {formatPct(twrPct)}
             </div>
             <div className="text-[10px] text-gray-500">Sin sesgo de flujos</div>
           </div>
           <div className="bg-gray-900/60 p-2 rounded-lg border border-gray-800/60">
             <div className="text-[10px] uppercase font-semibold text-gray-400">MWR / TIR (Dinero)</div>
             <div className="text-lg font-bold text-purple-400 mono-number mt-0.5">
-              +{mwrPct}%
+              {formatPct(mwrPct)}
             </div>
             <div className="text-[10px] text-gray-500">Pondera aportes DCA</div>
           </div>
@@ -141,21 +142,21 @@ export const TopKpiRow: React.FC<TopKpiRowProps> = ({
           <div className="bg-gray-900/60 p-2 rounded-lg border border-gray-800/60">
             <div className="text-[10px] uppercase font-semibold text-gray-400">Beta (&beta;)</div>
             <div className="text-base font-bold text-white mono-number mt-0.5">
-              {riskMetrics.beta}
+              {riskMetrics.beta ?? 'N/D'}
             </div>
             <div className="text-[9px] text-emerald-400 font-medium">Bajo Riesgo</div>
           </div>
           <div className="bg-gray-900/60 p-2 rounded-lg border border-gray-800/60">
             <div className="text-[10px] uppercase font-semibold text-gray-400">Sharpe</div>
             <div className="text-base font-bold text-white mono-number mt-0.5">
-              {riskMetrics.sharpe_ratio}
+              {riskMetrics.sharpe_ratio ?? 'N/D'}
             </div>
             <div className="text-[9px] text-purple-400 font-medium">Óptimo &gt;1.5</div>
           </div>
           <div className="bg-gray-900/60 p-2 rounded-lg border border-gray-800/60">
             <div className="text-[10px] uppercase font-semibold text-gray-400">Max DD</div>
             <div className="text-base font-bold text-red-400 mono-number mt-0.5">
-              {riskMetrics.max_drawdown_pct}%
+              {riskMetrics.max_drawdown_pct === null || riskMetrics.max_drawdown_pct === undefined ? 'N/D' : `${riskMetrics.max_drawdown_pct}%`}
             </div>
             <div className="text-[9px] text-gray-400 font-mono">Caída máx.</div>
           </div>

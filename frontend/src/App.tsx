@@ -4,6 +4,7 @@ import { TopKpiRow } from './components/TopKpiRow';
 import { CentralVisualSection } from './components/CentralVisualSection';
 import { AssetListTab } from './components/tabs/AssetListTab';
 import { InvestmentThesisTab } from './components/tabs/InvestmentThesisTab';
+import { WealthTab } from './components/tabs/WealthTab';
 import { PersonalDataTab } from './components/tabs/PersonalDataTab';
 import { UnderstandTab } from './components/tabs/UnderstandTab';
 import { PlanningTab } from './components/tabs/PlanningTab';
@@ -20,7 +21,10 @@ import {
   fetchDataSource,
   fetchTheses,
   fetchTransactions,
+  fetchWealth,
+  importBenchmarkCsv,
   importTransactionsCsv,
+  importValuationsCsv,
   previewTransactionsCsv,
   saveAccount,
   saveAsset,
@@ -44,7 +48,7 @@ import {
   updateRecurringStatus,
   validateBackup
 } from './services/api';
-import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview } from './types';
+import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview, WealthData } from './types';
 import { Compass, AlertTriangle, WalletCards, LineChart, Target } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -65,6 +69,7 @@ export const App: React.FC = () => {
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [recurring, setRecurring] = useState<RecurringRule[]>([]);
   const [monthlyReview, setMonthlyReview] = useState<MonthlyReview | null>(null);
+  const [wealth, setWealth] = useState<WealthData | null>(null);
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -75,7 +80,7 @@ export const App: React.FC = () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const [dashData, assetsData, thesesData, accountsData, transactionsData, categoriesData, sourceData, understandData, budgetsData, recurringData, reviewData] = await Promise.all([
+      const [dashData, assetsData, thesesData, accountsData, transactionsData, categoriesData, sourceData, understandData, budgetsData, recurringData, reviewData, wealthData] = await Promise.all([
         fetchDashboard(exchangeRate),
         fetchAssets(),
         fetchTheses(),
@@ -86,7 +91,8 @@ export const App: React.FC = () => {
         fetchUnderstand(understandPeriod),
         fetchBudgets(),
         fetchRecurring(),
-        fetchMonthlyReview()
+        fetchMonthlyReview(),
+        fetchWealth()
       ]);
       setDashboard(dashData);
       setAssets(assetsData);
@@ -99,6 +105,7 @@ export const App: React.FC = () => {
       setBudgets(budgetsData);
       setRecurring(recurringData);
       setMonthlyReview(reviewData);
+      setWealth(wealthData);
     } catch (err: any) {
       console.error('Error loading data:', err);
       setErrorMsg('No se pudo conectar al servidor local. Verifique que el backend de FastAPI esté en ejecución.');
@@ -124,6 +131,14 @@ export const App: React.FC = () => {
 
   const handleSimulatePurchase = async (ticker: string, amountUsd: number) => {
     return await simulatePurchase(ticker, amountUsd);
+  };
+
+  const refreshWealth = async (contributionUsd: number = 0, benchmarkKey?: string) => {
+    setWealth(await fetchWealth(contributionUsd, benchmarkKey));
+    const updatedAssets = await fetchAssets();
+    setAssets(updatedAssets);
+    const updatedDashboard = await fetchDashboard(exchangeRate);
+    setDashboard(updatedDashboard);
   };
 
   const refreshAfterMutation = async () => {
@@ -304,6 +319,13 @@ export const App: React.FC = () => {
 
             {activeTab === 'invest' && (
               <div className="space-y-5">
+                <WealthTab
+                  data={wealth}
+                  privacyMode={privacyMode}
+                  onRefresh={refreshWealth}
+                  onImportValuations={importValuationsCsv}
+                  onImportBenchmark={importBenchmarkCsv}
+                />
                 <AssetListTab
                   assets={assets}
                   currency={currency}

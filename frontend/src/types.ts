@@ -13,10 +13,11 @@ export interface SavingsRateData {
 }
 
 export interface RiskMetrics {
-  beta: number;
-  sharpe_ratio: number;
-  max_drawdown_pct: number;
+  beta: number | null;
+  sharpe_ratio: number | null;
+  max_drawdown_pct: number | null;
   annualized_volatility_pct?: number;
+  status?: Record<string, string>;
 }
 
 export interface TreemapChildItem {
@@ -68,8 +69,8 @@ export interface DashboardSummary {
   kpis: {
     net_worth: NetWorthData;
     savings_rate: SavingsRateData;
-    twr_pct: number;
-    mwr_pct: number;
+    twr_pct: number | null;
+    mwr_pct: number | null;
     risk_metrics: RiskMetrics;
   };
   allocation_treemap: TreemapCategory[];
@@ -350,4 +351,72 @@ export interface MonthlyReview {
   upcoming_obligations: Array<{ merchant: string; amount: number; category: string; date: string; source: string }>;
   forecast: UnderstandSummary['cashflow_forecast'];
   action_items: Array<{ type: string; severity: string; reason: string; action: string; reference: Record<string, unknown> }>;
+}
+
+export interface MetricState {
+  status: 'AVAILABLE' | 'INSUFFICIENT_DATA';
+  value_pct?: number | null;
+  value?: number | null;
+  value_usd?: number | null;
+  reason?: string | null;
+}
+
+export interface WealthData {
+  summary: { total_value_usd: number; unrealized_pnl_usd: number; unrealized_pnl_status: string };
+  history: {
+    status: string;
+    policy: string;
+    series: Array<{ date: string; portfolio_value_usd: number; external_cash_flow_usd: number; coverage_pct: number }>;
+    data_quality: { valuation_dates: number; missing_valuation_dates: number; coverage_pct: number };
+  };
+  performance: {
+    twr: MetricState;
+    mwr: MetricState;
+    cumulative_return: MetricState;
+    period_return: MetricState;
+    realized_pnl: MetricState;
+    risk: { volatility: MetricState; max_drawdown: MetricState; sharpe: MetricState; beta: MetricState };
+  };
+  allocation: {
+    total_value_usd: number;
+    dimensions: Record<string, Array<{ name: string; value_usd: number; allocation_pct: number }>>;
+    holdings: Array<{ ticker: string; value_usd: number; allocation_pct: number }>;
+  };
+  concentration: {
+    top_asset?: { ticker: string; allocation_pct: number; value_usd: number };
+    top3_pct: number;
+    top5_pct: number;
+    alerts: Array<{ type: string; severity: string; message: string; action: string }>;
+  };
+  data_quality: {
+    history_coverage_pct: number;
+    assets_with_history: number;
+    total_assets: number;
+    issues: Array<{ type: string; ticker: string; message: string; action: string }>;
+  };
+  attribution: {
+    status: string;
+    reason?: string;
+    initial_value_usd?: number;
+    final_value_usd?: number;
+    change_usd?: number;
+    top_winners?: Array<{ ticker: string; contribution_usd: number }>;
+    top_detractors?: Array<{ ticker: string; contribution_usd: number }>;
+  };
+  rebalancing: {
+    status: string;
+    reason?: string | null;
+    traditional: Array<{ ticker: string; current_pct: number; target_pct: number; drift_pct: number; trade_usd: number; contribution_usd?: number }>;
+    new_contribution: Array<{ ticker: string; contribution_usd: number; drift_pct: number; target_pct: number; current_pct: number }>;
+    contribution_usd: number;
+  };
+  benchmark: {
+    status: string;
+    reason?: string;
+    portfolio_return_pct?: number;
+    benchmark_return_pct?: number;
+    excess_return_pct?: number | null;
+    beta?: MetricState;
+  };
+  action_items: Array<{ type: string; severity: string; title: string; why: string; action: string }>;
 }

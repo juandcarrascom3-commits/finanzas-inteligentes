@@ -23,8 +23,8 @@ def test_sqlite_migrations_are_versioned_and_idempotent(tmp_path, monkeypatch):
     db.save_account({"name": "Daily", "account_type": "checking", "currency": "USD"})
     first_schema = db.get_schema_info()
 
-    assert first_schema["latest_version"] == "002"
-    assert [item["version"] for item in first_schema["migrations"]] == ["001", "002"]
+    assert first_schema["latest_version"] == "003"
+    assert [item["version"] for item in first_schema["migrations"]] == ["001", "002", "003"]
 
     reopened = DatabaseManager()
     assert reopened.get_accounts()[0]["name"] == "Daily"
@@ -56,7 +56,7 @@ def test_backup_validate_and_restore_roundtrip(tmp_path, monkeypatch):
     backup = db.export_backup()
     validation = db.validate_backup(backup["db_backup_path"])
     assert validation["valid"] is True
-    assert validation["latest_version"] == "002"
+    assert validation["latest_version"] == "003"
 
     db.delete_account(account["id"])
     assert db.get_accounts() == []
