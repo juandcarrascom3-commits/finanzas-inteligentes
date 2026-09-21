@@ -12,12 +12,14 @@ interface WealthTabProps {
   onDeleteInvestmentOperation: (id: string) => Promise<void>;
   onPreviewInvestmentCsv: (content: string) => Promise<CsvImportResult>;
   onImportInvestmentCsv: (content: string) => Promise<CsvImportResult>;
+  onSaveOpeningPosition: (position: { ticker: string; opened_at: string; quantity: number; unit_cost?: number; total_cost?: number; currency: string; notes?: string }) => Promise<void>;
+  onSetPositionAuthority: (ticker: string, state: string, notes?: string) => Promise<void>;
 }
 
 const panel = 'bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3';
 const input = 'bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500';
 
-export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv }) => {
+export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv, onSaveOpeningPosition, onSetPositionAuthority }) => {
   const [contribution, setContribution] = useState(0);
   const [benchmarkKey, setBenchmarkKey] = useState('');
   const [valuationCsv, setValuationCsv] = useState('');
@@ -34,6 +36,7 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
     source: 'MANUAL',
   });
   const [ledgerFilter, setLedgerFilter] = useState('');
+  const [selectedRecon, setSelectedRecon] = useState<string | null>(null);
   const [feedback, setFeedback] = useState('');
 
   const money = (value?: number | null) => {
@@ -79,6 +82,47 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
     setFeedback(`Ledger importado: ${res.imported_count ?? 0}; duplicadas: ${res.duplicate_count ?? 0}; rechazadas: ${res.rejected_count}.`);
   };
 
+  const registerOpeningFromRow = async (row: WealthData['ledger']['reconciliation']['rows'][number]) => {
+    const date = window.prompt(`Fecha de posición inicial para ${row.ticker}`, new Date().toISOString().slice(0, 10));
+    if (!date) return;
+    await onSaveOpeningPosition({
+      ticker: row.ticker,
+      opened_at: date,
+      quantity: row.registered_quantity,
+      unit_cost: row.registered_avg_price,
+      currency: 'USD',
+      notes: 'Creada desde reconciliación.',
+    });
+    setFeedback(`Opening position registrada para ${row.ticker}.`);
+  };
+
+  const adoptLedger = async (ticker: string) => {
+    if (!window.confirm(`Adoptar ledger como fuente autoritativa para ${ticker}?`)) return;
+    await onSetPositionAuthority(ticker, 'LEDGER_AUTHORITATIVE', 'Adoptado desde reconciliación.');
+    setFeedback(`${ticker} ahora usa Ledger como fuente.`);
+  };
+
+  const keepManual = async (ticker: string) => {
+    if (!window.confirm(`Mantener ${ticker} en modo manual?`)) return;
+    await onSetPositionAuthority(ticker, 'MANUAL', 'Mantener posición manual.');
+    setFeedback(`${ticker} queda en modo manual.`);
+  };
+
+  const createAdjustment = async (row: WealthData['ledger']['reconciliation']['rows'][number]) => {
+    if (!window.confirm(`Crear ADJUSTMENT explícito para ${row.ticker}?`)) return;
+    await onSaveInvestmentOperation({
+      occurred_at: new Date().toISOString().slice(0, 10),
+      ticker: row.ticker,
+      operation_type: 'ADJUSTMENT',
+      quantity: Math.max(row.quantity_diff, 0),
+      amount: Math.max(row.quantity_diff, 0) * row.registered_avg_price,
+      currency: 'USD',
+      notes: 'Ajuste explícito desde reconciliación.',
+      source: 'MANUAL',
+    });
+    setFeedback(`Adjustment registrado para ${row.ticker}.`);
+  };
+
   if (!data) {
     return (
       <section className={panel}>
@@ -114,7 +158,7 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
           <div className="flex items-center gap-2 text-gray-400 text-xs"><Target className="w-4 h-4 text-blue-400" />Calidad</div>
           <div className="text-sm text-white">{data.data_quality.history_coverage_pct}% con historial</div>
           <div className="text-xs text-gray-400">{data.data_quality.issues.length} datos por completar</div>
-          <div className="text-xs text-gray-400">Ledger: {data.ledger.reconciliation.issues.length} discrepancias</div>
+                <div className="text-xs text-gray-400">Ledger: {data.ledger.reconciliation.issues.length} acciones</div>
           <div className="text-xs text-gray-400">{data.history.policy}</div>
         </div>
       </section>
@@ -193,15 +237,31 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
             </div>
           </div>
           <div>
-            <div className="text-xs font-bold text-gray-300 mb-2">Ledger vs Holdings</div>
+            <div className="text-xs font-bold text-gray-300 mb-2">Portfolio → Reconciliation</div>
             <div className="space-y-1 max-h-40 overflow-auto">
               {data.ledger.reconciliation.rows.map((row) => (
-                <div key={row.ticker} className="flex items-center justify-between text-xs bg-gray-900/60 rounded-lg p-2">
-                  <span className="text-white">{row.ticker}</span>
-                  <span className={row.status === 'MATCH' ? 'text-emerald-300' : 'text-amber-300'}>{row.status}</span>
-                  <span className="text-gray-400">hold {row.registered_quantity} / ledger {row.derived_quantity}</span>
-                  <span className="text-gray-400">avg {row.registered_avg_price} / {row.derived_avg_price}</span>
-                </div>
+                <button key={row.ticker} onClick={() => setSelectedRecon(selectedRecon === row.ticker ? null : row.ticker)} className="w-full text-left text-xs bg-gray-900/60 rounded-lg p-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-white font-bold">{row.ticker}</span>
+                    <span className={row.status === 'MATCH' ? 'text-emerald-300' : 'text-amber-300'}>{row.status}</span>
+                    <span className="text-gray-400">hold {row.registered_quantity} / ledger {row.derived_quantity}</span>
+                    <span className="text-gray-400">avg {row.registered_avg_price} / {row.derived_avg_price}</span>
+                    <span className="text-gray-500">{row.coverage} · {row.source}</span>
+                  </div>
+                  {selectedRecon === row.ticker && (
+                    <div className="mt-2 border-t border-gray-800 pt-2 space-y-2">
+                      <div className="text-gray-400">
+                        Fuente actual: {row.source}. Autoridad: {row.authority_state}. Diff qty: {row.quantity_diff}; diff avg: {row.avg_price_diff}.
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <button onClick={(e) => { e.stopPropagation(); registerOpeningFromRow(row); }} className="px-2 py-1 rounded bg-gray-800 text-gray-200">Registrar posición inicial</button>
+                        <button onClick={(e) => { e.stopPropagation(); createAdjustment(row); }} className="px-2 py-1 rounded bg-gray-800 text-gray-200">Adjustment explícito</button>
+                        <button disabled={row.status !== 'MATCH'} onClick={(e) => { e.stopPropagation(); adoptLedger(row.ticker); }} className="px-2 py-1 rounded bg-emerald-600 disabled:opacity-50 text-white">Adoptar Ledger</button>
+                        <button onClick={(e) => { e.stopPropagation(); keepManual(row.ticker); }} className="px-2 py-1 rounded bg-gray-800 text-gray-200">Mantener manual</button>
+                      </div>
+                    </div>
+                  )}
+                </button>
               ))}
             </div>
           </div>

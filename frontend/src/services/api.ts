@@ -352,3 +352,29 @@ export async function importInvestmentLedgerCsv(content: string, source: string 
   });
   return readJson<CsvImportResult>(res, 'Error al importar ledger.');
 }
+
+export async function saveOpeningPosition(position: {
+  ticker: string;
+  opened_at: string;
+  quantity: number;
+  unit_cost?: number;
+  total_cost?: number;
+  currency: string;
+  notes?: string;
+}): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/opening-positions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(position)
+  });
+  return readJson<unknown>(res, 'Error al guardar posición inicial.');
+}
+
+export async function setPositionAuthority(ticker: string, authorityState: string, notes: string = ''): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/position-authority`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ticker, authority_state: authorityState, notes })
+  });
+  return readJson<unknown>(res, 'Error al actualizar autoridad de posición.');
+}

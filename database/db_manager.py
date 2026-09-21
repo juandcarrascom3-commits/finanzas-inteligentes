@@ -670,6 +670,146 @@ class DatabaseManager:
             conn.commit()
         return {**preview, "imported_count": imported, "duplicate_count": max(preview["duplicate_count"], duplicates)}
 
+    def get_opening_positions(self, ticker: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        if ticker:
+            clauses.append("ticker = ?")
+            params.append(ticker.upper())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM opening_positions {where} ORDER BY opened_at, ticker, account_id",
+                params,
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def save_opening_position(self, position: Dict[str, Any]) -> Dict[str, Any]:
+        quantity = float(position.get("quantity", 0) or 0)
+        unit_cost = float(position.get("unit_cost", 0) or 0)
+        total_cost = float(position.get("total_cost", 0) or 0)
+        if quantity <= 0:
+            raise ValueError("Opening position quantity must be positive.")
+        if total_cost <= 0 and unit_cost > 0:
+            total_cost = quantity * unit_cost
+        if unit_cost <= 0 and total_cost > 0:
+            unit_cost = total_cost / quantity
+        payload = {
+            "id": position.get("id") or str(uuid.uuid4()),
+            "ticker": position["ticker"].strip().upper(),
+            "account_id": position.get("account_id") or None,
+            "opened_at": str(position.get("opened_at") or position.get("date"))[:10],
+            "quantity": quantity,
+            "unit_cost": unit_cost,
+            "total_cost": total_cost,
+            "currency": position.get("currency", "USD").upper(),
+            "source": self._clean_source(position.get("source", "MANUAL")),
+            "notes": position.get("notes") or "",
+        }
+        with self.get_connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM opening_positions
+                WHERE ticker = ? AND COALESCE(account_id, '') = COALESCE(?, '') AND opened_at = ? AND source = ?
+                """,
+                (payload["ticker"], payload["account_id"], payload["opened_at"], payload["source"]),
+            ).fetchone()
+            if existing:
+                payload["id"] = existing["id"]
+                conn.execute(
+                    """
+                    UPDATE opening_positions
+                    SET quantity = :quantity, unit_cost = :unit_cost, total_cost = :total_cost,
+                        currency = :currency, notes = :notes, updated_at = datetime('now')
+                    WHERE id = :id
+                    """,
+                    payload,
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO opening_positions (id, ticker, account_id, opened_at, quantity, unit_cost, total_cost, currency, source, notes, updated_at)
+                    VALUES (:id, :ticker, :account_id, :opened_at, :quantity, :unit_cost, :total_cost, :currency, :source, :notes, datetime('now'))
+                    """,
+                    payload,
+                )
+            conn.commit()
+        self.add_reconciliation_audit_event(payload["ticker"], payload["account_id"], "OPENING_POSITION_SAVED", payload)
+        return payload
+
+    def get_position_authority(self) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            return [dict(row) for row in conn.execute("SELECT * FROM position_authority ORDER BY ticker, account_id").fetchall()]
+
+    def set_position_authority(self, ticker: str, state: str, account_id: Optional[str] = None, notes: str = "") -> Dict[str, Any]:
+        clean_state = state.strip().upper()
+        if clean_state not in {"MANUAL", "LEDGER_PENDING", "LEDGER_AUTHORITATIVE", "RECONCILIATION_REQUIRED"}:
+            raise ValueError(f"Unsupported authority state: {state}")
+        payload = {
+            "id": str(uuid.uuid4()),
+            "ticker": ticker.strip().upper(),
+            "account_id": account_id or None,
+            "authority_state": clean_state,
+            "adopted_at": datetime.now().isoformat() if clean_state == "LEDGER_AUTHORITATIVE" else None,
+            "reverted_at": datetime.now().isoformat() if clean_state == "MANUAL" else None,
+            "notes": notes,
+        }
+        with self.get_connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM position_authority WHERE ticker = ? AND COALESCE(account_id, '') = COALESCE(?, '')",
+                (payload["ticker"], payload["account_id"]),
+            ).fetchone()
+            if existing:
+                payload["id"] = existing["id"]
+                conn.execute(
+                    """
+                    UPDATE position_authority
+                    SET authority_state = :authority_state,
+                        adopted_at = COALESCE(:adopted_at, adopted_at),
+                        reverted_at = COALESCE(:reverted_at, reverted_at),
+                        notes = :notes,
+                        updated_at = datetime('now')
+                    WHERE id = :id
+                    """,
+                    payload,
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO position_authority (id, ticker, account_id, authority_state, adopted_at, reverted_at, notes, updated_at)
+                    VALUES (:id, :ticker, :account_id, :authority_state, :adopted_at, :reverted_at, :notes, datetime('now'))
+                    """,
+                    payload,
+                )
+            conn.commit()
+        self.add_reconciliation_audit_event(payload["ticker"], payload["account_id"], f"AUTHORITY_{clean_state}", payload)
+        return payload
+
+    def add_reconciliation_audit_event(self, ticker: str, account_id: Optional[str], event_type: str, payload: Dict[str, Any]):
+        with self.get_connection() as conn:
+            conn.execute(
+                "INSERT INTO reconciliation_audit_events (id, ticker, account_id, event_type, payload) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), ticker.upper(), account_id, event_type, json.dumps(payload, ensure_ascii=False)),
+            )
+            conn.commit()
+
+    def get_reconciliation_audit_events(self, ticker: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        if ticker:
+            clauses.append("ticker = ?")
+            params.append(ticker.upper())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM reconciliation_audit_events {where} ORDER BY created_at DESC",
+                params,
+            ).fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["payload"] = self._safe_json(item.get("payload"))
+                result.append(item)
+            return result
+
     def get_investment_theses(self) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             rows = conn.execute(

@@ -32,6 +32,7 @@ import {
   saveAccount,
   saveAsset,
   saveInvestmentOperation,
+  saveOpeningPosition,
   saveThesis,
   saveTransaction,
   restoreBackup,
@@ -48,6 +49,7 @@ import {
   saveSourceMapping,
   saveBudget,
   saveMonthlyReviewSnapshot,
+  setPositionAuthority,
   testBudgetBakersConnection,
   updateRecurringStatus,
   validateBackup
@@ -333,6 +335,8 @@ export const App: React.FC = () => {
                   onDeleteInvestmentOperation={async (id) => { await deleteInvestmentOperation(id); await refreshWealth(); }}
                   onPreviewInvestmentCsv={previewInvestmentLedgerCsv}
                   onImportInvestmentCsv={async (content) => { const result = await importInvestmentLedgerCsv(content); await refreshWealth(); return result; }}
+                  onSaveOpeningPosition={async (position) => { await saveOpeningPosition(position); await refreshWealth(); }}
+                  onSetPositionAuthority={async (ticker, state, notes) => { await setPositionAuthority(ticker, state, notes); await refreshWealth(); }}
                 />
                 <AssetListTab
                   assets={assets}

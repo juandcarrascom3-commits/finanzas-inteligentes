@@ -33,8 +33,35 @@ def _trade_gross_amount(op: Dict[str, Any]) -> float:
     return abs(float(op.get("quantity") or 0) * float(op.get("price") or 0))
 
 
-def match_lots_fifo(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _opening_position_lots(opening_positions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, List[Dict[str, Any]]]:
     lots_by_ticker: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for pos in opening_positions or []:
+        qty = float(pos.get("quantity") or 0)
+        total_cost = float(pos.get("total_cost") or 0)
+        unit_cost = float(pos.get("unit_cost") or 0)
+        if qty <= 0:
+            continue
+        if total_cost <= 0 and unit_cost > 0:
+            total_cost = qty * unit_cost
+        if unit_cost <= 0 and total_cost > 0:
+            unit_cost = total_cost / qty
+        ticker = pos["ticker"].upper()
+        lots_by_ticker[ticker].append({
+            "ticker": ticker,
+            "buy_transaction_id": f"opening:{pos['id']}",
+            "acquired_at": pos["opened_at"],
+            "original_quantity": qty,
+            "remaining_quantity": qty,
+            "unit_cost": unit_cost,
+            "total_cost": total_cost,
+            "currency": (pos.get("currency") or "USD").upper(),
+            "provenance": "OPENING_POSITION",
+        })
+    return lots_by_ticker
+
+
+def match_lots_fifo(operations: List[Dict[str, Any]], opening_positions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    lots_by_ticker = _opening_position_lots(opening_positions)
     realized = []
     issues = []
 
@@ -102,13 +129,44 @@ def match_lots_fifo(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "matches": matches,
             })
 
+        elif op_type == "ADJUSTMENT":
+            if not ticker:
+                continue
+            if qty > 0:
+                total_cost = _trade_gross_amount(op)
+                unit_cost = total_cost / qty if qty else 0.0
+                lots_by_ticker[ticker].append({
+                    "ticker": ticker,
+                    "buy_transaction_id": f"adjustment:{op['id']}",
+                    "acquired_at": op["occurred_at"],
+                    "original_quantity": qty,
+                    "remaining_quantity": qty,
+                    "unit_cost": unit_cost,
+                    "total_cost": total_cost,
+                    "currency": currency,
+                    "provenance": "ADJUSTMENT",
+                })
+
+        elif op_type == "SPLIT":
+            ratio = float(op.get("metadata", {}).get("ratio") or op.get("price") or 0)
+            if ratio <= 0:
+                issues.append({"type": "UNSUPPORTED_SPLIT", "ticker": ticker, "operation_id": op["id"], "message": "Split operation lacks a positive ratio.", "action": "Add split ratio before adopting ledger."})
+                continue
+            for lot in lots_by_ticker[ticker]:
+                remaining = float(lot["remaining_quantity"])
+                original = float(lot["original_quantity"])
+                unit_cost = float(lot["unit_cost"])
+                lot["remaining_quantity"] = round(remaining * ratio, 10)
+                lot["original_quantity"] = round(original * ratio, 10)
+                lot["unit_cost"] = unit_cost / ratio
+
     lots = [lot for ticker_lots in lots_by_ticker.values() for lot in ticker_lots]
     open_lots = [lot for lot in lots if float(lot["remaining_quantity"]) > 1e-9]
     return {"lots": lots, "open_lots": open_lots, "realized_trades": realized, "issues": issues}
 
 
-def derive_positions(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
-    matched = match_lots_fifo(operations)
+def derive_positions(operations: List[Dict[str, Any]], opening_positions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    matched = match_lots_fifo(operations, opening_positions)
     positions: Dict[str, Dict[str, Any]] = {}
     for lot in matched["open_lots"]:
         ticker = lot["ticker"]
@@ -123,8 +181,8 @@ def derive_positions(operations: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"positions": list(positions.values()), **matched}
 
 
-def get_realized_pnl(operations: List[Dict[str, Any]], ticker: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> Dict[str, Any]:
-    realized = match_lots_fifo(operations)
+def get_realized_pnl(operations: List[Dict[str, Any]], ticker: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None, opening_positions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    realized = match_lots_fifo(operations, opening_positions)
     rows = realized["realized_trades"]
     if ticker:
         rows = [row for row in rows if row["ticker"] == ticker.upper()]
@@ -193,8 +251,8 @@ def calculate_mwr(operations: List[Dict[str, Any]], final_value: float, final_da
     return {"status": "AVAILABLE", "value_pct": value, "reason": None}
 
 
-def get_unrealized_pnl_from_lots(assets: List[Dict[str, Any]], operations: List[Dict[str, Any]]) -> Dict[str, Any]:
-    positions = {row["ticker"]: row for row in derive_positions(operations)["positions"]}
+def get_unrealized_pnl_from_lots(assets: List[Dict[str, Any]], operations: List[Dict[str, Any]], opening_positions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    positions = {row["ticker"]: row for row in derive_positions(operations, opening_positions)["positions"]}
     rows = []
     total = 0.0
     issues = []
@@ -213,8 +271,11 @@ def get_unrealized_pnl_from_lots(assets: List[Dict[str, Any]], operations: List[
     return {"status": "AVAILABLE" if rows and not issues else ("PARTIAL" if rows else "INSUFFICIENT_DATA"), "total_unrealized_pnl": round(total, 2), "by_ticker": rows, "issues": issues}
 
 
-def get_ledger_reconciliation(assets: List[Dict[str, Any]], operations: List[Dict[str, Any]]) -> Dict[str, Any]:
-    positions = {row["ticker"]: row for row in derive_positions(operations)["positions"]}
+def get_ledger_reconciliation(assets: List[Dict[str, Any]], operations: List[Dict[str, Any]], opening_positions: Optional[List[Dict[str, Any]]] = None, authority: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    derived_result = derive_positions(operations, opening_positions)
+    positions = {row["ticker"]: row for row in derived_result["positions"]}
+    authority_by_ticker = {row["ticker"].upper(): row for row in authority or []}
+    opening_tickers = {row["ticker"].upper() for row in opening_positions or []}
     rows = []
     issues = []
     for asset in assets:
@@ -223,6 +284,7 @@ def get_ledger_reconciliation(assets: List[Dict[str, Any]], operations: List[Dic
         ticker = asset["ticker"].upper()
         registered_qty = round(float(asset.get("quantity") or 0), 8)
         derived = positions.get(ticker)
+        coverage = "HISTORY_FROM_OPENING_POSITION" if ticker in opening_tickers else "INCOMPLETE"
         if not derived:
             status = "INSUFFICIENT_HISTORY"
             derived_qty = 0.0
@@ -230,9 +292,21 @@ def get_ledger_reconciliation(assets: List[Dict[str, Any]], operations: List[Dic
         else:
             derived_qty = round(float(derived["quantity"]), 8)
             derived_avg = round(float(derived["avg_cost"]), 6)
-            status = "MATCH" if abs(registered_qty - derived_qty) < 1e-8 else "MISMATCH"
+            quantity_match = abs(registered_qty - derived_qty) < 1e-8
+            avg_price = round(float(asset.get("avg_price") or 0), 6)
+            cost_match = abs(avg_price - derived_avg) <= 0.01
+            coverage = "COMPLETE" if ticker not in opening_tickers else "HISTORY_FROM_OPENING_POSITION"
+            if quantity_match and cost_match:
+                status = "MATCH"
+            elif not quantity_match and not cost_match:
+                status = "BOTH_MISMATCH"
+            elif not quantity_match:
+                status = "QUANTITY_MISMATCH"
+            else:
+                status = "COST_BASIS_MISMATCH"
         avg_price = round(float(asset.get("avg_price") or 0), 6)
         avg_diff = round(avg_price - derived_avg, 6)
+        authority_row = authority_by_ticker.get(ticker, {})
         row = {
             "ticker": ticker,
             "registered_quantity": registered_qty,
@@ -242,10 +316,47 @@ def get_ledger_reconciliation(assets: List[Dict[str, Any]], operations: List[Dic
             "derived_avg_price": derived_avg,
             "avg_price_diff": avg_diff,
             "status": status,
+            "coverage": coverage,
+            "authority_state": authority_row.get("authority_state", "MANUAL"),
+            "source": "LEDGER" if authority_row.get("authority_state") == "LEDGER_AUTHORITATIVE" else "MANUAL",
         }
         rows.append(row)
-        if status != "MATCH":
-            issues.append({"type": "LEDGER_HOLDINGS_MISMATCH", "ticker": ticker, "message": f"{ticker}: holdings {registered_qty} vs ledger {derived_qty}.", "action": "Import missing operations or correct holdings."})
-        elif abs(avg_diff) > 0.01:
-            issues.append({"type": "COST_BASIS_MISMATCH", "ticker": ticker, "message": f"{ticker}: avg price {avg_price} vs ledger {derived_avg}.", "action": "Review cost basis."})
+        if status == "INSUFFICIENT_HISTORY":
+            issues.append({"type": "OPENING_POSITION_REQUIRED", "ticker": ticker, "message": f"{ticker}: ledger cannot explain registered holding.", "action": "Register opening position or missing operations."})
+        elif status != "MATCH":
+            issues.append({"type": status, "ticker": ticker, "message": f"{ticker}: holdings {registered_qty} vs ledger {derived_qty}; avg {avg_price} vs {derived_avg}.", "action": "Resolve mismatch before adopting ledger."})
+        elif authority_row.get("authority_state") != "LEDGER_AUTHORITATIVE":
+            issues.append({"type": "READY_TO_ADOPT_LEDGER", "ticker": ticker, "message": f"{ticker}: ledger matches current holding.", "action": "Adopt ledger when ready."})
+    for issue in derived_result["issues"]:
+        issues.append(issue)
     return {"rows": rows, "issues": issues}
+
+
+def get_effective_holdings(assets: List[Dict[str, Any]], operations: List[Dict[str, Any]], opening_positions: Optional[List[Dict[str, Any]]] = None, authority: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    reconciliation = get_ledger_reconciliation(assets, operations, opening_positions, authority)
+    positions = {row["ticker"]: row for row in derive_positions(operations, opening_positions)["positions"]}
+    authority_by_ticker = {row["ticker"].upper(): row for row in authority or []}
+    holdings = []
+    partial = False
+    for asset in assets:
+        if asset.get("is_watchlist"):
+            continue
+        ticker = asset["ticker"].upper()
+        state = authority_by_ticker.get(ticker, {}).get("authority_state", "MANUAL")
+        rec = next((row for row in reconciliation["rows"] if row["ticker"] == ticker), None)
+        derived = positions.get(ticker)
+        if state == "LEDGER_AUTHORITATIVE" and derived:
+            holding = {
+                **asset,
+                "quantity": derived["quantity"],
+                "avg_price": derived["avg_cost"],
+                "currency": derived["currency"],
+                "provenance": "LEDGER",
+                "reconciliation_state": rec["status"] if rec else "MATCH",
+                "coverage": rec["coverage"] if rec else "COMPLETE",
+            }
+        else:
+            partial = partial or (rec is not None and rec["status"] != "MATCH")
+            holding = {**asset, "provenance": "MANUAL", "reconciliation_state": rec["status"] if rec else "INSUFFICIENT_HISTORY", "coverage": rec["coverage"] if rec else "INCOMPLETE"}
+        holdings.append(holding)
+    return {"holdings": holdings, "reconciliation": reconciliation, "status": "PARTIAL_DATA" if partial else "AVAILABLE"}

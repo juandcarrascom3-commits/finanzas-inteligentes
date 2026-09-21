@@ -2,6 +2,7 @@ from database.db_manager import DatabaseManager
 from backend.analytics.investment_ledger import (
     calculate_mwr,
     derive_positions,
+    get_effective_holdings,
     get_investment_cashflows,
     get_investment_income,
     get_ledger_reconciliation,
@@ -9,6 +10,7 @@ from backend.analytics.investment_ledger import (
     get_unrealized_pnl_from_lots,
     match_lots_fifo,
 )
+from backend.analytics.wealth import get_rebalancing_plan
 
 
 def op(id, day, typ, ticker=None, quantity=0, price=0, amount=0, fee=0, currency="USD"):
@@ -27,6 +29,20 @@ def op(id, day, typ, ticker=None, quantity=0, price=0, amount=0, fee=0, currency
         "account_id": None,
         "notes": "",
         "metadata": {},
+    }
+
+
+def opening(id, ticker, quantity, unit_cost, day="2025-12-31", currency="USD"):
+    return {
+        "id": id,
+        "ticker": ticker,
+        "quantity": quantity,
+        "unit_cost": unit_cost,
+        "total_cost": quantity * unit_cost,
+        "currency": currency,
+        "opened_at": day,
+        "source": "MANUAL",
+        "notes": "",
     }
 
 
@@ -92,6 +108,87 @@ def test_reconciliation_match_mismatch_and_insufficient_history():
     rec = get_ledger_reconciliation(assets, operations)
     assert next(row for row in rec["rows"] if row["ticker"] == "AAA")["status"] == "MATCH"
     assert next(row for row in rec["rows"] if row["ticker"] == "BBB")["status"] == "INSUFFICIENT_HISTORY"
+
+
+def test_opening_positions_seed_fifo_lots_and_realized_pnl():
+    operations = [
+        op("b1", "2026-01-10", "BUY", "AAA", 5, 120),
+        op("s1", "2026-02-10", "SELL", "AAA", 8, 150),
+    ]
+    openings = [opening("o1", "AAA", 10, 100)]
+
+    matched = match_lots_fifo(operations, openings)
+    positions = derive_positions(operations, openings)["positions"]
+
+    assert matched["issues"] == []
+    assert matched["realized_trades"][0]["cost_basis"] == 800
+    assert matched["realized_trades"][0]["realized_pnl"] == 400
+    assert positions[0]["quantity"] == 7
+    assert positions[0]["remaining_cost_basis"] == 800
+    assert positions[0]["avg_cost"] == 114.285714
+
+
+def test_reconciliation_reports_quantity_cost_and_both_mismatches():
+    operations = [op("b1", "2026-01-01", "BUY", "AAA", 10, 100)]
+    assets = [
+        {"ticker": "AAA", "quantity": 9, "avg_price": 100, "current_price": 100, "currency": "USD", "is_watchlist": 0},
+        {"ticker": "BBB", "quantity": 10, "avg_price": 101, "current_price": 100, "currency": "USD", "is_watchlist": 0},
+        {"ticker": "CCC", "quantity": 9, "avg_price": 101, "current_price": 100, "currency": "USD", "is_watchlist": 0},
+    ]
+    operations += [
+        op("b2", "2026-01-01", "BUY", "BBB", 10, 100),
+        op("b3", "2026-01-01", "BUY", "CCC", 10, 100),
+    ]
+
+    rec = get_ledger_reconciliation(assets, operations)
+
+    assert next(row for row in rec["rows"] if row["ticker"] == "AAA")["status"] == "QUANTITY_MISMATCH"
+    assert next(row for row in rec["rows"] if row["ticker"] == "BBB")["status"] == "COST_BASIS_MISMATCH"
+    assert next(row for row in rec["rows"] if row["ticker"] == "CCC")["status"] == "BOTH_MISMATCH"
+
+
+def test_effective_holdings_use_ledger_only_when_authoritative():
+    assets = [{"ticker": "AAA", "quantity": 10, "avg_price": 100, "current_price": 125, "currency": "USD", "is_watchlist": 0}]
+    operations = [op("b1", "2026-01-01", "BUY", "AAA", 12, 90)]
+
+    manual = get_effective_holdings(assets, operations, authority=[{"ticker": "AAA", "authority_state": "MANUAL"}])
+    ledger = get_effective_holdings(assets, operations, authority=[{"ticker": "AAA", "authority_state": "LEDGER_AUTHORITATIVE"}])
+
+    assert manual["holdings"][0]["quantity"] == 10
+    assert manual["holdings"][0]["provenance"] == "MANUAL"
+    assert manual["status"] == "PARTIAL_DATA"
+    assert ledger["holdings"][0]["quantity"] == 12
+    assert ledger["holdings"][0]["avg_price"] == 90
+    assert ledger["holdings"][0]["provenance"] == "LEDGER"
+    assert ledger["status"] == "AVAILABLE"
+
+
+def test_split_and_adjustment_update_lot_state_without_realized_pnl():
+    operations = [
+        op("b1", "2026-01-01", "BUY", "AAA", 10, 100),
+        {**op("sp1", "2026-02-01", "SPLIT", "AAA"), "metadata": {"ratio": 2}},
+        op("adj1", "2026-03-01", "ADJUSTMENT", "AAA", 1, 50),
+    ]
+
+    derived = derive_positions(operations)
+
+    assert derived["issues"] == []
+    assert derived["realized_trades"] == []
+    assert derived["positions"][0]["quantity"] == 21
+    assert derived["positions"][0]["remaining_cost_basis"] == 1050
+    assert derived["positions"][0]["avg_cost"] == 50
+
+
+def test_rebalancing_can_use_ledger_effective_holdings():
+    assets = [{"ticker": "AAA", "quantity": 1, "avg_price": 1, "current_price": 10, "target_allocation_pct": 100, "currency": "USD", "is_watchlist": 0}]
+    operations = [op("b1", "2026-01-01", "BUY", "AAA", 5, 10)]
+    effective = get_effective_holdings(assets, operations, authority=[{"ticker": "AAA", "authority_state": "LEDGER_AUTHORITATIVE"}])
+
+    plan = get_rebalancing_plan(effective["holdings"])
+
+    assert plan["status"] == "AVAILABLE"
+    assert plan["traditional"][0]["current_pct"] == 100
+    assert plan["traditional"][0]["trade_usd"] == 0
 
 
 def test_insufficient_lots_and_fx_data_are_reported():

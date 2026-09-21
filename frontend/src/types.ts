@@ -425,9 +425,12 @@ export interface WealthData {
     realized_trades: Array<{ sell_transaction_id: string; ticker: string; occurred_at: string; quantity: number; proceeds: number; cost_basis: number; fee: number; realized_pnl: number; currency: string }>;
     issues: Array<{ type: string; ticker?: string; message: string; action: string }>;
     reconciliation: {
-      rows: Array<{ ticker: string; registered_quantity: number; derived_quantity: number; quantity_diff: number; registered_avg_price: number; derived_avg_price: number; avg_price_diff: number; status: 'MATCH' | 'MISMATCH' | 'INSUFFICIENT_HISTORY' }>;
+      rows: Array<{ ticker: string; registered_quantity: number; derived_quantity: number; quantity_diff: number; registered_avg_price: number; derived_avg_price: number; avg_price_diff: number; status: 'MATCH' | 'QUANTITY_MISMATCH' | 'COST_BASIS_MISMATCH' | 'BOTH_MISMATCH' | 'INSUFFICIENT_HISTORY'; coverage: string; authority_state: string; source: string }>;
       issues: Array<{ type: string; ticker: string; message: string; action: string }>;
     };
+    effective_holdings: { status: string; holdings: Array<Asset & { provenance: string; reconciliation_state: string; coverage: string }> };
+    authority: Array<{ ticker: string; account_id?: string; authority_state: string; notes?: string }>;
+    opening_positions: Array<{ id: string; ticker: string; opened_at: string; quantity: number; unit_cost: number; total_cost: number; currency: string; source: DataSource; notes?: string }>;
     total_return_breakdown: {
       status: string;
       realized_pnl: { total_realized_pnl: number; status: string };

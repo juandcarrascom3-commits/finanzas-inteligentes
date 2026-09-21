@@ -59,6 +59,7 @@ from backend.analytics.wealth import (
 )
 from backend.analytics.investment_ledger import (
     derive_positions,
+    get_effective_holdings,
     get_ledger_reconciliation,
     get_realized_pnl,
 )
@@ -191,6 +192,24 @@ class InvestmentOperationInput(BaseModel):
 class InvestmentLedgerCsvInput(BaseModel):
     content: str
     source: str = "CSV"
+
+class OpeningPositionInput(BaseModel):
+    id: Optional[str] = None
+    ticker: str
+    account_id: Optional[str] = None
+    opened_at: str
+    quantity: float = Field(gt=0)
+    unit_cost: float = 0.0
+    total_cost: float = 0.0
+    currency: str = "USD"
+    source: str = "MANUAL"
+    notes: str = ""
+
+class PositionAuthorityInput(BaseModel):
+    ticker: str
+    account_id: Optional[str] = None
+    authority_state: str
+    notes: str = ""
 
 class SourceMappingInput(BaseModel):
     id: Optional[str] = None
@@ -479,11 +498,59 @@ def import_investment_ledger_csv(payload: InvestmentLedgerCsvInput):
 
 @app.get("/api/investment-ledger/reconciliation")
 def investment_ledger_reconciliation():
-    return get_ledger_reconciliation(db.get_assets(include_watchlist=False), db.get_investment_transactions())
+    return get_ledger_reconciliation(
+        db.get_assets(include_watchlist=False),
+        db.get_investment_transactions(),
+        db.get_opening_positions(),
+        db.get_position_authority(),
+    )
 
 @app.get("/api/investment-ledger/realized-pnl")
 def investment_ledger_realized_pnl(ticker: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):
-    return get_realized_pnl(db.get_investment_transactions(), ticker=ticker, start=start, end=end)
+    return get_realized_pnl(db.get_investment_transactions(), ticker=ticker, start=start, end=end, opening_positions=db.get_opening_positions())
+
+@app.get("/api/opening-positions")
+def get_opening_positions(ticker: Optional[str] = None):
+    return db.get_opening_positions(ticker)
+
+@app.post("/api/opening-positions")
+def save_opening_position(payload: OpeningPositionInput):
+    try:
+        return db.save_opening_position(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.get("/api/position-authority")
+def get_position_authority():
+    return db.get_position_authority()
+
+@app.post("/api/position-authority")
+def set_position_authority(payload: PositionAuthorityInput):
+    assets = db.get_assets(include_watchlist=False)
+    operations = db.get_investment_transactions()
+    openings = db.get_opening_positions()
+    current_authority = db.get_position_authority()
+    reconciliation = get_ledger_reconciliation(assets, operations, openings, current_authority)
+    row = next((item for item in reconciliation["rows"] if item["ticker"] == payload.ticker.upper()), None)
+    if payload.authority_state.upper() == "LEDGER_AUTHORITATIVE":
+        if not row or row["status"] != "MATCH":
+            raise HTTPException(status_code=400, detail="Ledger adoption requires MATCH reconciliation.")
+        lot_state = derive_positions(operations, openings)
+        if lot_state["issues"]:
+            raise HTTPException(status_code=400, detail={"message": "Ledger adoption blocked by lot issues.", "issues": lot_state["issues"]})
+    try:
+        return db.set_position_authority(payload.ticker, payload.authority_state, payload.account_id, payload.notes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.get("/api/effective-holdings")
+def effective_holdings():
+    return get_effective_holdings(
+        db.get_assets(include_watchlist=False),
+        db.get_investment_transactions(),
+        db.get_opening_positions(),
+        db.get_position_authority(),
+    )
 
 @app.get("/api/wealth")
 def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Optional[str] = None):
@@ -491,18 +558,25 @@ def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Opti
     valuations = db.get_asset_valuations()
     transactions = db.get_transactions(limit=5000)
     ledger_operations = db.get_investment_transactions()
-    history = get_portfolio_history(assets, valuations, transactions)
+    openings = db.get_opening_positions()
+    authority = db.get_position_authority()
+    effective = get_effective_holdings(assets, ledger_operations, openings, authority)
+    effective_assets = effective["holdings"]
+    history = get_portfolio_history(effective_assets, valuations, transactions)
     performance = get_performance(history, transactions, ledger_operations=ledger_operations)
-    allocation = get_allocation(assets)
+    allocation = get_allocation(effective_assets)
     concentration = get_concentration(allocation)
-    data_quality = get_data_quality(assets, valuations)
-    rebalancing = get_rebalancing_plan(assets, contribution_usd=contribution_usd)
-    attribution = get_performance_attribution(assets, valuations)
+    data_quality = get_data_quality(effective_assets, valuations)
+    rebalancing = get_rebalancing_plan(effective_assets, contribution_usd=contribution_usd)
+    if effective["status"] == "PARTIAL_DATA":
+        rebalancing["status"] = "PARTIAL_DATA"
+        rebalancing["reason"] = "Some positions have unresolved ledger/holding reconciliation."
+    attribution = get_performance_attribution(effective_assets, valuations)
     benchmark = compare_benchmark(history, db.get_benchmark_prices(benchmark_key=benchmark_key) if benchmark_key else [])
-    ledger_positions = derive_positions(ledger_operations)
-    ledger_reconciliation = get_ledger_reconciliation(assets, ledger_operations)
+    ledger_positions = derive_positions(ledger_operations, openings)
+    ledger_reconciliation = effective["reconciliation"]
     return {
-        "summary": get_portfolio_summary(assets),
+        "summary": get_portfolio_summary(effective_assets),
         "history": history,
         "performance": performance,
         "allocation": allocation,
@@ -518,7 +592,10 @@ def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Opti
             "realized_trades": ledger_positions["realized_trades"],
             "issues": ledger_positions["issues"],
             "reconciliation": ledger_reconciliation,
-            "total_return_breakdown": get_total_return_breakdown(assets, ledger_operations),
+            "effective_holdings": effective,
+            "authority": authority,
+            "opening_positions": openings,
+            "total_return_breakdown": get_total_return_breakdown(effective_assets, ledger_operations, openings),
         },
         "action_items": get_wealth_action_items(data_quality, concentration, rebalancing, ledger_reconciliation, ledger_positions["issues"]),
     }

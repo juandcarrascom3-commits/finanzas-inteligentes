@@ -409,9 +409,9 @@ def compare_benchmark(history: Dict[str, Any], benchmark_prices: List[Dict[str, 
     return {"status": "AVAILABLE", "portfolio_return_pct": round(portfolio_return * 100, 2), "benchmark_return_pct": round(benchmark_return * 100, 2), "excess_return_pct": round((portfolio_return - benchmark_return) * 100, 2), "beta": {"status": "INSUFFICIENT_DATA", "value": None, "reason": "Need aligned daily benchmark observations."}}
 
 
-def get_total_return_breakdown(assets: List[Dict[str, Any]], operations: List[Dict[str, Any]]) -> Dict[str, Any]:
-    realized = get_realized_pnl(operations)
-    unrealized = get_unrealized_pnl_from_lots(assets, operations)
+def get_total_return_breakdown(assets: List[Dict[str, Any]], operations: List[Dict[str, Any]], opening_positions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    realized = get_realized_pnl(operations, opening_positions=opening_positions)
+    unrealized = get_unrealized_pnl_from_lots(assets, operations, opening_positions)
     income = get_investment_income(operations)
     cashflows = get_investment_cashflows(operations)
     return {
