@@ -2,35 +2,69 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
 import { TopKpiRow } from './components/TopKpiRow';
 import { CentralVisualSection } from './components/CentralVisualSection';
-import { PanoramaTab } from './components/tabs/PanoramaTab';
 import { AssetListTab } from './components/tabs/AssetListTab';
 import { InvestmentThesisTab } from './components/tabs/InvestmentThesisTab';
-import { IngestionTab } from './components/tabs/IngestionTab';
-import { ExecutiveReportTab } from './components/tabs/ExecutiveReportTab';
+import { PersonalDataTab } from './components/tabs/PersonalDataTab';
+import { UnderstandTab } from './components/tabs/UnderstandTab';
+import { PlanningTab } from './components/tabs/PlanningTab';
 import {
+  deleteBudget,
+  deleteAccount,
+  deleteAsset,
+  deleteTransaction,
+  exportBackup,
+  fetchAccounts,
   fetchDashboard,
-  fetchPanorama,
   fetchAssets,
+  fetchCategories,
+  fetchDataSource,
   fetchTheses,
+  fetchTransactions,
+  importTransactionsCsv,
+  previewTransactionsCsv,
+  saveAccount,
+  saveAsset,
   saveThesis,
+  saveTransaction,
+  restoreBackup,
   simulatePurchase,
-  fetchBudgetBakersMappings,
-  updateBudgetBakersMapping,
-  triggerBudgetBakersSync
+  fetchBudgetBakersStatus,
+  fetchBudgets,
+  fetchMonthlyReview,
+  fetchRecurring,
+  fetchReconciliation,
+  fetchUnderstand,
+  importBudgetBakersPlan,
+  importBudgetBakersPreview,
+  previewBudgetBakersImport,
+  saveSourceMapping,
+  saveBudget,
+  saveMonthlyReviewSnapshot,
+  testBudgetBakersConnection,
+  updateRecurringStatus,
+  validateBackup
 } from './services/api';
-import { DashboardSummary, PanoramaData, Asset, InvestmentThesis, BudgetBakersMapping } from './types';
-import { Compass, ListFilter, ShieldCheck, Database, FileText, AlertTriangle } from 'lucide-react';
+import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview } from './types';
+import { Compass, AlertTriangle, WalletCards, LineChart, Target } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [currency, setCurrency] = useState<'USD' | 'COP'>('USD');
-  const [activeTab, setActiveTab] = useState<'panorama' | 'activos' | 'tesis' | 'ingestion' | 'informe'>('panorama');
+  const [activeTab, setActiveTab] = useState<'overview' | 'plan' | 'invest' | 'datos'>('overview');
+  const [privacyMode, setPrivacyModeState] = useState<boolean>(() => localStorage.getItem('finance_privacy_mode') === '1');
+  const [understandPeriod, setUnderstandPeriod] = useState<string>('current_month');
   const [selectedTickerForSim, setSelectedTickerForSim] = useState<string | undefined>(undefined);
 
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
-  const [panorama, setPanorama] = useState<PanoramaData | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [dataSource, setDataSource] = useState<DataSourceInfo | undefined>(undefined);
   const [theses, setTheses] = useState<InvestmentThesis[]>([]);
-  const [mappings, setMappings] = useState<BudgetBakersMapping[]>([]);
+  const [understand, setUnderstand] = useState<UnderstandSummary | null>(null);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [recurring, setRecurring] = useState<RecurringRule[]>([]);
+  const [monthlyReview, setMonthlyReview] = useState<MonthlyReview | null>(null);
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -41,25 +75,37 @@ export const App: React.FC = () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const [dashData, panoData, assetsData, thesesData, mapData] = await Promise.all([
+      const [dashData, assetsData, thesesData, accountsData, transactionsData, categoriesData, sourceData, understandData, budgetsData, recurringData, reviewData] = await Promise.all([
         fetchDashboard(exchangeRate),
-        fetchPanorama(),
         fetchAssets(),
         fetchTheses(),
-        fetchBudgetBakersMappings()
+        fetchAccounts(),
+        fetchTransactions(),
+        fetchCategories(),
+        fetchDataSource(),
+        fetchUnderstand(understandPeriod),
+        fetchBudgets(),
+        fetchRecurring(),
+        fetchMonthlyReview()
       ]);
       setDashboard(dashData);
-      setPanorama(panoData);
       setAssets(assetsData);
       setTheses(thesesData);
-      setMappings(mapData);
+      setAccounts(accountsData);
+      setTransactions(transactionsData);
+      setCategories(categoriesData);
+      setDataSource(sourceData);
+      setUnderstand(understandData);
+      setBudgets(budgetsData);
+      setRecurring(recurringData);
+      setMonthlyReview(reviewData);
     } catch (err: any) {
       console.error('Error loading data:', err);
       setErrorMsg('No se pudo conectar al servidor local. Verifique que el backend de FastAPI esté en ejecución.');
     } finally {
       setIsLoading(false);
     }
-  }, [exchangeRate]);
+  }, [exchangeRate, understandPeriod]);
 
   useEffect(() => {
     loadAllData();
@@ -67,7 +113,7 @@ export const App: React.FC = () => {
 
   const handleSelectAssetForSimulation = (ticker: string) => {
     setSelectedTickerForSim(ticker);
-    setActiveTab('tesis');
+    setActiveTab('invest');
   };
 
   const handleSaveThesis = async (thesisData: Partial<InvestmentThesis>) => {
@@ -80,16 +126,13 @@ export const App: React.FC = () => {
     return await simulatePurchase(ticker, amountUsd);
   };
 
-  const handleUpdateMapping = async (mappingId: string, localCategory: string, isActive: boolean) => {
-    await updateBudgetBakersMapping(mappingId, localCategory, isActive);
-    const updated = await fetchBudgetBakersMappings();
-    setMappings(updated);
+  const refreshAfterMutation = async () => {
+    await loadAllData();
   };
 
-  const handleTriggerSync = async (forceRefresh: boolean) => {
-    const res = await triggerBudgetBakersSync(forceRefresh);
-    await loadAllData();
-    return res;
+  const setPrivacyMode = (value: boolean) => {
+    setPrivacyModeState(value);
+    localStorage.setItem('finance_privacy_mode', value ? '1' : '0');
   };
 
   return (
@@ -99,9 +142,10 @@ export const App: React.FC = () => {
         currency={currency}
         setCurrency={setCurrency}
         exchangeRate={exchangeRate}
-        quota={dashboard?.daily_api_quota}
         onRefresh={loadAllData}
         isLoading={isLoading}
+        privacyMode={privacyMode}
+        setPrivacyMode={setPrivacyMode}
       />
 
       {/* ERROR BANNER */}
@@ -122,9 +166,15 @@ export const App: React.FC = () => {
         </div>
       )}
 
+      <div className="max-w-7xl mx-auto px-4 lg:px-8 mt-4 w-full">
+        <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-200 text-xs">
+          Fuente activa: <strong>{dataSource?.profile || dataSource?.mode || 'DEMO'}</strong>. MANUAL y CSV son datos personales locales; DEMO son datos semilla/simulados.
+        </div>
+      </div>
+
       {/* MAIN THREE-TIER CONTAINER */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6 space-y-7">
-        {dashboard && (
+        {activeTab === 'overview' && dashboard && (
           <>
             {/* TIER 1: TOP KPI ROW (High-Level Summary) */}
             <TopKpiRow
@@ -134,6 +184,7 @@ export const App: React.FC = () => {
               mwrPct={dashboard.kpis.mwr_pct}
               riskMetrics={dashboard.kpis.risk_metrics}
               currency={currency}
+              privacyMode={privacyMode}
             />
 
             {/* TIER 2: CENTRAL VISUAL SECTION (Asset Allocation & Temporal Evolution) */}
@@ -142,6 +193,13 @@ export const App: React.FC = () => {
               evolutionData={dashboard.temporal_evolution}
               currency={currency}
               exchangeRate={exchangeRate}
+              privacyMode={privacyMode}
+            />
+            <UnderstandTab
+              data={understand}
+              period={understandPeriod}
+              setPeriod={setUnderstandPeriod}
+              privacyMode={privacyMode}
             />
           </>
         )}
@@ -151,118 +209,125 @@ export const App: React.FC = () => {
           {/* Tabs Navigation Bar */}
           <div className="flex items-center space-x-2 border-b border-gray-800 pb-2 overflow-x-auto">
             <button
-              onClick={() => setActiveTab('panorama')}
+              onClick={() => setActiveTab('overview')}
               className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'panorama'
+                activeTab === 'overview'
                   ? 'bg-emerald-600 text-white shadow-md'
                   : 'text-gray-400 hover:text-white hover:bg-gray-800/60'
               }`}
             >
               <Compass className="w-4 h-4" />
-              <span>Panorama (Pronósticos &amp; Checklist)</span>
+              <span>Overview</span>
             </button>
 
             <button
-              onClick={() => setActiveTab('activos')}
+              onClick={() => setActiveTab('plan')}
               className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'activos'
+                activeTab === 'plan'
                   ? 'bg-emerald-600 text-white shadow-md'
                   : 'text-gray-400 hover:text-white hover:bg-gray-800/60'
               }`}
             >
-              <ListFilter className="w-4 h-4" />
-              <span>Lista de Activos ({assets.length})</span>
+              <Target className="w-4 h-4" />
+              <span>Plan</span>
             </button>
 
             <button
-              onClick={() => setActiveTab('tesis')}
+              onClick={() => setActiveTab('invest')}
               className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'tesis'
+                activeTab === 'invest'
                   ? 'bg-emerald-600 text-white shadow-md'
                   : 'text-gray-400 hover:text-white hover:bg-gray-800/60'
               }`}
             >
-              <ShieldCheck className="w-4 h-4" />
-              <span>Tesis de Inversión (Filtro Humano)</span>
+              <LineChart className="w-4 h-4" />
+              <span>Invest</span>
             </button>
 
             <button
-              onClick={() => setActiveTab('ingestion')}
+              onClick={() => setActiveTab('datos')}
               className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'ingestion'
+                activeTab === 'datos'
                   ? 'bg-emerald-600 text-white shadow-md'
                   : 'text-gray-400 hover:text-white hover:bg-gray-800/60'
               }`}
             >
-              <Database className="w-4 h-4" />
-              <span>REST API Ingestión (Wallet)</span>
+              <WalletCards className="w-4 h-4" />
+              <span>Datos</span>
             </button>
 
-            <button
-              onClick={() => setActiveTab('informe')}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'informe'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/60'
-              }`}
-            >
-              <FileText className="w-4 h-4" />
-              <span>Informe Estratégico</span>
-            </button>
           </div>
 
           {/* Active Tab Content Container */}
           <div className="pt-2">
-            {activeTab === 'panorama' && panorama && (
-              <PanoramaTab
-                data={panorama}
-                currency={currency}
-                exchangeRate={exchangeRate}
-              />
-            )}
-
-            {activeTab === 'activos' && (
-              <AssetListTab
+            {activeTab === 'datos' && (
+              <PersonalDataTab
+                accounts={accounts}
                 assets={assets}
-                currency={currency}
-                exchangeRate={exchangeRate}
-                onSelectForSimulation={handleSelectAssetForSimulation}
+                transactions={transactions}
+                categories={categories}
+                dataSource={dataSource}
+                onSaveAccount={async (account) => { await saveAccount(account); await refreshAfterMutation(); }}
+                onDeleteAccount={async (id) => { await deleteAccount(id); await refreshAfterMutation(); }}
+                onSaveAsset={async (asset) => { await saveAsset(asset); await refreshAfterMutation(); }}
+                onDeleteAsset={async (ticker) => { await deleteAsset(ticker); await refreshAfterMutation(); }}
+                onSaveTransaction={async (transaction) => { await saveTransaction(transaction); await refreshAfterMutation(); }}
+                onDeleteTransaction={async (id) => { await deleteTransaction(id); await refreshAfterMutation(); }}
+                onPreviewCsv={previewTransactionsCsv}
+                onImportCsv={async (content) => { const result = await importTransactionsCsv(content); await refreshAfterMutation(); return result; }}
+                onBackup={exportBackup}
+                onValidateBackup={validateBackup}
+                onRestoreBackup={async (path) => { const result = await restoreBackup(path); await refreshAfterMutation(); return result; }}
+                onFetchWalletStatus={fetchBudgetBakersStatus}
+                onTestWallet={testBudgetBakersConnection}
+                onPreviewWallet={previewBudgetBakersImport}
+                onImportWallet={async (preview) => { const result = await importBudgetBakersPreview(preview); await importBudgetBakersPlan(preview); await refreshAfterMutation(); return result; }}
+                onFetchReconciliation={fetchReconciliation}
+                onSaveSourceMapping={saveSourceMapping}
+                privacyMode={privacyMode}
               />
             )}
 
-            {activeTab === 'tesis' && (
-              <InvestmentThesisTab
-                theses={theses}
-                assets={assets}
-                onSaveThesis={handleSaveThesis}
-                onSimulatePurchase={handleSimulatePurchase}
-                selectedTickerForSim={selectedTickerForSim}
+            {activeTab === 'plan' && (
+              <PlanningTab
+                budgets={budgets}
+                categories={categories}
+                recurring={recurring}
+                review={monthlyReview}
+                privacyMode={privacyMode}
+                onSaveBudget={async (budget) => { await saveBudget(budget); await refreshAfterMutation(); }}
+                onDeleteBudget={async (id) => { await deleteBudget(id); await refreshAfterMutation(); }}
+                onUpdateRecurring={async (id, status) => { await updateRecurringStatus(id, status); await refreshAfterMutation(); }}
+                onSaveSnapshot={async () => { await saveMonthlyReviewSnapshot(monthlyReview?.period); await refreshAfterMutation(); }}
               />
             )}
 
-            {activeTab === 'ingestion' && (
-              <IngestionTab
-                quota={dashboard?.daily_api_quota}
-                mappings={mappings}
-                onTriggerSync={handleTriggerSync}
-                onUpdateMapping={handleUpdateMapping}
-              />
+            {activeTab === 'invest' && (
+              <div className="space-y-5">
+                <AssetListTab
+                  assets={assets}
+                  currency={currency}
+                  exchangeRate={exchangeRate}
+                  onSelectForSimulation={handleSelectAssetForSimulation}
+                  privacyMode={privacyMode}
+                />
+                <InvestmentThesisTab
+                  theses={theses}
+                  assets={assets}
+                  onSaveThesis={handleSaveThesis}
+                  onSimulatePurchase={handleSimulatePurchase}
+                  selectedTickerForSim={selectedTickerForSim}
+                />
+              </div>
             )}
 
-            {activeTab === 'informe' && dashboard && (
-              <ExecutiveReportTab
-                geopoliticalRisks={dashboard.geopolitical_risk}
-                currency={currency}
-                exchangeRate={exchangeRate}
-              />
-            )}
           </div>
         </section>
       </main>
 
       {/* FOOTER */}
       <footer className="border-t border-gray-800/80 bg-[#0B0F19] py-4 px-4 text-center text-xs text-gray-500 font-mono">
-        Finanzas Inteligentes &bull; Arquitectura de 3 Niveles &bull; Supabase PostgreSQL / SQLite Parity &bull; Cuota Máx: 25 req/día
+        Finanzas Inteligentes &bull; SQLite local &bull; Fuentes: DEMO / MANUAL / CSV / BUDGETBAKERS
       </footer>
     </div>
   );

@@ -7,13 +7,15 @@ interface AssetListTabProps {
   currency: 'USD' | 'COP';
   exchangeRate: number;
   onSelectForSimulation: (ticker: string) => void;
+  privacyMode?: boolean;
 }
 
 export const AssetListTab: React.FC<AssetListTabProps> = ({
   assets,
   currency,
   exchangeRate,
-  onSelectForSimulation
+  onSelectForSimulation,
+  privacyMode = false
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState<string>('ALL');
@@ -34,6 +36,7 @@ export const AssetListTab: React.FC<AssetListTabProps> = ({
   });
 
   const formatPrice = (priceUsd: number, assetCurrency: string = 'USD') => {
+    if (privacyMode) return '••••';
     if (currency === 'USD') {
       return `$${priceUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`;
     } else {
@@ -202,7 +205,7 @@ export const AssetListTab: React.FC<AssetListTabProps> = ({
                             {isPositive ? '+' : ''}{pnlPct}%
                           </div>
                           <div className="text-[10px] text-gray-400">
-                            {isPositive ? '+' : ''}${pnlUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD
+                            {privacyMode ? '••••' : `${isPositive ? '+' : ''}$${pnlUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`}
                           </div>
                         </div>
                       )}

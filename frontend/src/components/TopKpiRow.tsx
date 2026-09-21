@@ -9,6 +9,7 @@ interface TopKpiRowProps {
   mwrPct: number;
   riskMetrics: RiskMetrics;
   currency: 'USD' | 'COP';
+  privacyMode?: boolean;
 }
 
 export const TopKpiRow: React.FC<TopKpiRowProps> = ({
@@ -17,9 +18,12 @@ export const TopKpiRow: React.FC<TopKpiRowProps> = ({
   twrPct,
   mwrPct,
   riskMetrics,
-  currency
+  currency,
+  privacyMode = false
 }) => {
+  const masked = '••••';
   const formatMoney = (usdVal: number, copVal: number) => {
+    if (privacyMode) return masked;
     if (currency === 'USD') {
       return `$${usdVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`;
     } else {
@@ -28,6 +32,7 @@ export const TopKpiRow: React.FC<TopKpiRowProps> = ({
   };
 
   const formatUsdOnly = (usdVal: number) => {
+    if (privacyMode) return masked;
     return `$${usdVal.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   };
 
@@ -48,7 +53,7 @@ export const TopKpiRow: React.FC<TopKpiRowProps> = ({
           {formatMoney(netWorth.net_worth_usd, netWorth.net_worth_cop)}
         </div>
         <div className="mt-2 text-xs text-gray-400 flex items-center justify-between border-t border-gray-800/80 pt-2 font-mono">
-          <span>{currency === 'USD' ? `Equivalente: $${netWorth.net_worth_cop.toLocaleString()} COP` : `Equivalente: $${netWorth.net_worth_usd.toLocaleString()} USD`}</span>
+          <span>{privacyMode ? `Equivalente: ${masked}` : currency === 'USD' ? `Equivalente: $${netWorth.net_worth_cop.toLocaleString()} COP` : `Equivalente: $${netWorth.net_worth_usd.toLocaleString()} USD`}</span>
           <span className="text-emerald-400 font-medium">Líquido: ~14.3%</span>
         </div>
       </div>
@@ -89,7 +94,7 @@ export const TopKpiRow: React.FC<TopKpiRowProps> = ({
             />
           </div>
           <div className="flex justify-between text-[11px] text-gray-400 font-mono mt-1.5">
-            <span>Ahorro neto: +${savingsRate.net_savings.toLocaleString()} USD/mes</span>
+            <span>Ahorro neto: {privacyMode ? masked : `+$${savingsRate.net_savings.toLocaleString()} USD/mes`}</span>
           </div>
         </div>
       </div>

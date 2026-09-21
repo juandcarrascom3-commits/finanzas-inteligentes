@@ -29,6 +29,21 @@ from backend.analytics.metrics import (
     USD_COP_EXCHANGE_RATE
 )
 from backend.analytics.projections import calculate_budget_projections
+from backend.integrations.budgetbakers_adapter import (
+    BudgetBakersAdapter,
+    BudgetBakersAuthError,
+    BudgetBakersInitSyncError,
+    BudgetBakersNetworkError,
+    BudgetBakersRateLimitError,
+)
+from backend.analytics.understand import (
+    get_action_items,
+    get_budget_risks,
+    get_cashflow_forecast,
+    get_financial_changes,
+    get_recurring_transactions,
+)
+from backend.analytics.monthly_review import get_monthly_review
 from backend.services.budgetbakers_client import BudgetBakersClient, DailyQuotaExceededError
 from backend.services.guardrail_service import GuardrailService, TradeGuardrailBlockedError
 
@@ -38,9 +53,18 @@ app = FastAPI(
     version="1.0.0"
 )
 
+cors_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "FINANCE_CORS_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,11 +92,110 @@ class MappingUpdateInput(BaseModel):
     local_category: str
     is_active: bool
 
+class AccountInput(BaseModel):
+    id: Optional[str] = None
+    name: str
+    account_type: str = "cash"
+    currency: str = "USD"
+    opening_balance: float = 0.0
+    current_balance: Optional[float] = None
+    source: str = "MANUAL"
+    is_active: bool = True
+
+class AssetInput(BaseModel):
+    ticker: str
+    name: str
+    asset_type: str = "Renta Variable"
+    sector: str = "General"
+    country: str = "Global"
+    quantity: float = 0.0
+    avg_price: float = 0.0
+    current_price: float = 0.0
+    currency: str = "USD"
+    is_watchlist: bool = False
+    logo_url: str = ""
+    target_allocation_pct: float = 0.0
+    source: str = "MANUAL"
+
+class TransactionInput(BaseModel):
+    id: Optional[str] = None
+    account_id: Optional[str] = None
+    amount: float
+    category: str = "General"
+    date: str
+    description: str = ""
+    currency: str = "USD"
+    source: str = "MANUAL"
+    external_id: Optional[str] = None
+
+class CsvImportInput(BaseModel):
+    content: str
+
+class BackupPathInput(BaseModel):
+    path: str
+
+class SourceMappingInput(BaseModel):
+    id: Optional[str] = None
+    source: str
+    external_type: str
+    external_id: str
+    external_name: str = ""
+    local_id: Optional[str] = None
+    local_type: Optional[str] = None
+    is_active: bool = True
+
+class CanonicalImportInput(BaseModel):
+    accounts: List[Dict[str, Any]] = []
+    transactions: List[Dict[str, Any]] = []
+    meta: Dict[str, Any] = {}
+
+class BudgetInput(BaseModel):
+    id: Optional[str] = None
+    category: str
+    monthly_limit: float
+    currency: str = "USD"
+    source: str = "MANUAL"
+    period: str = "MONTHLY"
+    is_active: bool = True
+    external_id: Optional[str] = None
+
+class RecurringStatusInput(BaseModel):
+    status: str
+
+
+def get_budgetbakers_adapter() -> BudgetBakersAdapter:
+    return BudgetBakersAdapter()
+
+
+def budgetbakers_error_response(exc: Exception):
+    now = datetime.datetime.now().isoformat()
+    if isinstance(exc, BudgetBakersAuthError):
+        db.set_sync_state("BUDGETBAKERS", {"status": "AUTH_ERROR", "last_sync_at": now, "last_error": str(exc)})
+        db.add_action_event("BUDGETBAKERS", "TOKEN_INVALID", str(exc), "ERROR")
+        raise HTTPException(status_code=401, detail=str(exc))
+    if isinstance(exc, BudgetBakersInitSyncError):
+        db.set_sync_state("BUDGETBAKERS", {"status": "INIT_SYNC_IN_PROGRESS", "last_sync_at": now, "last_error": str(exc), "sync_in_progress": "true"})
+        db.add_action_event("BUDGETBAKERS", "INIT_SYNC_IN_PROGRESS", str(exc), "WARNING")
+        raise HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, BudgetBakersRateLimitError):
+        db.set_sync_state("BUDGETBAKERS", {"status": "RATE_LIMITED", "last_sync_at": now, "last_error": str(exc)})
+        db.add_action_event("BUDGETBAKERS", "RATE_LIMITED", str(exc), "WARNING", {"retry_after": exc.retry_after})
+        headers = {"Retry-After": exc.retry_after} if exc.retry_after else None
+        raise HTTPException(status_code=429, detail={"message": str(exc), "retry_after": exc.retry_after}, headers=headers)
+    if isinstance(exc, BudgetBakersNetworkError):
+        db.set_sync_state("BUDGETBAKERS", {"status": "NETWORK_ERROR", "last_sync_at": now, "last_error": str(exc)})
+        raise HTTPException(status_code=502, detail=str(exc))
+    raise exc
+
 # --- API Endpoints ---
 
 @app.get("/api/health")
 def health():
     return {"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}
+
+@app.get("/api/data-source")
+def get_data_source():
+    return db.get_data_source()
 
 @app.get("/api/dashboard")
 def get_dashboard_summary(exchange_rate: float = Query(USD_COP_EXCHANGE_RATE, ge=1000.0)):
@@ -82,22 +205,16 @@ def get_dashboard_summary(exchange_rate: float = Query(USD_COP_EXCHANGE_RATE, ge
     # 1. Top KPI: Net Worth
     net_worth_data = calculate_net_worth(assets, exchange_rate=exchange_rate)
     
-    # 2. Top KPI: Monthly Savings Rate
-    # Derive from transactions or standard monthly run-rate
-    monthly_income = 6200.00
-    monthly_expenses = 4040.00
+    # 2. Top KPI: Monthly Savings Rate from persisted transactions
+    tx_summary = db.get_transaction_summary()
+    monthly_income = tx_summary["income"]
+    monthly_expenses = tx_summary["expenses"]
     savings_data = calculate_savings_rate(monthly_income, monthly_expenses)
 
-    # 3. Top KPI: Returns (TWR & MWR)
-    subperiods = [0.038, 0.045, -0.018, 0.052, 0.021, 0.041] # Past 6 months
-    twr = calculate_twr(subperiods)
-    cash_flows = [(0.0, -120000.0), (0.25, -5000.0), (0.5, -5000.0), (1.0, 148520.0)]
-    mwr = calculate_mwr_irr(cash_flows)
-
-    # 4. Top KPI: Risk Metrics
-    p_returns = [0.006, -0.003, 0.012, 0.004, -0.008, 0.009, -0.002, 0.007, 0.005, -0.004, 0.011, 0.003] * 5
-    b_returns = [0.005, -0.004, 0.009, 0.003, -0.007, 0.007, -0.003, 0.006, 0.004, -0.003, 0.008, 0.002] * 5
-    risk_metrics = calculate_portfolio_risk_metrics(p_returns, b_returns)
+    # 3. Returns/risk require historical valuations; keep deterministic zero until enough real history exists.
+    twr = 0.0
+    mwr = 0.0
+    risk_metrics = {"beta": 0.0, "sharpe_ratio": 0.0, "max_drawdown_pct": 0.0, "annualized_volatility_pct": 0.0}
 
     # 5. Central Visual: Asset Allocation Hierarchy (Sunburst / Treemap data)
     allocation_by_type: Dict[str, Dict[str, Any]] = {}
@@ -142,23 +259,7 @@ def get_dashboard_summary(exchange_rate: float = Query(USD_COP_EXCHANGE_RATE, ge
             "children": children_list
         })
 
-    # 6. Central Visual: Temporal Evolution (12 Months Portfolio vs S&P 500)
-    history_dates = [
-        "2025-10", "2025-11", "2025-12", "2026-01", "2026-02", "2026-03",
-        "2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"
-    ]
-    p_cum = [100.0, 103.2, 106.5, 104.8, 109.4, 112.8, 111.2, 116.5, 120.4, 118.9, 122.5, 126.8]
-    spy_cum = [100.0, 102.1, 104.2, 103.1, 106.8, 108.9, 107.5, 111.4, 113.8, 112.6, 115.2, 117.9]
-    evolution_chart = [
-        {
-            "date": d,
-            "portfolio_growth": p_cum[i],
-            "benchmark_growth": spy_cum[i],
-            "alpha_spread": round(p_cum[i] - spy_cum[i], 2),
-            "portfolio_usd": round(120000.0 * (p_cum[i] / 100.0), 2)
-        }
-        for i, d in enumerate(history_dates)
-    ]
+    evolution_chart = []
 
     return {
         "kpis": {
@@ -171,16 +272,19 @@ def get_dashboard_summary(exchange_rate: float = Query(USD_COP_EXCHANGE_RATE, ge
         "allocation_treemap": treemap_data,
         "temporal_evolution": evolution_chart,
         "geopolitical_risk": db.get_geopolitical_risk(),
-        "daily_api_quota": bb_client.get_quota_status()
+        "daily_api_quota": bb_client.get_quota_status(),
+        "data_source": db.get_data_source(),
+        "cashflow": tx_summary
     }
 
 @app.get("/api/panorama")
 def get_panorama():
     """Generates future cash flow forecasts and semaphoric budgeting checklist."""
-    income = 6200.0
-    expenses = 4040.0
-    cash_reserves = 21250.0  # Combined USD cash + COP cash in USD
-    discretionary = 950.0
+    summary = db.get_transaction_summary()
+    income = summary["income"]
+    expenses = summary["expenses"]
+    cash_reserves = sum(float(a.get("current_balance", 0) or 0) for a in db.get_accounts())
+    discretionary = 0.0
 
     projections = calculate_budget_projections(
         monthly_income=income,
@@ -189,6 +293,19 @@ def get_panorama():
         discretionary_spending=discretionary
     )
     return projections
+
+@app.get("/api/accounts")
+def get_accounts():
+    return db.get_accounts()
+
+@app.post("/api/accounts")
+def save_account(account: AccountInput):
+    return db.save_account(account.model_dump())
+
+@app.delete("/api/accounts/{account_id}")
+def delete_account(account_id: str):
+    db.delete_account(account_id)
+    return {"status": "SUCCESS"}
 
 @app.get("/api/assets")
 def get_assets_list():
@@ -213,6 +330,89 @@ def get_assets_list():
         item["market_value_usd"] = round(qty * curr_p, 2) if item["currency"] == "USD" else round((qty * curr_p) / USD_COP_EXCHANGE_RATE, 2)
         results.append(item)
     return results
+
+@app.post("/api/assets")
+def save_asset(asset: AssetInput):
+    return db.add_or_update_asset(asset.model_dump())
+
+@app.delete("/api/assets/{ticker}")
+def delete_asset(ticker: str):
+    db.delete_asset(ticker)
+    return {"status": "SUCCESS"}
+
+@app.get("/api/transactions")
+def get_transactions(
+    limit: int = Query(100, ge=1, le=1000),
+    account_id: Optional[str] = None,
+    category: Optional[str] = None,
+    source: Optional[str] = None
+):
+    return db.get_transactions(limit=limit, account_id=account_id, category=category, source=source)
+
+@app.post("/api/transactions")
+def save_transaction(tx: TransactionInput):
+    return db.save_transaction(tx.model_dump())
+
+@app.delete("/api/transactions/{transaction_id}")
+def delete_transaction(transaction_id: str):
+    db.delete_transaction(transaction_id)
+    return {"status": "SUCCESS"}
+
+@app.get("/api/categories")
+def get_categories():
+    return db.get_categories()
+
+@app.get("/api/budgets")
+def get_budgets():
+    return db.get_budgets()
+
+@app.post("/api/budgets")
+def save_budget(budget: BudgetInput):
+    return db.save_budget(budget.model_dump())
+
+@app.delete("/api/budgets/{budget_id}")
+def delete_budget(budget_id: str):
+    db.delete_budget(budget_id)
+    return {"status": "SUCCESS"}
+
+@app.get("/api/recurring")
+def get_recurring():
+    detected = get_recurring_transactions(db.get_transactions(limit=5000))
+    stored = db.sync_detected_recurring_rules(detected)
+    return stored
+
+@app.patch("/api/recurring/{rule_id}")
+def update_recurring(rule_id: str, payload: RecurringStatusInput):
+    try:
+        return db.update_recurring_status(rule_id, payload.status)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/import/transactions/preview")
+def preview_transactions_csv(payload: CsvImportInput):
+    return db.preview_transactions_csv(payload.content)
+
+@app.post("/api/import/transactions")
+def import_transactions_csv(payload: CsvImportInput):
+    return db.import_transactions_csv(payload.content)
+
+@app.get("/api/backup")
+def export_backup():
+    return db.export_backup()
+
+@app.post("/api/backup/validate")
+def validate_backup(payload: BackupPathInput):
+    try:
+        return db.validate_backup(payload.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.post("/api/backup/restore")
+def restore_backup(payload: BackupPathInput):
+    try:
+        return db.restore_backup(payload.path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.get("/api/theses")
 def get_theses():
@@ -285,6 +485,198 @@ def simulate_purchase(sim: PurchaseSimulationInput):
 def get_bb_quota():
     return bb_client.get_quota_status()
 
+@app.get("/api/budgetbakers/status")
+def get_budgetbakers_status():
+    adapter = get_budgetbakers_adapter()
+    state = db.get_sync_state("BUDGETBAKERS")
+    configured = adapter.is_configured()
+    if not configured:
+        return {
+            "source": "BUDGETBAKERS",
+            "configured": False,
+            "status": "NOT_CONFIGURED",
+            "message": "Configure BUDGETBAKERS_API_TOKEN en .env para conectar Wallet.",
+            "sync_state": state,
+        }
+    return {
+        "source": "BUDGETBAKERS",
+        "configured": True,
+        "status": state.get("status") if state.get("status") != "NOT_CONFIGURED" else "CONFIGURED",
+        "last_success_at": state.get("last_success_at"),
+        "last_error": state.get("last_error"),
+        "last_data_change_at": state.get("last_data_change_at"),
+        "sync_in_progress": state.get("sync_in_progress"),
+        "sync_state": state,
+    }
+
+@app.post("/api/budgetbakers/test")
+def test_budgetbakers_connection():
+    try:
+        result = get_budgetbakers_adapter().test_connection()
+        if result.get("status") == "CONNECTED":
+            db.set_sync_state("BUDGETBAKERS", {
+                "status": "CONNECTED",
+                "last_sync_at": datetime.datetime.now().isoformat(),
+                "last_error": None,
+                "last_data_change_at": result.get("last_data_change_at"),
+                "sync_in_progress": result.get("sync_in_progress"),
+            })
+        return result
+    except Exception as exc:
+        return budgetbakers_error_response(exc)
+
+def _budgetbakers_category_mappings() -> Dict[str, str]:
+    legacy = {
+        item["bb_category_name"]: item["local_category"]
+        for item in db.get_budgetbakers_mappings()
+        if item.get("is_active")
+    }
+    generic = {
+        item["external_name"] or item["external_id"]: item["local_id"]
+        for item in db.get_source_mappings("BUDGETBAKERS", "category")
+        if item.get("is_active") and item.get("local_id")
+    }
+    return {**legacy, **generic}
+
+@app.post("/api/budgetbakers/preview")
+def preview_budgetbakers_import():
+    try:
+        adapter = get_budgetbakers_adapter()
+        if not adapter.is_configured():
+            raise BudgetBakersAuthError("BUDGETBAKERS_API_TOKEN no está configurado.")
+        accounts_result = adapter.fetch_accounts()
+        records_result = adapter.fetch_records()
+        categories_result = adapter.fetch_categories()
+        try:
+            budgets_result = adapter.fetch_budgets()
+        except BudgetBakersNetworkError:
+            budgets_result = {"items": [], "pages": 0, "meta": {}, "warning": "Wallet budgets no disponible en esta API/cuenta."}
+        try:
+            standing_orders_result = adapter.fetch_standing_orders()
+        except BudgetBakersNetworkError:
+            standing_orders_result = {"items": [], "pages": 0, "meta": {}, "warning": "Wallet standing orders no disponible en esta API/cuenta."}
+        normalized_accounts = adapter.normalize_accounts(accounts_result["items"])
+        account_mappings = db.get_source_mapping_lookup("BUDGETBAKERS", "account")
+        normalized_records = adapter.normalize_records(records_result["items"], category_mappings=_budgetbakers_category_mappings(), account_mappings=account_mappings)
+        normalized_categories = adapter.normalize_categories(categories_result["items"])
+        normalized_budgets = adapter.normalize_budgets(budgets_result["items"])
+        normalized_standing_orders = adapter.normalize_standing_orders(standing_orders_result["items"])
+        for category in normalized_categories:
+            db.save_source_mapping({
+                "source": "BUDGETBAKERS",
+                "external_type": "category",
+                "external_id": category["external_id"],
+                "external_name": category["external_name"],
+                "local_id": _budgetbakers_category_mappings().get(category["external_name"]),
+                "local_type": "category",
+                "is_active": True,
+            })
+        meta = {
+            **accounts_result.get("meta", {}),
+            **records_result.get("meta", {}),
+            **categories_result.get("meta", {}),
+            **budgets_result.get("meta", {}),
+            **standing_orders_result.get("meta", {}),
+        }
+        db.set_sync_state("BUDGETBAKERS", {
+            "status": "PREVIEW_READY",
+            "last_sync_at": datetime.datetime.now().isoformat(),
+            "last_error": None,
+            "last_data_change_at": meta.get("last_data_change_at"),
+            "last_data_change_rev": meta.get("last_data_change_rev"),
+            "sync_in_progress": meta.get("sync_in_progress"),
+        })
+        preview = db.preview_canonical_import(normalized_accounts, normalized_records, "BUDGETBAKERS")
+        return {
+            **preview,
+            "accounts": normalized_accounts,
+            "transactions": normalized_records,
+            "categories": normalized_categories,
+            "budgets": normalized_budgets,
+            "standing_orders": normalized_standing_orders,
+            "meta": meta,
+            "optional_warnings": [item.get("warning") for item in (budgets_result, standing_orders_result) if item.get("warning")],
+            "pages": {
+                "accounts": accounts_result.get("pages", 0),
+                "records": records_result.get("pages", 0),
+                "categories": categories_result.get("pages", 0),
+                "budgets": budgets_result.get("pages", 0),
+                "standing_orders": standing_orders_result.get("pages", 0),
+            },
+        }
+    except Exception as exc:
+        return budgetbakers_error_response(exc)
+
+@app.post("/api/budgetbakers/import")
+def import_budgetbakers_preview(payload: CanonicalImportInput):
+    try:
+        return db.import_canonical_import(payload.accounts, payload.transactions, "BUDGETBAKERS", payload.meta)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.get("/api/source-mappings")
+def get_source_mappings(source: str = Query("BUDGETBAKERS"), external_type: Optional[str] = None):
+    return db.get_source_mappings(source, external_type)
+
+@app.post("/api/source-mappings")
+def save_source_mapping(mapping: SourceMappingInput):
+    return db.save_source_mapping(mapping.model_dump())
+
+@app.post("/api/budgetbakers/import-plan")
+def import_budgetbakers_plan(payload: Dict[str, Any]):
+    imported_budgets = 0
+    imported_orders = 0
+    for budget in payload.get("budgets", []):
+        db.save_budget({**budget, "source": "BUDGETBAKERS"})
+        imported_budgets += 1
+    for order in payload.get("standing_orders", []):
+        db.upsert_recurring_rule({**order, "source": "BUDGETBAKERS", "status": "confirmed"})
+        imported_orders += 1
+    return {"imported_budgets": imported_budgets, "imported_standing_orders": imported_orders}
+
+@app.get("/api/reconciliation")
+def get_reconciliation(source: str = Query("BUDGETBAKERS")):
+    return db.get_reconciliation_summary(source)
+
+@app.get("/api/understand")
+def get_understand(period: str = Query("current_month", pattern="^(current_month|previous_month|last_30_days)$")):
+    transactions = db.get_transactions(limit=5000)
+    accounts = db.get_accounts()
+    budgets = db.get_budgets()
+    reconciliation = db.get_reconciliation_summary("BUDGETBAKERS")
+    recurring = get_recurring_transactions(transactions)
+    budget_risks = get_budget_risks(transactions, budgets)
+    sync_state = db.get_sync_state("BUDGETBAKERS")
+    return {
+        "what_changed": get_financial_changes(transactions, period),
+        "recurring": recurring,
+        "budget_burn": budget_risks,
+        "cashflow_forecast": get_cashflow_forecast(accounts, transactions, recurring),
+        "action_items": get_action_items(reconciliation, budget_risks, recurring, sync_state),
+        "reconciliation": reconciliation,
+        "action_events": db.get_action_events(limit=20),
+    }
+
+@app.get("/api/monthly-review")
+def monthly_review(period: Optional[str] = None):
+    return get_monthly_review(
+        transactions=db.get_transactions(limit=5000),
+        accounts=db.get_accounts(),
+        budgets=db.get_budgets(),
+        stored_recurring=db.get_recurring_rules(include_rejected=True),
+        reconciliation=db.get_reconciliation_summary("BUDGETBAKERS"),
+        period=period,
+    )
+
+@app.post("/api/monthly-review/snapshot")
+def save_monthly_review_snapshot(period: Optional[str] = None):
+    review = monthly_review(period)
+    return db.save_monthly_review_snapshot(review["period"], review)
+
+@app.get("/api/monthly-review/snapshots")
+def get_monthly_review_snapshots():
+    return db.get_monthly_review_snapshots()
+
 @app.get("/api/budgetbakers/mappings")
 def get_bb_mappings():
     return db.get_budgetbakers_mappings()
@@ -292,20 +684,9 @@ def get_bb_mappings():
 @app.post("/api/budgetbakers/sync")
 def trigger_bb_sync(force_refresh: bool = False):
     """
-    Synchronizes records from BudgetBakers API with cache and 25-request rate-limit protection.
+    Legacy mock sync is disabled. Use /api/budgetbakers/preview and /api/budgetbakers/import.
     """
-    try:
-        fetch_result = bb_client.fetch_records(force_refresh=force_refresh)
-        sync_result = bb_client.sync_to_transactions(fetch_result["data"])
-        quota = bb_client.get_quota_status()
-        return {
-            "fetch_source": fetch_result.get("source"),
-            "warning": fetch_result.get("warning"),
-            "sync_details": sync_result,
-            "daily_quota": quota
-        }
-    except DailyQuotaExceededError as e:
-        raise HTTPException(status_code=429, detail=str(e))
+    raise HTTPException(status_code=410, detail="La sincronización demo fue desactivada. Use preview/import real de BudgetBakers.")
 
 @app.post("/api/budgetbakers/mappings")
 def update_mapping(data: MappingUpdateInput):

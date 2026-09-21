@@ -76,6 +76,8 @@ export interface DashboardSummary {
   temporal_evolution: EvolutionPoint[];
   geopolitical_risk: GeopoliticalRisk[];
   daily_api_quota: DailyQuota;
+  data_source?: DataSourceInfo;
+  cashflow?: CashflowSummary;
 }
 
 export interface Asset {
@@ -91,9 +93,99 @@ export interface Asset {
   is_watchlist: boolean | number;
   logo_url?: string;
   target_allocation_pct?: number;
+  source?: DataSource;
   unrealized_pnl_pct?: number;
   unrealized_pnl_usd?: number;
   market_value_usd?: number;
+}
+
+export type DataSource = 'DEMO' | 'MANUAL' | 'CSV' | 'BUDGETBAKERS' | 'ETORO' | 'GOOGLE' | 'MARKET_DATA';
+
+export interface DataSourceInfo {
+  db_path: string;
+  mode: 'DEMO' | 'REAL';
+  profile?: 'DEMO' | 'PERSONAL';
+  seed_demo: boolean;
+  schema?: {
+    latest_version?: string | null;
+    migrations?: Array<{ version: string; filename: string; checksum?: string; applied_at?: string }>;
+  };
+}
+
+export interface BackupValidation {
+  valid: boolean;
+  path: string;
+  tables: string[];
+  latest_version?: string | null;
+  migrations: Array<{ version: string; filename: string; applied_at?: string }>;
+}
+
+export interface BackupResult {
+  generated_at?: string;
+  db_backup_path?: string;
+  status?: string;
+  restored_from?: string;
+  pre_restore_backup_path?: string | null;
+  validation?: BackupValidation;
+}
+
+export interface CashflowSummary {
+  income: number;
+  expenses: number;
+  cashflow: number;
+}
+
+export interface Account {
+  id: string;
+  name: string;
+  account_type: string;
+  currency: string;
+  opening_balance: number;
+  current_balance: number;
+  source: DataSource;
+  external_id?: string;
+  last_synced_at?: string;
+  is_active: boolean | number;
+}
+
+export interface Transaction {
+  id: string;
+  account_id?: string;
+  account_name?: string;
+  amount: number;
+  category: string;
+  date: string;
+  description: string;
+  currency: string;
+  source: DataSource;
+  external_id?: string;
+}
+
+export interface Category {
+  id: string;
+  name: string;
+  flow_type: 'INCOME' | 'EXPENSE' | 'TRANSFER';
+  source: DataSource;
+}
+
+export interface Budget {
+  id: string;
+  category: string;
+  monthly_limit: number;
+  currency: string;
+  source: DataSource;
+  period: string;
+  is_active: boolean | number;
+  external_id?: string;
+}
+
+export interface CsvImportResult {
+  accepted_rows: Partial<Transaction>[];
+  rejected_rows: Array<{ row_number: number; row: Record<string, string>; error: string }>;
+  accepted_count: number;
+  rejected_count: number;
+  imported_count?: number;
+  duplicate_count?: number;
 }
 
 export interface InvestmentThesis {
@@ -152,4 +244,110 @@ export interface BudgetBakersMapping {
   local_category: string;
   flow_type: 'INCOME' | 'EXPENSE' | 'TRANSFER';
   is_active: boolean | number;
+}
+
+export interface BudgetBakersStatus {
+  source: 'BUDGETBAKERS';
+  configured: boolean;
+  status: string;
+  message?: string;
+  last_success_at?: string;
+  last_error?: string;
+  last_data_change_at?: string;
+  sync_in_progress?: string;
+}
+
+export interface BudgetBakersPreview {
+  source: 'BUDGETBAKERS';
+  accounts_detected: number;
+  new_accounts: number;
+  existing_accounts: number;
+  records_found: number;
+  accepted_rows: Partial<Transaction>[];
+  rejected_rows: Array<{ row_number: number; row: Record<string, unknown>; error: string }>;
+  accepted_count: number;
+  rejected_count: number;
+  duplicate_count: number;
+  new_transaction_count: number;
+  unmapped_accounts: string[];
+  unknown_currencies: string[];
+  date_range: { from?: string | null; to?: string | null };
+  accounts: Partial<Account>[];
+  transactions: Partial<Transaction>[];
+  budgets?: Partial<Budget>[];
+  standing_orders?: Partial<RecurringRule>[];
+  meta: Record<string, unknown>;
+  imported_count?: number;
+  account_imported_count?: number;
+  updated_count?: number;
+}
+
+export interface SourceMapping {
+  id?: string;
+  source: DataSource;
+  external_type: 'account' | 'category';
+  external_id: string;
+  external_name?: string;
+  local_id?: string;
+  local_type?: string;
+  is_active?: boolean | number;
+}
+
+export interface ReconciliationSummary {
+  source: DataSource;
+  unmapped_accounts: Array<{ external_id: string; external_name: string; local_id?: string }>;
+  unmapped_categories: Array<{ external_name: string; count: number }>;
+  no_category_count: number;
+  transaction_count: number;
+}
+
+export interface UnderstandSummary {
+  what_changed: {
+    period: string;
+    range: { from: string; to: string };
+    facts: { income: number; expenses: number; cashflow: number; savings_rate_pct: number };
+    variation: { income: number; expenses: number; cashflow: number; savings_rate_pct: number };
+    category_changes: Array<{ category: string; delta: number; current: number; previous: number }>;
+    largest_transactions: Transaction[];
+    interpretation: string[];
+  };
+  recurring: Array<{ merchant: string; category: string; typical_amount: number; frequency: string; confidence: string; occurrences: number; last_seen: string; next_expected?: string }>;
+  budget_burn: Array<{ category: string; budget: number; spent: number; remaining: number; spent_pct: number; month_elapsed_pct: number; projected_close: number; status: string }>;
+  cashflow_forecast: { starting_balance: number; expected_inflows: number; expected_outflows: number; projected_balance: number; uncertainty: string; range: { from: string; to: string } };
+  action_items: Array<{ type: string; severity: string; title: string; why: string; action: string }>;
+  reconciliation: ReconciliationSummary;
+}
+
+export interface RecurringRule {
+  id: string;
+  merchant: string;
+  category: string;
+  account_id?: string;
+  typical_amount: number;
+  frequency: string;
+  status: 'detected' | 'confirmed' | 'rejected' | 'ignored';
+  source: string;
+  external_id?: string;
+  next_expected?: string;
+  last_seen?: string;
+}
+
+export interface MonthlyReview {
+  period: string;
+  range: { from: string; to: string };
+  facts: {
+    income: number;
+    expenses: number;
+    cashflow: number;
+    savings_rate_pct: number;
+    available_net_worth: number;
+    previous_income: number;
+    previous_expenses: number;
+    previous_cashflow: number;
+  };
+  budget_variances: Array<{ category: string; budget: number; spent: number; variance: number; variance_pct: number; status: string; source: string }>;
+  recurring: { confirmed: RecurringRule[]; detected: Array<{ merchant: string; typical_amount: number; confidence: string; frequency: string; next_expected?: string }> };
+  upcoming_obligations: Array<{ merchant: string; amount: number; category: string; date: string; source: string }>;
+  forecast: UnderstandSummary['cashflow_forecast'];
+  action_items: Array<{ type: string; severity: string; reason: string; action: string; reference: Record<string, unknown> }>;
 }

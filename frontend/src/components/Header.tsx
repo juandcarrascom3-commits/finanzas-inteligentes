@@ -9,6 +9,8 @@ interface HeaderProps {
   quota?: DailyQuota;
   onRefresh: () => void;
   isLoading: boolean;
+  privacyMode: boolean;
+  setPrivacyMode: (value: boolean) => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -17,7 +19,9 @@ export const Header: React.FC<HeaderProps> = ({
   exchangeRate,
   quota,
   onRefresh,
-  isLoading
+  isLoading,
+  privacyMode,
+  setPrivacyMode
 }) => {
   return (
     <header className="border-b border-gray-800 bg-[#0E1526]/80 backdrop-blur sticky top-0 z-40 px-4 lg:px-8 py-3.5 transition-all">
@@ -32,7 +36,10 @@ export const Header: React.FC<HeaderProps> = ({
               <h1 className="text-lg font-bold tracking-tight text-white flex items-center gap-2">
                 Finanzas Inteligentes
                 <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  3-Tier Layout
+                  v0.4 Local
+                </span>
+                <span className="text-[10px] uppercase font-semibold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/20">
+                  Manual / CSV / Wallet
                 </span>
               </h1>
               <p className="text-xs text-gray-400 hidden sm:block">
@@ -70,7 +77,7 @@ export const Header: React.FC<HeaderProps> = ({
                 : 'bg-gray-800/80 text-gray-300 border-gray-700'
             }`}>
               <Activity className="w-3.5 h-3.5" />
-              <span>API Ingestión:</span>
+              <span>Ingestión demo:</span>
               <span className="font-mono font-bold text-white">
                 {quota.used_requests}/{quota.max_quota}
               </span>
@@ -79,6 +86,17 @@ export const Header: React.FC<HeaderProps> = ({
           )}
 
           {/* Currency Toggle */}
+          <button
+            onClick={() => setPrivacyMode(!privacyMode)}
+            className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition-colors ${
+              privacyMode
+                ? 'bg-emerald-600 text-white border-emerald-500'
+                : 'bg-gray-800 text-gray-300 border-gray-700 hover:bg-gray-700'
+            }`}
+          >
+            Privacidad
+          </button>
+
           <div className="flex items-center bg-gray-900 p-0.5 rounded-lg border border-gray-800">
             <button
               onClick={() => setCurrency('USD')}

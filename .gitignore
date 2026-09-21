@@ -2,7 +2,6 @@
 node_modules/
 dist/
 dist-ssr/
-build/
 *.local
 
 # Backend (Python / FastAPI)
@@ -13,20 +12,18 @@ env/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.tmp/
 
 # Variables de entorno y llaves privadas
 .env
 .env.local
 .env.*.local
-!.env.example
 
-# Bases locales y datos financieros personales
-database/*.db
+# Personal finance data
 database/*.local.db
 database/*.personal.db
+database/finanzas.db
 database/backups/
-*backup*
-*export*
 
 # Archivos de sistema y caché de editores
 .DS_Store

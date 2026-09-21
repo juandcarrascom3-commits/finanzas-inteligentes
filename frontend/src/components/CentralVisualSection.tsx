@@ -7,13 +7,15 @@ interface CentralVisualSectionProps {
   evolutionData: EvolutionPoint[];
   currency: 'USD' | 'COP';
   exchangeRate: number;
+  privacyMode?: boolean;
 }
 
 export const CentralVisualSection: React.FC<CentralVisualSectionProps> = ({
   treemapData,
   evolutionData,
   currency,
-  exchangeRate
+  exchangeRate,
+  privacyMode = false
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'treemap' | 'sectors'>('treemap');
@@ -35,6 +37,7 @@ export const CentralVisualSection: React.FC<CentralVisualSectionProps> = ({
   };
 
   const formatMoney = (usdVal: number) => {
+    if (privacyMode) return '••••';
     if (currency === 'USD') {
       return `$${usdVal.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} USD`;
     }

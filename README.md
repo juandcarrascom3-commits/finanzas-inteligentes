@@ -1,25 +1,23 @@
-# Finanzas Inteligentes: Dashboard de Riqueza, Riesgo y Panorama
+# Finanzas Inteligentes
 
-Plataforma integral de gestión patrimonial, proyección financiera y control de riesgo con arquitectura responsiva de tres niveles, basada en los bocetos estratégicos del usuario (`JERARQUIA`, `DISTRIBUCION`, `ESTILO`, `INFORME`).
+Dashboard local de finanzas personales en fase v0.4. Puede trabajar con datos DEMO/seed para desarrollo o con una base local personal vacia configurada por entorno. Wallet by BudgetBakers puede conectarse en modo real de solo lectura mediante token.
 
 ---
 
-## 🏛️ Arquitectura del Sistema (3 Niveles)
+## Arquitectura actual
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│ HEADER: Finanzas Inteligentes | Switcher USD ($) / COP ($) | Quota Meter 25 req/día    │
+│ HEADER: Finanzas Inteligentes | Switcher USD/COP | Privacidad | Actualizar             │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│ TIER 1: TOP KPI ROW (Resumen de Alto Nivel)                                            │
+│ OVERVIEW: KPIs, allocation, What Changed, Action Center                                 │
 │ • Patrimonio Neto Total (USD / COP) • Tasa de Ahorro Mensual (Meta 30%)                │
 │ • Rendimiento TWR vs MWR (TIR)      • Métricas de Riesgo (Beta, Sharpe, Max Drawdown)  │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│ TIER 2: CENTRAL VISUAL SECTION (Visualizaciones Clave)                                 │
-│ • Asset Allocation Treemap: Jerarquía Tipo de Activo -> Sector Económico -> Tickers    │
-│ • Evolución Temporal: Curva de Crecimiento vs. S&P 500 (Base 100) y Spread de Alfa     │
+│ PLAN: budgets, recurrentes, forecast y cierre mensual                                  │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│ TIER 3: BOTTOM TAB SECTION & GRANULAR CONTROLS (Pestañas Granulares)                   │
-│ [ Panorama ]  [ Lista de Activos ]  [ Tesis de Inversión ]  [ Ingestión API ] [ Informe]│
+│ INVEST: portfolio y tesis                                                              │
+│ DATOS: cuentas, activos, transacciones, CSV, Wallet, reconciliacion y backup           │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -28,33 +26,80 @@ Plataforma integral de gestión patrimonial, proyección financiera y control de
 ## 🚀 Requisitos y Puesta en Marcha
 
 ### 1. Entorno de Ejecución
-- **Python 3.12+** (Backend FastAPI, Motor Cuantitativo y SQLite)
-- **Node.js LTS (v24+) y npm** (Frontend Vite + React + Tailwind CSS)
+- Python 3.12+
+- Node.js LTS y npm
+
+Copie `.env.example` a `.env` para usar datos personales locales:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Por defecto recomendado para uso real:
+
+```text
+FINANCE_DB_PATH=database/finance.local.db
+FINANCE_SEED_DEMO=0
+BUDGETBAKERS_API_TOKEN=
+BUDGETBAKERS_BASE_URL=https://rest.budgetbakers.com/wallet
+```
+
+`database/*.local.db`, `database/*.personal.db` y `database/backups/` no deben versionarse. No guarde tokens reales en el repositorio.
+
+La estrategia de migraciones SQLite es incremental:
+- `database/migrations/001_sqlite_local.sql`: baseline local.
+- `database/migrations/002_sqlite_operational_hardening.sql`: indices operativos.
+- La tabla `schema_migrations` registra version, archivo, checksum y fecha aplicada. No edite migraciones ya aplicadas; agregue una nueva.
 
 ### 2. Iniciar Backend (FastAPI + SQLite / Supabase Parity)
 ```powershell
-# Activar entorno virtual de Python
+# Crear y activar entorno virtual
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 
+# Instalar dependencias
+pip install -r backend\requirements.txt
+
 # Ejecutar servidor FastAPI en puerto 8000
-.\.venv\Scripts\uvicorn.exe backend.app:app --host 127.0.0.1 --port 8000 --reload
+uvicorn backend.app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 El backend expone:
 - `GET /api/dashboard`: KPIs, Treemap de asignación, curva de evolución temporal y estado de cuota.
 - `GET /api/panorama`: Proyecciones a 3, 6, 12 meses y checklist semafórico presupuestal.
+- `GET/POST/DELETE /api/accounts`: cuentas personales.
 - `GET /api/assets`: Grilla de activos (Portafolio vs Activos en Observación).
+- `POST/DELETE /api/assets`: alta, edicion y eliminacion de activos.
+- `GET/POST/DELETE /api/transactions`: transacciones personales.
+- `POST /api/import/transactions/preview`: preview CSV.
+- `POST /api/import/transactions`: importacion CSV.
+- `GET /api/backup`: export local de backup con metadata de esquema.
+- `POST /api/backup/validate`: valida integridad SQLite y tablas requeridas.
+- `POST /api/backup/restore`: restaura un backup validado y crea copia pre-restore.
+- `GET /api/budgetbakers/status`: estado de Wallet sin exponer token.
+- `POST /api/budgetbakers/test`: prueba de conexion real.
+- `POST /api/budgetbakers/preview`: lee cuentas/registros y devuelve preview sin guardar.
+- `POST /api/budgetbakers/import`: confirma e importa el preview.
 - `POST /api/theses`: Formulario del Filtro Humano con variables cualitativas de Investing Pro.
 - `POST /api/simulate-purchase`: **Guardrail de Seguridad**: Bloquea órdenes de compra si no se aprueba el checklist humano.
-- `POST /api/budgetbakers/sync`: Ingestor desacoplado con límite estricto de 25 peticiones diarias y caché SHA-256.
 
-### 3. Iniciar Frontend (Vite + React)
+### 3. Iniciar Frontend Principal (Vite + React)
 ```powershell
 cd frontend
-$env:PATH = "C:\Program Files\nodejs;" + $env:PATH
-npm.cmd run dev
+npm install
+npm run dev
 ```
 La aplicación web abrirá en `http://localhost:3000`.
+
+### 4. Verificacion
+```powershell
+# Backend
+pytest backend\tests -q
+
+# Frontend
+cd frontend
+npm run build
+```
 
 ---
 
@@ -70,7 +115,16 @@ Si la tesis no cumple los 5 criterios, el botón de simulación y compra queda *
 
 ---
 
-## 🔄 Ingestión REST API & Protección de Cuota Gratuita (BudgetBakers)
-- **Límite Estricto**: 25 peticiones por día registradas en la tabla `api_daily_quota`.
-- **Caché Hashed**: Las llamadas idénticas se resuelven en memoria/SQLite durante 6 horas sin debitar la cuota diaria.
-- **Modo Fallback**: En caso de agotamiento de cuota, el sistema entrega la última respuesta en caché con una alerta visual de seguridad.
+## Ingestion Wallet
+Wallet by BudgetBakers usa `BUDGETBAKERS_API_TOKEN` en el backend y no expone el token al navegador. El flujo es: probar conexion, generar preview, revisar conteos y confirmar importacion. La importacion es idempotente por `source + external_id`.
+
+## CSV de transacciones
+Columnas soportadas: `date`, `amount`, `category`, `description`, `currency`, `account_id`, `external_id`.
+
+Ejemplo:
+
+```csv
+date,amount,category,description,currency,external_id
+2026-09-21,2500,Ingresos,Nomina,USD,pay-001
+2026-09-22,-45.80,Alimentacion,Supermercado,USD,food-001
+```

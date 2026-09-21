@@ -23,7 +23,7 @@ class DailyQuotaExceededError(Exception):
 class BudgetBakersClient:
     def __init__(self, db_path: str, api_token: Optional[str] = None):
         self.db_path = db_path
-        self.api_token = api_token or "DEMO_BUDGETBAKERS_TOKEN"
+        self.api_token = api_token or ""
 
     def _get_connection(self):
         conn = sqlite3.connect(self.db_path)
@@ -118,10 +118,10 @@ class BudgetBakersClient:
                         "cached_at": cached_row["cached_at"]
                     }
                 raise DailyQuotaExceededError(
-                    f"Se ha alcanzado el límite diario gratuito de {MAX_DAILY_QUOTA} peticiones hacia BudgetBakers API."
+                    f"Se ha alcanzado el límite diario demo de {MAX_DAILY_QUOTA} peticiones."
                 )
 
-            # 3. Simulate / Perform Network Ingestion
+            # 3. Simulate ingestion. Real BudgetBakers API access is intentionally not enabled in v0.1 phase 0.
             # Generates realistic synchronized transaction payloads matching BudgetBakers schema
             payload = self._generate_mock_budgetbakers_payload(endpoint, params)
 
@@ -143,7 +143,7 @@ class BudgetBakersClient:
             self._increment_quota(conn, today_key)
 
             return {
-                "source": "NETWORK_SUCCESS",
+                "source": "MOCK_SUCCESS",
                 "endpoint": endpoint,
                 "data": payload,
                 "cached_at": now_dt.isoformat(),

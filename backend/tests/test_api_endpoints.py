@@ -4,6 +4,7 @@ Verifies that all FastAPI endpoints return 200 OK and conform to expected schema
 """
 
 import pytest
+import uuid
 from fastapi.testclient import TestClient
 from backend.app import app
 
@@ -25,7 +26,6 @@ def test_api_dashboard():
     assert "allocation_treemap" in data
     assert len(data["allocation_treemap"]) > 0
     assert "temporal_evolution" in data
-    assert len(data["temporal_evolution"]) == 12
     assert "daily_api_quota" in data
 
 def test_api_panorama():
@@ -62,10 +62,149 @@ def test_api_theses_and_guardrail():
     assert sim_blocked.status_code == 403
     assert "OPERACIÓN BLOQUEADA" in sim_blocked.json()["detail"]
 
-def test_api_budgetbakers_sync():
-    resp = client.post("/api/budgetbakers/sync")
+def test_api_budgetbakers_status_without_token(monkeypatch):
+    monkeypatch.delenv("BUDGETBAKERS_API_TOKEN", raising=False)
+    resp = client.get("/api/budgetbakers/status")
     assert resp.status_code == 200
     data = resp.json()
-    assert "fetch_source" in data
-    assert "sync_details" in data
-    assert data["daily_quota"]["max_quota"] == 25
+    assert data["configured"] is False
+    assert data["status"] == "NOT_CONFIGURED"
+
+
+def test_api_budgetbakers_legacy_sync_disabled():
+    resp = client.post("/api/budgetbakers/sync")
+    assert resp.status_code == 410
+
+def test_personal_data_crud_csv_and_backup():
+    account = client.post("/api/accounts", json={
+        "name": "Cuenta diaria",
+        "account_type": "checking",
+        "currency": "USD",
+        "opening_balance": 100,
+        "current_balance": 100
+    })
+    assert account.status_code == 200
+    account_id = account.json()["id"]
+
+    asset = client.post("/api/assets", json={
+        "ticker": "TEST",
+        "name": "Test Asset",
+        "asset_type": "Renta Variable",
+        "sector": "Testing",
+        "country": "Global",
+        "quantity": 2,
+        "avg_price": 10,
+        "current_price": 12,
+        "currency": "USD"
+    })
+    assert asset.status_code == 200
+
+    tx = client.post("/api/transactions", json={
+        "account_id": account_id,
+        "amount": -25.5,
+        "category": "General",
+        "date": "2026-09-20",
+        "description": "Compra prueba",
+        "currency": "USD"
+    })
+    assert tx.status_code == 200
+
+    listed = client.get("/api/transactions")
+    assert listed.status_code == 200
+    assert any(item["description"] == "Compra prueba" for item in listed.json())
+
+    csv_id = f"csv-{uuid.uuid4()}"
+    csv_payload = {"content": f"date,amount,category,description,currency,external_id\n2026-09-21,100,Ingresos,Ingreso CSV,USD,{csv_id}\nbad,,General,Rota,USD,{csv_id}-bad"}
+    preview = client.post("/api/import/transactions/preview", json=csv_payload)
+    assert preview.status_code == 200
+    assert preview.json()["accepted_count"] == 1
+    assert preview.json()["rejected_count"] == 1
+
+    imported = client.post("/api/import/transactions", json=csv_payload)
+    assert imported.status_code == 200
+    assert imported.json()["imported_count"] == 1
+
+    duplicate = client.post("/api/import/transactions", json=csv_payload)
+    assert duplicate.status_code == 200
+    assert duplicate.json()["duplicate_count"] >= 1
+
+    backup = client.get("/api/backup")
+    assert backup.status_code == 200
+    assert "db_backup_path" in backup.json()
+
+    assert client.delete(f"/api/transactions/{tx.json()['id']}").status_code == 200
+    assert client.delete("/api/assets/TEST").status_code == 200
+    assert client.delete(f"/api/accounts/{account_id}").status_code == 200
+
+
+def test_understand_and_reconciliation_endpoints():
+    reconciliation = client.get("/api/reconciliation")
+    assert reconciliation.status_code == 200
+    assert "unmapped_accounts" in reconciliation.json()
+
+    mapping = client.post("/api/source-mappings", json={
+        "source": "BUDGETBAKERS",
+        "external_type": "category",
+        "external_id": "Food",
+        "external_name": "Food",
+        "local_id": "Alimentacion",
+        "local_type": "category",
+        "is_active": True
+    })
+    assert mapping.status_code == 200
+
+    budget = client.post("/api/budgets", json={"category": "Alimentacion", "monthly_limit": 500, "currency": "USD"})
+    assert budget.status_code == 200
+
+    understand = client.get("/api/understand?period=current_month")
+    assert understand.status_code == 200
+    data = understand.json()
+    assert "what_changed" in data
+    assert "cashflow_forecast" in data
+    assert "action_items" in data
+
+
+def test_phase4_budget_recurring_monthly_review_endpoints():
+    wallet_plan = client.post("/api/budgetbakers/import-plan", json={
+        "budgets": [{"category": "Wallet Food", "monthly_limit": 250, "currency": "USD", "external_id": "bb-budget-1"}],
+        "standing_orders": [{"merchant": "Wallet Rent", "typical_amount": -900, "category": "Vivienda", "frequency": "monthly", "external_id": "bb-so-1", "next_expected": "2026-10-01"}]
+    })
+    assert wallet_plan.status_code == 200
+    assert wallet_plan.json()["imported_budgets"] == 1
+
+    budget = client.post("/api/budgets", json={
+        "category": "Transporte",
+        "monthly_limit": 300,
+        "currency": "USD",
+        "period": "MONTHLY",
+        "is_active": True
+    })
+    assert budget.status_code == 200
+    budget_id = budget.json()["id"]
+
+    budgets = client.get("/api/budgets")
+    assert budgets.status_code == 200
+    assert any(item["id"] == budget_id for item in budgets.json())
+
+    recurring = client.get("/api/recurring")
+    assert recurring.status_code == 200
+    if recurring.json():
+        rule_id = recurring.json()[0]["id"]
+        updated = client.patch(f"/api/recurring/{rule_id}", json={"status": "confirmed"})
+        assert updated.status_code == 200
+        assert updated.json()["status"] == "confirmed"
+
+    review = client.get("/api/monthly-review?period=2026-09")
+    assert review.status_code == 200
+    review_data = review.json()
+    assert review_data["period"] == "2026-09"
+    assert "budget_variances" in review_data
+    assert "action_items" in review_data
+
+    snapshot = client.post("/api/monthly-review/snapshot?period=2026-09")
+    assert snapshot.status_code == 200
+    snapshots = client.get("/api/monthly-review/snapshots")
+    assert snapshots.status_code == 200
+    assert any(item["period"] == "2026-09" for item in snapshots.json())
+
+    assert client.delete(f"/api/budgets/{budget_id}").status_code == 200

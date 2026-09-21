@@ -67,7 +67,7 @@ def test_initial_quota_and_caching(temp_db):
 
     # 1. First fetch (network / mock ingestion)
     resp1 = client.fetch_records(endpoint="/api/v1/records")
-    assert resp1["source"] == "NETWORK_SUCCESS"
+    assert resp1["source"] == "MOCK_SUCCESS"
     assert len(resp1["data"]) > 0
 
     # Verify quota decremented

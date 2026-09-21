@@ -49,13 +49,13 @@ export const IngestionTab: React.FC<IngestionTabProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-white tracking-tight flex items-center gap-2">
-                Gestor de Sincronización REST API (BudgetBakers Wallet)
+                Gestor de Sincronización DEMO (BudgetBakers Wallet)
                 <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
                   Desacoplado &bull; Offline-First
                 </span>
               </h3>
               <p className="text-xs text-gray-400">
-                Protección estricta de cuota gratuita diaria (Máximo 25 peticiones) mediante hashing SHA-256 y caché persistente
+                Simulación local con cuota diaria, hashing SHA-256 y caché persistente. No conecta todavía con Wallet real.
               </p>
             </div>
           </div>
@@ -69,7 +69,7 @@ export const IngestionTab: React.FC<IngestionTabProps> = ({
                 onChange={(e) => setForceRefresh(e.target.checked)}
                 className="accent-emerald-500 rounded"
               />
-              <span>Forzar red (Consume cuota)</span>
+              <span>Forzar demo (consume cuota)</span>
             </label>
 
             <button
