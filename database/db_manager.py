@@ -570,8 +570,113 @@ class DatabaseManager:
                 "quote_ttl_minutes": 720,
                 "stale_after_days": 7,
                 "history_lookback_days": 365,
-                "fx_max_age_days": 5,
-            }
+            "fx_max_age_days": 5,
+        }
+
+    def get_symbol_mappings(self, provider: Optional[str] = None, internal_symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        if provider:
+            clauses.append("provider = ?")
+            params.append(provider.upper())
+        if internal_symbol:
+            clauses.append("internal_symbol = ?")
+            params.append(internal_symbol.upper())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.get_connection() as conn:
+            rows = conn.execute(f"SELECT * FROM market_symbol_mappings {where} ORDER BY internal_symbol, provider", params).fetchall()
+            return [dict(row) for row in rows]
+
+    def save_symbol_mapping(self, mapping: Dict[str, Any]) -> Dict[str, Any]:
+        payload = {
+            "id": mapping.get("id") or str(uuid.uuid4()),
+            "internal_symbol": mapping["internal_symbol"].strip().upper(),
+            "provider": (mapping.get("provider") or "YFINANCE").strip().upper(),
+            "provider_symbol": mapping["provider_symbol"].strip().upper(),
+            "instrument_type": (mapping.get("instrument_type") or "EQUITY").strip().upper(),
+            "expected_currency": (mapping.get("expected_currency") or "").strip().upper() or None,
+            "status": (mapping.get("status") or "ACTIVE").strip().upper(),
+            "notes": mapping.get("notes") or "",
+        }
+        with self.get_connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM market_symbol_mappings WHERE internal_symbol = ? AND provider = ?",
+                (payload["internal_symbol"], payload["provider"]),
+            ).fetchone()
+            if existing:
+                payload["id"] = existing["id"]
+            conn.execute(
+                """
+                INSERT INTO market_symbol_mappings (
+                    id, internal_symbol, provider, provider_symbol, instrument_type,
+                    expected_currency, status, notes, updated_at
+                )
+                VALUES (
+                    :id, :internal_symbol, :provider, :provider_symbol, :instrument_type,
+                    :expected_currency, :status, :notes, datetime('now')
+                )
+                ON CONFLICT(internal_symbol, provider) DO UPDATE SET
+                    provider_symbol = excluded.provider_symbol,
+                    instrument_type = excluded.instrument_type,
+                    expected_currency = excluded.expected_currency,
+                    status = excluded.status,
+                    notes = excluded.notes,
+                    updated_at = datetime('now')
+                """,
+                payload,
+            )
+            conn.commit()
+        return self.get_symbol_mappings(provider=payload["provider"], internal_symbol=payload["internal_symbol"])[0]
+
+    def get_price_authority(self, ticker: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        if ticker:
+            clauses.append("ticker = ?")
+            params.append(ticker.upper())
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.get_connection() as conn:
+            rows = conn.execute(f"SELECT * FROM price_authority {where} ORDER BY ticker", params).fetchall()
+            return [dict(row) for row in rows]
+
+    def save_price_authority(self, authority: Dict[str, Any]) -> Dict[str, Any]:
+        mode = (authority.get("authority_mode") or authority.get("mode") or "AUTO").upper()
+        if mode not in {"AUTO", "MANUAL"}:
+            raise ValueError("authority_mode must be AUTO or MANUAL.")
+        manual_price = authority.get("manual_price")
+        payload = {
+            "id": authority.get("id") or str(uuid.uuid4()),
+            "ticker": authority["ticker"].strip().upper(),
+            "authority_mode": mode,
+            "manual_price": float(manual_price) if manual_price not in {None, ""} else None,
+            "manual_currency": (authority.get("manual_currency") or authority.get("currency") or "").strip().upper() or None,
+            "manual_updated_at": authority.get("manual_updated_at") or (datetime.now().isoformat() if manual_price not in {None, ""} else None),
+            "notes": authority.get("notes") or "",
+        }
+        with self.get_connection() as conn:
+            existing = conn.execute("SELECT id FROM price_authority WHERE ticker = ?", (payload["ticker"],)).fetchone()
+            if existing:
+                payload["id"] = existing["id"]
+            conn.execute(
+                """
+                INSERT INTO price_authority (
+                    id, ticker, authority_mode, manual_price, manual_currency,
+                    manual_updated_at, notes, updated_at
+                )
+                VALUES (
+                    :id, :ticker, :authority_mode, :manual_price, :manual_currency,
+                    :manual_updated_at, :notes, datetime('now')
+                )
+                ON CONFLICT(ticker) DO UPDATE SET
+                    authority_mode = excluded.authority_mode,
+                    manual_price = excluded.manual_price,
+                    manual_currency = excluded.manual_currency,
+                    manual_updated_at = excluded.manual_updated_at,
+                    notes = excluded.notes,
+                    updated_at = datetime('now')
+                """,
+                payload,
+            )
+            conn.commit()
+        return self.get_price_authority(payload["ticker"])[0]
 
     def save_market_data_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
         current = self.get_market_data_config()
@@ -717,6 +822,37 @@ class DatabaseManager:
             if age > max_age_days:
                 return None
             return item
+
+    def import_fx_rates_csv(self, content: str, source: str = "MANUAL") -> Dict[str, Any]:
+        rows = self._parse_csv_rows(content)
+        accepted, rejected = [], []
+        for index, row in enumerate(rows, start=2):
+            try:
+                payload = {
+                    "base_currency": row.get("base") or row.get("base_currency"),
+                    "quote_currency": row.get("quote") or row.get("quote_currency"),
+                    "rate": float(row.get("rate") or ""),
+                    "rate_date": row.get("date") or row.get("rate_date"),
+                    "provider": row.get("provider") or source,
+                    "source": source,
+                }
+                if not payload["base_currency"] or not payload["quote_currency"] or not payload["rate_date"]:
+                    raise ValueError("base, quote and date are required")
+                datetime.fromisoformat(str(payload["rate_date"]).replace("Z", "+00:00"))
+                if payload["rate"] <= 0:
+                    raise ValueError("rate must be positive")
+                accepted.append(payload)
+            except Exception as exc:
+                rejected.append({"row_number": index, "row": row, "error": str(exc)})
+        for payload in accepted:
+            self.save_fx_rate(payload)
+        return {
+            "accepted_rows": accepted,
+            "rejected_rows": rejected,
+            "accepted_count": len(accepted),
+            "rejected_count": len(rejected),
+            "imported_count": len(accepted),
+        }
 
     def import_benchmark_prices_csv(self, content: str, benchmark_key: str, label: Optional[str] = None, source: str = "MANUAL") -> Dict[str, Any]:
         rows = self._parse_csv_rows(content)
@@ -1614,6 +1750,8 @@ class DatabaseManager:
             "fx_rates",
             "market_data_cache",
             "market_data_config",
+            "market_symbol_mappings",
+            "price_authority",
             "schema_migrations",
         ]
         with self.get_connection() as conn:

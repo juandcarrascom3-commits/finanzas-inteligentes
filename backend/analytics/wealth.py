@@ -444,15 +444,28 @@ def _allocate_contribution(rows: List[Dict[str, Any]], contribution_usd: float) 
 
 def compare_benchmark(history: Dict[str, Any], benchmark_prices: List[Dict[str, Any]]) -> Dict[str, Any]:
     series = history.get("series", [])
+    coverage = _benchmark_alignment_coverage(series, benchmark_prices)
     if len(series) < 2 or len(benchmark_prices) < 2:
-        return {"status": "INSUFFICIENT_DATA", "reason": "Need portfolio and benchmark history.", "excess_return_pct": None, "beta": {"status": "INSUFFICIENT_DATA", "value": None, "reason": "Need aligned observations."}}
+        return {"status": "INSUFFICIENT_DATA", "reason": "Need portfolio and benchmark history.", "excess_return_pct": None, "coverage": coverage, "beta": {"status": "INSUFFICIENT_DATA", "value": None, "reason": "Need aligned observations."}}
     benchmark_prices = sorted(benchmark_prices, key=lambda item: item["valuation_date"])
     portfolio_return = (float(series[-1]["portfolio_value_usd"]) / float(series[0]["portfolio_value_usd"]) - 1) if float(series[0]["portfolio_value_usd"]) > 0 else None
     benchmark_return = (float(benchmark_prices[-1]["price"]) / float(benchmark_prices[0]["price"]) - 1) if float(benchmark_prices[0]["price"]) > 0 else None
     if portfolio_return is None or benchmark_return is None:
-        return {"status": "INSUFFICIENT_DATA", "reason": "Initial values must be positive.", "excess_return_pct": None}
+        return {"status": "INSUFFICIENT_DATA", "reason": "Initial values must be positive.", "excess_return_pct": None, "coverage": coverage}
     beta = _benchmark_beta(series, benchmark_prices)
-    return {"status": "AVAILABLE", "portfolio_return_pct": round(portfolio_return * 100, 2), "benchmark_return_pct": round(benchmark_return * 100, 2), "excess_return_pct": round((portfolio_return - benchmark_return) * 100, 2), "beta": beta}
+    return {"status": "AVAILABLE", "portfolio_return_pct": round(portfolio_return * 100, 2), "benchmark_return_pct": round(benchmark_return * 100, 2), "excess_return_pct": round((portfolio_return - benchmark_return) * 100, 2), "coverage": coverage, "beta": beta}
+
+
+def _benchmark_alignment_coverage(series: List[Dict[str, Any]], benchmark_prices: List[Dict[str, Any]]) -> Dict[str, Any]:
+    portfolio_dates = {row["date"][:10] for row in series}
+    benchmark_dates = {row["valuation_date"][:10] for row in benchmark_prices}
+    aligned = sorted(portfolio_dates & benchmark_dates)
+    return {
+        "portfolio_observations": len(portfolio_dates),
+        "benchmark_observations": len(benchmark_dates),
+        "aligned_observations": len(aligned),
+        "common_period": {"from": aligned[0], "to": aligned[-1]} if aligned else None,
+    }
 
 
 def _benchmark_beta(series: List[Dict[str, Any]], benchmark_prices: List[Dict[str, Any]]) -> Dict[str, Any]:

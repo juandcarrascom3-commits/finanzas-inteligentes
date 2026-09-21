@@ -416,6 +416,7 @@ export interface WealthData {
     portfolio_return_pct?: number;
     benchmark_return_pct?: number;
     excess_return_pct?: number | null;
+    coverage?: { portfolio_observations: number; benchmark_observations: number; aligned_observations: number; common_period?: { from: string; to: string } | null };
     beta?: MetricState;
   };
   market_data: {
@@ -429,9 +430,37 @@ export interface WealthData {
     stale_tickers: string[];
     missing_tickers: string[];
     status: string;
+    provider_health: 'AVAILABLE' | 'DEGRADED' | 'OFFLINE';
     pricing_status: string;
     price_policy: string;
     history_policy: string;
+    coverage: {
+      rows: Array<{
+        ticker: string;
+        provider: string;
+        provider_symbol?: string | null;
+        symbol_status: string;
+        mapping_source: string;
+        current_price: number;
+        currency: string;
+        freshness: string;
+        price_source: string;
+        price_authority: string;
+        history_count: number;
+        fx_status: string;
+        status: string;
+      }>;
+      summary: {
+        holdings_total: number;
+        holdings_ok: number;
+        fresh_value_pct: number;
+        stale_count: number;
+        unresolved_symbols: string[];
+        missing_fx: string[];
+        benchmark_status: string;
+        benchmark_observations: number;
+      };
+    };
     issues: Array<{ type: string; ticker?: string; message: string; action: string }>;
     config: Record<string, unknown>;
   };
@@ -463,6 +492,7 @@ export interface WealthData {
 
 export interface MarketDataSyncResult {
   provider: string;
+  mode: string;
   status: string;
   started_at: string;
   completed_at: string;

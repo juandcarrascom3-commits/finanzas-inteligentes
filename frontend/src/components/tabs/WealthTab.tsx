@@ -14,13 +14,17 @@ interface WealthTabProps {
   onImportInvestmentCsv: (content: string) => Promise<CsvImportResult>;
   onSaveOpeningPosition: (position: { ticker: string; opened_at: string; quantity: number; unit_cost?: number; total_cost?: number; currency: string; notes?: string }) => Promise<void>;
   onSetPositionAuthority: (ticker: string, state: string, notes?: string) => Promise<void>;
-  onSyncMarketData: (benchmarkSymbol?: string) => Promise<MarketDataSyncResult>;
+  onSyncMarketData: (benchmarkSymbol?: string, mode?: 'QUICK' | 'FULL') => Promise<MarketDataSyncResult>;
+  onSaveSymbolMapping: (mapping: { internal_symbol: string; provider?: string; provider_symbol: string; instrument_type?: string; expected_currency?: string; status?: string }) => Promise<void>;
+  onSavePriceAuthority: (authority: { ticker: string; authority_mode: 'AUTO' | 'MANUAL'; manual_price?: number; manual_currency?: string; notes?: string }) => Promise<void>;
+  onSaveMarketDataConfig: (config: Record<string, unknown>) => Promise<void>;
+  onSaveFxRate: (rate: { base_currency: string; quote_currency: string; rate: number; rate_date: string; provider?: string; source?: string }) => Promise<void>;
 }
 
 const panel = 'bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3';
 const input = 'bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500';
 
-export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv, onSaveOpeningPosition, onSetPositionAuthority, onSyncMarketData }) => {
+export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv, onSaveOpeningPosition, onSetPositionAuthority, onSyncMarketData, onSaveSymbolMapping, onSavePriceAuthority, onSaveMarketDataConfig, onSaveFxRate }) => {
   const [contribution, setContribution] = useState(0);
   const [benchmarkKey, setBenchmarkKey] = useState('');
   const [valuationCsv, setValuationCsv] = useState('');
@@ -40,6 +44,9 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
   const [selectedRecon, setSelectedRecon] = useState<string | null>(null);
   const [feedback, setFeedback] = useState('');
   const [syncingMarket, setSyncingMarket] = useState(false);
+  const [symbolDrafts, setSymbolDrafts] = useState<Record<string, string>>({});
+  const [manualPriceDrafts, setManualPriceDrafts] = useState<Record<string, string>>({});
+  const [fxForm, setFxForm] = useState({ base_currency: 'COP', quote_currency: 'USD', rate: 0, rate_date: new Date().toISOString().slice(0, 10) });
 
   const money = (value?: number | null) => {
     if (value === null || value === undefined) return 'N/D';
@@ -68,14 +75,50 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
     await onRefresh(contribution, key);
   };
 
-  const syncMarket = async () => {
+  const syncMarket = async (mode: 'QUICK' | 'FULL') => {
     setSyncingMarket(true);
     try {
-      const res = await onSyncMarketData(benchmarkKey.trim().toUpperCase() || data?.market_data.benchmark_symbol);
-      setFeedback(`Market Data: ${res.assets.filter((row) => row.status === 'UPDATED').length} activos, ${res.fx.filter((row) => row.status === 'UPDATED').length} FX, ${res.errors.length} fallos.`);
+      const res = await onSyncMarketData(benchmarkKey.trim().toUpperCase() || data?.market_data.benchmark_symbol, mode);
+      setFeedback(`Market Data ${mode}: ${res.assets.filter((row) => row.status === 'UPDATED').length} activos, ${res.fx.filter((row) => row.status === 'UPDATED').length} FX, ${res.errors.length} fallos.`);
     } finally {
       setSyncingMarket(false);
     }
+  };
+
+  const saveBenchmarkConfig = async () => {
+    const symbol = benchmarkKey.trim().toUpperCase();
+    if (!symbol) {
+      setFeedback('Defina benchmark antes de guardar.');
+      return;
+    }
+    await onSaveMarketDataConfig({ ...data?.market_data.config, benchmark_symbol: symbol, benchmark_label: symbol, benchmark_provider: data?.market_data.provider || 'YFINANCE' });
+    setFeedback(`Benchmark configurado: ${symbol}.`);
+  };
+
+  const saveCoverageSymbol = async (ticker: string) => {
+    const providerSymbol = (symbolDrafts[ticker] || '').trim().toUpperCase();
+    if (!providerSymbol) {
+      setFeedback(`Defina provider symbol para ${ticker}.`);
+      return;
+    }
+    await onSaveSymbolMapping({ internal_symbol: ticker, provider: data?.market_data.provider || 'YFINANCE', provider_symbol: providerSymbol, instrument_type: 'EQUITY', status: 'ACTIVE' });
+    setFeedback(`${ticker} usará ${providerSymbol} en ${data?.market_data.provider || 'provider'}.`);
+  };
+
+  const saveAuthority = async (ticker: string, mode: 'AUTO' | 'MANUAL', currency: string) => {
+    const raw = manualPriceDrafts[ticker];
+    await onSavePriceAuthority({
+      ticker,
+      authority_mode: mode,
+      manual_price: mode === 'MANUAL' ? Number(raw || 0) : undefined,
+      manual_currency: mode === 'MANUAL' ? currency : undefined,
+    });
+    setFeedback(`${ticker}: autoridad ${mode}.`);
+  };
+
+  const saveFx = async () => {
+    await onSaveFxRate({ ...fxForm, provider: 'MANUAL', source: 'MANUAL' });
+    setFeedback(`FX manual ${fxForm.base_currency}/${fxForm.quote_currency} guardado.`);
   };
 
   const saveOperation = async () => {
@@ -187,9 +230,45 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
               {data.market_data.last_error ? ` · ${data.market_data.last_error}` : ''}
             </div>
           </div>
-          <button onClick={syncMarket} disabled={syncingMarket} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-2">
-            <RefreshCw className={`w-4 h-4 ${syncingMarket ? 'animate-spin' : ''}`} />Actualizar datos de mercado
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button onClick={() => syncMarket('QUICK')} disabled={syncingMarket} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-2">
+              <RefreshCw className={`w-4 h-4 ${syncingMarket ? 'animate-spin' : ''}`} />Quick refresh
+            </button>
+            <button onClick={() => syncMarket('FULL')} disabled={syncingMarket} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-60 text-gray-200 text-xs font-bold">Full history</button>
+          </div>
+        </div>
+      </section>
+
+      <section className={panel}>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+          <div>
+            <div className="text-sm font-bold text-white">Coverage</div>
+            <div className="text-xs text-gray-400">
+              {data.market_data.coverage.summary.holdings_ok}/{data.market_data.coverage.summary.holdings_total} OK · {data.market_data.coverage.summary.fresh_value_pct}% valor fresco · Provider {data.market_data.provider_health}
+            </div>
+          </div>
+          <div className="text-xs text-gray-500">Benchmark: {data.market_data.coverage.summary.benchmark_status} · {data.market_data.coverage.summary.benchmark_observations} obs.</div>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+          {data.market_data.coverage.rows.map((row) => (
+            <div key={row.ticker} className="bg-gray-900/60 border border-gray-800 rounded-lg p-3 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-white font-bold text-sm">{row.ticker}</div>
+                <div className={row.status === 'OK' ? 'text-emerald-300 text-xs' : 'text-amber-300 text-xs'}>{row.status}</div>
+              </div>
+              <div className="text-xs text-gray-400">Precio: {money(row.current_price)} · {row.freshness} · {row.price_source}</div>
+              <div className="text-xs text-gray-500">Provider symbol: {row.provider_symbol || 'Sin resolver'} · Historial {row.history_count} · FX {row.fx_status}</div>
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <input className={input} placeholder={row.provider_symbol || row.ticker} value={symbolDrafts[row.ticker] ?? ''} onChange={(e) => setSymbolDrafts({ ...symbolDrafts, [row.ticker]: e.target.value.toUpperCase() })} />
+                <button onClick={() => saveCoverageSymbol(row.ticker)} className="px-2 py-1 rounded bg-gray-800 text-gray-200 text-xs">Símbolo</button>
+              </div>
+              <div className="grid grid-cols-[1fr_auto_auto] gap-2">
+                <input className={input} type="number" placeholder="Precio manual" value={manualPriceDrafts[row.ticker] ?? ''} onChange={(e) => setManualPriceDrafts({ ...manualPriceDrafts, [row.ticker]: e.target.value })} />
+                <button onClick={() => saveAuthority(row.ticker, 'MANUAL', row.currency || 'USD')} className="px-2 py-1 rounded bg-gray-800 text-gray-200 text-xs">MANUAL</button>
+                <button onClick={() => saveAuthority(row.ticker, 'AUTO', row.currency || 'USD')} className="px-2 py-1 rounded bg-emerald-700 text-white text-xs">AUTO</button>
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 
@@ -350,13 +429,27 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
 
         <div className={panel}>
           <div className="flex items-center justify-between gap-2">
-            <div className="text-sm font-bold text-white">Benchmark manual</div>
+            <div className="text-sm font-bold text-white">Benchmark</div>
             <button onClick={() => onRefresh(contribution, benchmarkKey || undefined)} className="p-2 rounded-lg bg-gray-800 text-gray-300"><RefreshCw className="w-4 h-4" /></button>
           </div>
-          <input className={input} placeholder="Benchmark key, ej: SPY_MANUAL" value={benchmarkKey} onChange={(e) => setBenchmarkKey(e.target.value.toUpperCase())} />
+          <input className={input} placeholder={`Actual: ${data.market_data.benchmark_symbol || 'sin benchmark'}`} value={benchmarkKey} onChange={(e) => setBenchmarkKey(e.target.value.toUpperCase())} />
+          <button onClick={saveBenchmarkConfig} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs">Guardar benchmark</button>
           <textarea className={`${input} w-full min-h-16`} placeholder="date,price,currency&#10;2026-09-01,100,USD" value={benchmarkCsv} onChange={(e) => setBenchmarkCsv(e.target.value)} />
           <button onClick={importBenchmark} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs flex items-center gap-2"><GitCompare className="w-4 h-4" />Importar benchmark</button>
           <div className="text-xs text-gray-400">Estado: {data.benchmark.status} {data.benchmark.excess_return_pct !== undefined ? `· Excess return ${pct(data.benchmark.excess_return_pct)}` : data.benchmark.reason}</div>
+          <div className="text-xs text-gray-500">Alineadas: {data.benchmark.coverage?.aligned_observations ?? 0} · Portfolio {data.benchmark.coverage?.portfolio_observations ?? 0} · Benchmark {data.benchmark.coverage?.benchmark_observations ?? 0}</div>
+        </div>
+
+        <div className={panel}>
+          <div className="text-sm font-bold text-white">FX manual</div>
+          <div className="grid grid-cols-2 gap-2">
+            <input className={input} value={fxForm.base_currency} onChange={(e) => setFxForm({ ...fxForm, base_currency: e.target.value.toUpperCase() })} />
+            <input className={input} value={fxForm.quote_currency} onChange={(e) => setFxForm({ ...fxForm, quote_currency: e.target.value.toUpperCase() })} />
+            <input className={input} type="date" value={fxForm.rate_date} onChange={(e) => setFxForm({ ...fxForm, rate_date: e.target.value })} />
+            <input className={input} type="number" placeholder="Rate" value={fxForm.rate || ''} onChange={(e) => setFxForm({ ...fxForm, rate: Number(e.target.value) })} />
+          </div>
+          <button onClick={saveFx} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs">Guardar FX</button>
+          <div className="text-xs text-gray-500">Pares faltantes: {data.market_data.coverage.summary.missing_fx.join(', ') || 'Ninguno'}</div>
         </div>
       </section>
 

@@ -380,11 +380,68 @@ export async function setPositionAuthority(ticker: string, authorityState: strin
   return readJson<unknown>(res, 'Error al actualizar autoridad de posición.');
 }
 
-export async function syncMarketData(benchmarkSymbol?: string): Promise<MarketDataSyncResult> {
+export async function syncMarketData(benchmarkSymbol?: string, mode: 'QUICK' | 'FULL' = 'FULL'): Promise<MarketDataSyncResult> {
   const res = await fetch(`${API_BASE}/market-data/sync`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ benchmark_symbol: benchmarkSymbol || undefined })
+    body: JSON.stringify({ benchmark_symbol: benchmarkSymbol || undefined, mode })
   });
   return readJson<MarketDataSyncResult>(res, 'Error al actualizar datos de mercado.');
+}
+
+export async function saveMarketDataConfig(config: Record<string, unknown>): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/market-data/config`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config)
+  });
+  return readJson<unknown>(res, 'Error al guardar configuración de mercado.');
+}
+
+export async function saveSymbolMapping(mapping: {
+  internal_symbol: string;
+  provider?: string;
+  provider_symbol: string;
+  instrument_type?: string;
+  expected_currency?: string;
+  status?: string;
+  notes?: string;
+}): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/market-data/symbol-mappings`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mapping)
+  });
+  return readJson<unknown>(res, 'Error al guardar símbolo de provider.');
+}
+
+export async function savePriceAuthority(authority: {
+  ticker: string;
+  authority_mode: 'AUTO' | 'MANUAL';
+  manual_price?: number;
+  manual_currency?: string;
+  notes?: string;
+}): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/market-data/price-authority`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(authority)
+  });
+  return readJson<unknown>(res, 'Error al guardar autoridad de precio.');
+}
+
+export async function saveFxRate(rate: {
+  base_currency: string;
+  quote_currency: string;
+  rate: number;
+  rate_date: string;
+  provider?: string;
+  source?: string;
+}): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/market-data/fx`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rate)
+  });
+  return readJson<unknown>(res, 'Error al guardar FX manual.');
 }

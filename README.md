@@ -126,6 +126,13 @@ El provider inicial es `yfinance`: no requiere API key, cubre precios diarios, h
 
 Los históricos se guardan en `asset_valuations` y `benchmark_prices` con `source=MARKET_DATA`, `provider`, `retrieved_at` y metadata. FX histórico se guarda en `fx_rates`. La política usa precios ajustados cuando el provider los entrega (`auto_adjust=True`) para evitar falsas caídas por splits/dividendos. Si internet falla, Finance conserva el último dato local, marca `STALE`/`UNAVAILABLE` y permite seguir usando precios manuales.
 
+Fase v0.9 agrega controles operativos:
+- `market_symbol_mappings` separa ticker interno de símbolo usado por el provider.
+- `price_authority` permite `AUTO` o `MANUAL` por activo sin reescribir historia.
+- Benchmark se configura desde Wealth y puede sincronizarse sin imponer un índice único.
+- FX manual reutiliza `fx_rates` como fallback local.
+- Quick refresh actualiza quotes/FX/benchmark reciente; Full history añade histórico incremental.
+
 ## CSV de transacciones
 Columnas soportadas: `date`, `amount`, `category`, `description`, `currency`, `account_id`, `external_id`.
 

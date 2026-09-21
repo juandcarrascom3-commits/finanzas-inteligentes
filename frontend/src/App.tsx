@@ -49,8 +49,12 @@ import {
   saveSourceMapping,
   saveBudget,
   saveMonthlyReviewSnapshot,
+  saveMarketDataConfig,
+  savePriceAuthority,
   setPositionAuthority,
+  saveFxRate,
   syncMarketData,
+  saveSymbolMapping,
   testBudgetBakersConnection,
   updateRecurringStatus,
   validateBackup
@@ -338,7 +342,11 @@ export const App: React.FC = () => {
                   onImportInvestmentCsv={async (content) => { const result = await importInvestmentLedgerCsv(content); await refreshWealth(); return result; }}
                   onSaveOpeningPosition={async (position) => { await saveOpeningPosition(position); await refreshWealth(); }}
                   onSetPositionAuthority={async (ticker, state, notes) => { await setPositionAuthority(ticker, state, notes); await refreshWealth(); }}
-                  onSyncMarketData={async (benchmarkSymbol) => { const result = await syncMarketData(benchmarkSymbol); await refreshWealth(undefined, benchmarkSymbol); return result; }}
+                  onSyncMarketData={async (benchmarkSymbol, mode) => { const result = await syncMarketData(benchmarkSymbol, mode); await refreshWealth(undefined, benchmarkSymbol); return result; }}
+                  onSaveSymbolMapping={async (mapping) => { await saveSymbolMapping(mapping); await refreshWealth(); }}
+                  onSavePriceAuthority={async (authority) => { await savePriceAuthority(authority); await refreshWealth(); }}
+                  onSaveMarketDataConfig={async (config) => { await saveMarketDataConfig(config); await refreshWealth(); }}
+                  onSaveFxRate={async (rate) => { await saveFxRate(rate); await refreshWealth(); }}
                 />
                 <AssetListTab
                   assets={assets}

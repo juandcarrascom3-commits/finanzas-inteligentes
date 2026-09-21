@@ -255,6 +255,35 @@ class MarketDataSyncInput(BaseModel):
     benchmark_symbol: Optional[str] = None
     start: Optional[str] = None
     end: Optional[str] = None
+    mode: str = "FULL"
+
+class SymbolMappingInput(BaseModel):
+    internal_symbol: str
+    provider: str = "YFINANCE"
+    provider_symbol: str
+    instrument_type: str = "EQUITY"
+    expected_currency: Optional[str] = None
+    status: str = "ACTIVE"
+    notes: str = ""
+
+class PriceAuthorityInput(BaseModel):
+    ticker: str
+    authority_mode: str = "AUTO"
+    manual_price: Optional[float] = None
+    manual_currency: Optional[str] = None
+    notes: str = ""
+
+class FxRateInput(BaseModel):
+    base_currency: str
+    quote_currency: str
+    rate: float = Field(gt=0)
+    rate_date: str
+    provider: str = "MANUAL"
+    source: str = "MANUAL"
+
+class FxCsvInput(BaseModel):
+    content: str
+    source: str = "MANUAL"
 
 
 def get_budgetbakers_adapter() -> BudgetBakersAdapter:
@@ -501,6 +530,37 @@ def market_data_config():
 def save_market_data_config(payload: MarketDataConfigInput):
     return db.save_market_data_config(payload.model_dump())
 
+@app.get("/api/market-data/symbol-mappings")
+def get_symbol_mappings(provider: Optional[str] = None, internal_symbol: Optional[str] = None):
+    return db.get_symbol_mappings(provider=provider, internal_symbol=internal_symbol)
+
+@app.post("/api/market-data/symbol-mappings")
+def save_symbol_mapping(payload: SymbolMappingInput):
+    return db.save_symbol_mapping(payload.model_dump())
+
+@app.get("/api/market-data/price-authority")
+def get_price_authority(ticker: Optional[str] = None):
+    return db.get_price_authority(ticker)
+
+@app.post("/api/market-data/price-authority")
+def save_price_authority(payload: PriceAuthorityInput):
+    try:
+        return db.save_price_authority(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.get("/api/market-data/fx")
+def get_fx_rates(base_currency: Optional[str] = None, quote_currency: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):
+    return db.get_fx_rates(base_currency=base_currency, quote_currency=quote_currency, start=start, end=end)
+
+@app.post("/api/market-data/fx")
+def save_fx_rate(payload: FxRateInput):
+    return db.save_fx_rate(payload.model_dump())
+
+@app.post("/api/market-data/fx/import")
+def import_fx_rates(payload: FxCsvInput):
+    return db.import_fx_rates_csv(payload.content, source=payload.source)
+
 @app.post("/api/market-data/sync")
 def run_market_data_sync(payload: MarketDataSyncInput = MarketDataSyncInput()):
     try:
@@ -510,6 +570,7 @@ def run_market_data_sync(payload: MarketDataSyncInput = MarketDataSyncInput()):
             benchmark_symbol=payload.benchmark_symbol,
             start=payload.start,
             end=payload.end,
+            mode=payload.mode,
         )
     except Exception as exc:
         now = datetime.datetime.now().isoformat()
@@ -611,11 +672,22 @@ def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Opti
     priced = apply_market_prices(db, effective["holdings"])
     effective_assets = priced["holdings"]
     benchmark_symbol = benchmark_key or market_config.get("benchmark_symbol")
+    market_status = get_market_data_status(db, effective_assets)
+    market_quality_issues = list(priced["issues"])
+    for row in market_status["coverage"]["rows"]:
+        if row["status"] == "UNRESOLVED_SYMBOL":
+            market_quality_issues.append({"type": "symbol_mapping_required", "ticker": row["ticker"], "message": f"{row['ticker']} no tiene símbolo de provider resuelto.", "action": "Configurar provider symbol en Market Data."})
+        elif row["status"] == "MISSING_FX":
+            market_quality_issues.append({"type": "missing_fx", "ticker": row["ticker"], "message": f"{row['ticker']} requiere FX para valoración USD.", "action": "Registrar FX manual o sincronizar Market Data."})
+        elif row["status"] == "MISSING_HISTORY":
+            market_quality_issues.append({"type": "missing_historical_coverage", "ticker": row["ticker"], "message": f"{row['ticker']} no tiene histórico de mercado.", "action": "Ejecutar Full history refresh."})
+    if market_status["coverage"]["summary"]["benchmark_status"] != "OK":
+        market_quality_issues.append({"type": "benchmark_insufficient_coverage", "ticker": "BENCHMARK", "message": "Benchmark sin histórico suficiente.", "action": "Configurar benchmark y ejecutar actualización."})
     history = get_portfolio_history(effective_assets, valuations, transactions, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days)
     performance = get_performance(history, transactions, ledger_operations=ledger_operations)
     allocation = get_allocation(effective_assets, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days)
     concentration = get_concentration(allocation)
-    data_quality = get_data_quality(effective_assets, valuations, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days, market_issues=priced["issues"], benchmark_key=benchmark_symbol)
+    data_quality = get_data_quality(effective_assets, valuations, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days, market_issues=market_quality_issues, benchmark_key=benchmark_symbol)
     rebalancing = get_rebalancing_plan(effective_assets, contribution_usd=contribution_usd, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days)
     if effective["status"] == "PARTIAL_DATA":
         rebalancing["status"] = "PARTIAL_DATA"
@@ -647,10 +719,10 @@ def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Opti
             "total_return_breakdown": get_total_return_breakdown(effective_assets, ledger_operations, openings),
         },
         "market_data": {
-            **get_market_data_status(db, effective_assets),
+            **market_status,
             "config": market_config,
             "pricing_status": priced["status"],
-            "issues": priced["issues"],
+            "issues": market_quality_issues,
         },
         "action_items": get_wealth_action_items(data_quality, concentration, rebalancing, ledger_reconciliation, ledger_positions["issues"]),
     }
