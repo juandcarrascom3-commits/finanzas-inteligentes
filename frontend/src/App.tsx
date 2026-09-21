@@ -50,6 +50,7 @@ import {
   saveBudget,
   saveMonthlyReviewSnapshot,
   setPositionAuthority,
+  syncMarketData,
   testBudgetBakersConnection,
   updateRecurringStatus,
   validateBackup
@@ -337,6 +338,7 @@ export const App: React.FC = () => {
                   onImportInvestmentCsv={async (content) => { const result = await importInvestmentLedgerCsv(content); await refreshWealth(); return result; }}
                   onSaveOpeningPosition={async (position) => { await saveOpeningPosition(position); await refreshWealth(); }}
                   onSetPositionAuthority={async (ticker, state, notes) => { await setPositionAuthority(ticker, state, notes); await refreshWealth(); }}
+                  onSyncMarketData={async (benchmarkSymbol) => { const result = await syncMarketData(benchmarkSymbol); await refreshWealth(undefined, benchmarkSymbol); return result; }}
                 />
                 <AssetListTab
                   assets={assets}

@@ -65,6 +65,7 @@ from backend.analytics.investment_ledger import (
 )
 from backend.services.budgetbakers_client import BudgetBakersClient, DailyQuotaExceededError
 from backend.services.guardrail_service import GuardrailService, TradeGuardrailBlockedError
+from backend.services.market_data_service import apply_market_prices, get_market_data_status, sync_market_data
 
 app = FastAPI(
     title="Finanzas Inteligentes API",
@@ -238,6 +239,22 @@ class BudgetInput(BaseModel):
 
 class RecurringStatusInput(BaseModel):
     status: str
+
+class MarketDataConfigInput(BaseModel):
+    provider: str = "YFINANCE"
+    benchmark_symbol: Optional[str] = "SPY"
+    benchmark_label: Optional[str] = "SPY ETF"
+    benchmark_provider: Optional[str] = "YFINANCE"
+    quote_ttl_minutes: int = 720
+    stale_after_days: int = 7
+    history_lookback_days: int = 365
+    fx_max_age_days: int = 5
+
+class MarketDataSyncInput(BaseModel):
+    include_watchlist: bool = False
+    benchmark_symbol: Optional[str] = None
+    start: Optional[str] = None
+    end: Optional[str] = None
 
 
 def get_budgetbakers_adapter() -> BudgetBakersAdapter:
@@ -472,6 +489,33 @@ def get_benchmark_prices(benchmark_key: Optional[str] = None, start: Optional[st
 def import_benchmark_prices_csv(payload: BenchmarkCsvInput):
     return db.import_benchmark_prices_csv(payload.content, payload.benchmark_key, label=payload.label, source=payload.source)
 
+@app.get("/api/market-data/status")
+def market_data_status():
+    return get_market_data_status(db, db.get_assets(include_watchlist=False))
+
+@app.get("/api/market-data/config")
+def market_data_config():
+    return db.get_market_data_config()
+
+@app.post("/api/market-data/config")
+def save_market_data_config(payload: MarketDataConfigInput):
+    return db.save_market_data_config(payload.model_dump())
+
+@app.post("/api/market-data/sync")
+def run_market_data_sync(payload: MarketDataSyncInput = MarketDataSyncInput()):
+    try:
+        return sync_market_data(
+            db,
+            include_watchlist=payload.include_watchlist,
+            benchmark_symbol=payload.benchmark_symbol,
+            start=payload.start,
+            end=payload.end,
+        )
+    except Exception as exc:
+        now = datetime.datetime.now().isoformat()
+        db.set_sync_state("MARKET_DATA", {"status": "FAILED", "last_sync_at": now, "last_error": str(exc)})
+        raise HTTPException(status_code=502, detail=str(exc))
+
 @app.get("/api/investment-ledger")
 def get_investment_ledger(ticker: Optional[str] = None, operation_type: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):
     return db.get_investment_transactions(ticker=ticker, operation_type=operation_type, start=start, end=end)
@@ -556,27 +600,32 @@ def effective_holdings():
 def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Optional[str] = None):
     assets = db.get_assets(include_watchlist=False)
     valuations = db.get_asset_valuations()
+    fx_rates = db.get_fx_rates()
+    market_config = db.get_market_data_config()
+    fx_max_age_days = int(market_config.get("fx_max_age_days") or 5)
     transactions = db.get_transactions(limit=5000)
     ledger_operations = db.get_investment_transactions()
     openings = db.get_opening_positions()
     authority = db.get_position_authority()
     effective = get_effective_holdings(assets, ledger_operations, openings, authority)
-    effective_assets = effective["holdings"]
-    history = get_portfolio_history(effective_assets, valuations, transactions)
+    priced = apply_market_prices(db, effective["holdings"])
+    effective_assets = priced["holdings"]
+    benchmark_symbol = benchmark_key or market_config.get("benchmark_symbol")
+    history = get_portfolio_history(effective_assets, valuations, transactions, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days)
     performance = get_performance(history, transactions, ledger_operations=ledger_operations)
-    allocation = get_allocation(effective_assets)
+    allocation = get_allocation(effective_assets, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days)
     concentration = get_concentration(allocation)
-    data_quality = get_data_quality(effective_assets, valuations)
-    rebalancing = get_rebalancing_plan(effective_assets, contribution_usd=contribution_usd)
+    data_quality = get_data_quality(effective_assets, valuations, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days, market_issues=priced["issues"], benchmark_key=benchmark_symbol)
+    rebalancing = get_rebalancing_plan(effective_assets, contribution_usd=contribution_usd, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days)
     if effective["status"] == "PARTIAL_DATA":
         rebalancing["status"] = "PARTIAL_DATA"
         rebalancing["reason"] = "Some positions have unresolved ledger/holding reconciliation."
-    attribution = get_performance_attribution(effective_assets, valuations)
-    benchmark = compare_benchmark(history, db.get_benchmark_prices(benchmark_key=benchmark_key) if benchmark_key else [])
+    attribution = get_performance_attribution(effective_assets, valuations, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days)
+    benchmark = compare_benchmark(history, db.get_benchmark_prices(benchmark_key=benchmark_symbol) if benchmark_symbol else [])
     ledger_positions = derive_positions(ledger_operations, openings)
     ledger_reconciliation = effective["reconciliation"]
     return {
-        "summary": get_portfolio_summary(effective_assets),
+        "summary": get_portfolio_summary(effective_assets, fx_rates=fx_rates, fx_max_age_days=fx_max_age_days),
         "history": history,
         "performance": performance,
         "allocation": allocation,
@@ -596,6 +645,12 @@ def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Opti
             "authority": authority,
             "opening_positions": openings,
             "total_return_breakdown": get_total_return_breakdown(effective_assets, ledger_operations, openings),
+        },
+        "market_data": {
+            **get_market_data_status(db, effective_assets),
+            "config": market_config,
+            "pricing_status": priced["status"],
+            "issues": priced["issues"],
         },
         "action_items": get_wealth_action_items(data_quality, concentration, rebalancing, ledger_reconciliation, ledger_positions["issues"]),
     }

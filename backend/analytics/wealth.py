@@ -25,9 +25,44 @@ def _as_date(value: str) -> date:
     return datetime.fromisoformat(str(value)[:10]).date()
 
 
-def _value_usd(quantity: float, price: float, currency: str, exchange_rate: float) -> float:
+def _fx_rate_for_date(fx_rates: List[Dict[str, Any]], from_currency: str, to_currency: str, day: Optional[date], max_age_days: int = 5) -> Optional[float]:
+    source = (from_currency or "USD").upper()
+    target = (to_currency or "USD").upper()
+    if source == target:
+        return 1.0
+    if day is None:
+        day = date.today()
+    candidates = []
+    inverse = []
+    for row in fx_rates or []:
+        row_day = _as_date(row["rate_date"])
+        if row_day > day:
+            continue
+        age = (day - row_day).days
+        if age > max_age_days:
+            continue
+        base = row["base_currency"].upper()
+        quote = row["quote_currency"].upper()
+        if base == source and quote == target:
+            candidates.append((row_day, float(row["rate"])))
+        elif base == target and quote == source and float(row["rate"]) > 0:
+            inverse.append((row_day, 1 / float(row["rate"])))
+    if candidates:
+        return sorted(candidates, key=lambda item: item[0])[-1][1]
+    if inverse:
+        return sorted(inverse, key=lambda item: item[0])[-1][1]
+    return None
+
+
+def _value_usd(quantity: float, price: float, currency: str, exchange_rate: float, valuation_date: Optional[date] = None, fx_rates: Optional[List[Dict[str, Any]]] = None, fx_max_age_days: int = 5) -> float:
     value = quantity * price
-    return value / exchange_rate if currency.upper() == "COP" else value
+    currency = currency.upper()
+    if currency == "USD":
+        return value
+    rate = _fx_rate_for_date(fx_rates or [], currency, "USD", valuation_date, fx_max_age_days)
+    if rate is not None:
+        return value * rate
+    return value / exchange_rate if currency == "COP" else value
 
 
 def _active_assets(assets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -53,7 +88,7 @@ def _latest_price_on_or_before(rows: List[Dict[str, Any]], day: date) -> Optiona
     return latest
 
 
-def get_portfolio_summary(assets: List[Dict[str, Any]], exchange_rate: float = 4050.0) -> Dict[str, Any]:
+def get_portfolio_summary(assets: List[Dict[str, Any]], exchange_rate: float = 4050.0, fx_rates: Optional[List[Dict[str, Any]]] = None, fx_max_age_days: int = 5) -> Dict[str, Any]:
     holdings = _active_assets(assets)
     rows = []
     total = 0.0
@@ -63,8 +98,8 @@ def get_portfolio_summary(assets: List[Dict[str, Any]], exchange_rate: float = 4
         price = float(asset.get("current_price") or 0)
         avg = float(asset.get("avg_price") or 0)
         currency = (asset.get("currency") or "USD").upper()
-        value = _value_usd(qty, price, currency, exchange_rate) if price > 0 else 0.0
-        cost = _value_usd(qty, avg, currency, exchange_rate) if avg > 0 else 0.0
+        value = _value_usd(qty, price, currency, exchange_rate, date.today(), fx_rates, fx_max_age_days) if price > 0 else 0.0
+        cost = _value_usd(qty, avg, currency, exchange_rate, date.today(), fx_rates, fx_max_age_days) if avg > 0 else 0.0
         pnl = value - cost if cost > 0 else None
         total += value
         if pnl is not None:
@@ -83,6 +118,8 @@ def get_portfolio_history(
     valuations: List[Dict[str, Any]],
     transactions: Optional[List[Dict[str, Any]]] = None,
     exchange_rate: float = 4050.0,
+    fx_rates: Optional[List[Dict[str, Any]]] = None,
+    fx_max_age_days: int = 5,
 ) -> Dict[str, Any]:
     holdings = _active_assets(assets)
     by_ticker = _latest_prices_by_date(valuations)
@@ -103,7 +140,7 @@ def get_portfolio_history(
             qty = float(asset.get("quantity") or 0)
             price = float(price_row.get("price") or 0)
             currency = (price_row.get("currency") or asset.get("currency") or "USD").upper()
-            asset_value = _value_usd(qty, price, currency, exchange_rate)
+            asset_value = _value_usd(qty, price, currency, exchange_rate, day, fx_rates, fx_max_age_days)
             value += asset_value
             covered_value += asset_value
             covered_assets += 1
@@ -242,8 +279,8 @@ def _risk_from_returns(returns: List[float]) -> Dict[str, Any]:
     }
 
 
-def get_allocation(assets: List[Dict[str, Any]], exchange_rate: float = 4050.0) -> Dict[str, Any]:
-    summary = get_portfolio_summary(assets, exchange_rate)
+def get_allocation(assets: List[Dict[str, Any]], exchange_rate: float = 4050.0, fx_rates: Optional[List[Dict[str, Any]]] = None, fx_max_age_days: int = 5) -> Dict[str, Any]:
+    summary = get_portfolio_summary(assets, exchange_rate, fx_rates, fx_max_age_days)
     total = summary["total_value_usd"]
     dimensions = {key: defaultdict(float) for key in ["asset_type", "sector", "country", "currency", "ticker"]}
     holdings = []
@@ -291,10 +328,10 @@ def get_concentration(allocation: Dict[str, Any], thresholds: Optional[Dict[str,
     return {"top_asset": top1, "top3_pct": top3_pct, "top5_pct": top5_pct, "alerts": alerts}
 
 
-def get_data_quality(assets: List[Dict[str, Any]], valuations: List[Dict[str, Any]], exchange_rate: float = 4050.0) -> Dict[str, Any]:
+def get_data_quality(assets: List[Dict[str, Any]], valuations: List[Dict[str, Any]], exchange_rate: float = 4050.0, fx_rates: Optional[List[Dict[str, Any]]] = None, fx_max_age_days: int = 5, market_issues: Optional[List[Dict[str, Any]]] = None, benchmark_key: Optional[str] = None) -> Dict[str, Any]:
     holdings = _active_assets(assets)
     tickers_with_history = {v["ticker"].upper() for v in valuations}
-    summary = get_portfolio_summary(assets, exchange_rate)
+    summary = get_portfolio_summary(assets, exchange_rate, fx_rates, fx_max_age_days)
     total = summary["total_value_usd"]
     covered_value = 0.0
     issues = []
@@ -311,14 +348,22 @@ def get_data_quality(assets: List[Dict[str, Any]], valuations: List[Dict[str, An
         if not has_cost:
             issues.append({"type": "missing_cost", "ticker": ticker, "message": f"{ticker} no tiene coste medio.", "action": "Completar costo promedio."})
         if not has_history:
-            issues.append({"type": "missing_history", "ticker": ticker, "message": f"{ticker} no tiene histórico de valoración.", "action": "Importar histórico CSV."})
+            issues.append({"type": "missing_history", "ticker": ticker, "message": f"{ticker} no tiene histórico de valoración.", "action": "Importar histórico CSV o actualizar market data."})
         if (asset.get("currency") or "").upper() not in KNOWN_CURRENCIES:
             issues.append({"type": "unknown_currency", "ticker": ticker, "message": f"{ticker} usa moneda no reconocida.", "action": "Normalizar moneda."})
+        if (asset.get("currency") or "USD").upper() != "USD" and _fx_rate_for_date(fx_rates or [], (asset.get("currency") or "USD").upper(), "USD", date.today(), fx_max_age_days) is None:
+            issues.append({"type": "missing_fx", "ticker": ticker, "message": f"{ticker} requiere FX histórico/reciente para valorar en USD.", "action": "Actualizar FX de mercado o importar tasa manual."})
+        if asset.get("price_status") in {"STALE", "UNAVAILABLE"}:
+            issues.append({"type": f"{str(asset.get('price_status')).lower()}_price", "ticker": ticker, "message": f"{ticker} tiene precio {asset.get('price_status')}.", "action": "Actualizar market data o registrar precio manual."})
         for key in ["asset_type", "sector", "country"]:
             if not asset.get(key):
                 issues.append({"type": "missing_metadata", "ticker": ticker, "message": f"{ticker} no tiene {key}.", "action": "Completar metadata."})
         if float(asset.get("target_allocation_pct") or 0) <= 0:
             issues.append({"type": "missing_target", "ticker": ticker, "message": f"{ticker} no tiene target allocation.", "action": "Definir target allocation."})
+    for issue in market_issues or []:
+        issues.append(issue)
+    if benchmark_key is None:
+        issues.append({"type": "missing_benchmark", "ticker": "BENCHMARK", "message": "No hay benchmark seleccionado para comparación.", "action": "Configurar o sincronizar benchmark."})
     return {
         "history_coverage_pct": round((covered_value / total * 100) if total else 0.0, 2),
         "assets_with_history": len(tickers_with_history & {a["ticker"].upper() for a in holdings}),
@@ -327,7 +372,7 @@ def get_data_quality(assets: List[Dict[str, Any]], valuations: List[Dict[str, An
     }
 
 
-def get_performance_attribution(assets: List[Dict[str, Any]], valuations: List[Dict[str, Any]], start: Optional[str] = None, end: Optional[str] = None, exchange_rate: float = 4050.0) -> Dict[str, Any]:
+def get_performance_attribution(assets: List[Dict[str, Any]], valuations: List[Dict[str, Any]], start: Optional[str] = None, end: Optional[str] = None, exchange_rate: float = 4050.0, fx_rates: Optional[List[Dict[str, Any]]] = None, fx_max_age_days: int = 5) -> Dict[str, Any]:
     holdings = _active_assets(assets)
     by_ticker = _latest_prices_by_date(valuations)
     dates = sorted({_as_date(v["valuation_date"]) for v in valuations})
@@ -344,8 +389,8 @@ def get_performance_attribution(assets: List[Dict[str, Any]], valuations: List[D
         if not start_price or not end_price:
             continue
         qty = float(asset.get("quantity") or 0)
-        start_value = _value_usd(qty, float(start_price["price"]), start_price.get("currency") or asset.get("currency") or "USD", exchange_rate)
-        end_value = _value_usd(qty, float(end_price["price"]), end_price.get("currency") or asset.get("currency") or "USD", exchange_rate)
+        start_value = _value_usd(qty, float(start_price["price"]), start_price.get("currency") or asset.get("currency") or "USD", exchange_rate, start_day, fx_rates, fx_max_age_days)
+        end_value = _value_usd(qty, float(end_price["price"]), end_price.get("currency") or asset.get("currency") or "USD", exchange_rate, end_day, fx_rates, fx_max_age_days)
         initial_total += start_value
         final_total += end_value
         contributors.append({"ticker": asset["ticker"], "start_value_usd": round(start_value, 2), "end_value_usd": round(end_value, 2), "contribution_usd": round(end_value - start_value, 2)})
@@ -363,8 +408,8 @@ def get_performance_attribution(assets: List[Dict[str, Any]], valuations: List[D
     }
 
 
-def get_rebalancing_plan(assets: List[Dict[str, Any]], contribution_usd: float = 0.0, exchange_rate: float = 4050.0) -> Dict[str, Any]:
-    summary = get_portfolio_summary(assets, exchange_rate)
+def get_rebalancing_plan(assets: List[Dict[str, Any]], contribution_usd: float = 0.0, exchange_rate: float = 4050.0, fx_rates: Optional[List[Dict[str, Any]]] = None, fx_max_age_days: int = 5) -> Dict[str, Any]:
+    summary = get_portfolio_summary(assets, exchange_rate, fx_rates, fx_max_age_days)
     total = float(summary["total_value_usd"])
     rows = []
     target_sum = sum(float(a.get("target_allocation_pct") or 0) for a in summary["holdings"])
@@ -406,7 +451,32 @@ def compare_benchmark(history: Dict[str, Any], benchmark_prices: List[Dict[str, 
     benchmark_return = (float(benchmark_prices[-1]["price"]) / float(benchmark_prices[0]["price"]) - 1) if float(benchmark_prices[0]["price"]) > 0 else None
     if portfolio_return is None or benchmark_return is None:
         return {"status": "INSUFFICIENT_DATA", "reason": "Initial values must be positive.", "excess_return_pct": None}
-    return {"status": "AVAILABLE", "portfolio_return_pct": round(portfolio_return * 100, 2), "benchmark_return_pct": round(benchmark_return * 100, 2), "excess_return_pct": round((portfolio_return - benchmark_return) * 100, 2), "beta": {"status": "INSUFFICIENT_DATA", "value": None, "reason": "Need aligned daily benchmark observations."}}
+    beta = _benchmark_beta(series, benchmark_prices)
+    return {"status": "AVAILABLE", "portfolio_return_pct": round(portfolio_return * 100, 2), "benchmark_return_pct": round(benchmark_return * 100, 2), "excess_return_pct": round((portfolio_return - benchmark_return) * 100, 2), "beta": beta}
+
+
+def _benchmark_beta(series: List[Dict[str, Any]], benchmark_prices: List[Dict[str, Any]]) -> Dict[str, Any]:
+    portfolio_by_date = {row["date"][:10]: float(row["portfolio_value_usd"]) for row in series if float(row.get("portfolio_value_usd") or 0) > 0}
+    benchmark_by_date = {row["valuation_date"][:10]: float(row["price"]) for row in benchmark_prices if float(row.get("price") or 0) > 0}
+    dates = sorted(set(portfolio_by_date) & set(benchmark_by_date))
+    if len(dates) < 4:
+        return {"status": "INSUFFICIENT_DATA", "value": None, "reason": "Need at least four aligned observations."}
+    portfolio_returns = []
+    benchmark_returns = []
+    for prev, cur in zip(dates, dates[1:]):
+        if portfolio_by_date[prev] <= 0 or benchmark_by_date[prev] <= 0:
+            continue
+        portfolio_returns.append((portfolio_by_date[cur] / portfolio_by_date[prev]) - 1)
+        benchmark_returns.append((benchmark_by_date[cur] / benchmark_by_date[prev]) - 1)
+    if len(portfolio_returns) < 3:
+        return {"status": "INSUFFICIENT_DATA", "value": None, "reason": "Need at least three aligned return observations."}
+    mean_p = sum(portfolio_returns) / len(portfolio_returns)
+    mean_b = sum(benchmark_returns) / len(benchmark_returns)
+    variance_b = sum((ret - mean_b) ** 2 for ret in benchmark_returns)
+    if variance_b <= 0:
+        return {"status": "INSUFFICIENT_DATA", "value": None, "reason": "Benchmark variance is zero."}
+    covariance = sum((p - mean_p) * (b - mean_b) for p, b in zip(portfolio_returns, benchmark_returns))
+    return {"status": "AVAILABLE", "value": round(covariance / variance_b, 4), "reason": None, "aligned_observations": len(dates)}
 
 
 def get_total_return_breakdown(assets: List[Dict[str, Any]], operations: List[Dict[str, Any]], opening_positions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:

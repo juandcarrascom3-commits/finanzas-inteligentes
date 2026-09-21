@@ -42,6 +42,7 @@ FINANCE_DB_PATH=database/finance.local.db
 FINANCE_SEED_DEMO=0
 BUDGETBAKERS_API_TOKEN=
 BUDGETBAKERS_BASE_URL=https://rest.budgetbakers.com/wallet
+FINANCE_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173
 ```
 
 `database/*.local.db`, `database/*.personal.db` y `database/backups/` no deben versionarse. No guarde tokens reales en el repositorio.
@@ -82,6 +83,8 @@ El backend expone:
 - `POST /api/budgetbakers/import`: confirma e importa el preview.
 - `POST /api/theses`: Formulario del Filtro Humano con variables cualitativas de Investing Pro.
 - `POST /api/simulate-purchase`: **Guardrail de Seguridad**: Bloquea órdenes de compra si no se aprueba el checklist humano.
+- `POST /api/market-data/sync`: actualiza precios, históricos, FX y benchmark desde provider externo hacia SQLite local.
+- `GET /api/market-data/status`: estado local de provider, stale/missing, benchmark y FX.
 
 ### 3. Iniciar Frontend Principal (Vite + React)
 ```powershell
@@ -117,6 +120,11 @@ Si la tesis no cumple los 5 criterios, el botón de simulación y compra queda *
 
 ## Ingestion Wallet
 Wallet by BudgetBakers usa `BUDGETBAKERS_API_TOKEN` en el backend y no expone el token al navegador. El flujo es: probar conexion, generar preview, revisar conteos y confirmar importacion. La importacion es idempotente por `source + external_id`.
+
+## Market Data
+El provider inicial es `yfinance`: no requiere API key, cubre precios diarios, históricos, benchmarks y pares FX como `USDCOP=X`, y queda detrás de una interfaz local para poder cambiarlo después. No se llama al provider desde renders ni endpoints normales de lectura; use el botón **Actualizar datos de mercado** en Invest/Wealth o `POST /api/market-data/sync`.
+
+Los históricos se guardan en `asset_valuations` y `benchmark_prices` con `source=MARKET_DATA`, `provider`, `retrieved_at` y metadata. FX histórico se guarda en `fx_rates`. La política usa precios ajustados cuando el provider los entrega (`auto_adjust=True`) para evitar falsas caídas por splits/dividendos. Si internet falla, Finance conserva el último dato local, marca `STALE`/`UNAVAILABLE` y permite seguir usando precios manuales.
 
 ## CSV de transacciones
 Columnas soportadas: `date`, `amount`, `category`, `description`, `currency`, `account_id`, `external_id`.

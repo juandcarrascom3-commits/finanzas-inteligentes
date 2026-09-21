@@ -383,6 +383,8 @@ class DatabaseManager:
             conn.commit()
 
     def save_asset_valuation(self, valuation: Dict[str, Any]) -> Dict[str, Any]:
+        retrieved_at = valuation.get("retrieved_at") or datetime.now().isoformat()
+        metadata = valuation.get("metadata") or {}
         payload = {
             "id": valuation.get("id") or str(uuid.uuid4()),
             "ticker": valuation["ticker"].strip().upper(),
@@ -390,6 +392,9 @@ class DatabaseManager:
             "currency": valuation.get("currency", "USD").upper(),
             "valuation_date": str(valuation["valuation_date"])[:10],
             "source": self._clean_source(valuation.get("source", "MANUAL")),
+            "provider": (valuation.get("provider") or "").strip().upper() or None,
+            "retrieved_at": retrieved_at,
+            "metadata": json.dumps(metadata if isinstance(metadata, dict) else self._safe_json(metadata), ensure_ascii=False),
         }
         with self.get_connection() as conn:
             existing = conn.execute(
@@ -403,10 +408,11 @@ class DatabaseManager:
                 payload["id"] = existing["id"]
             conn.execute(
                 """
-                INSERT INTO asset_valuations (id, ticker, price, currency, valuation_date, source)
-                VALUES (:id, :ticker, :price, :currency, :valuation_date, :source)
+                INSERT INTO asset_valuations (id, ticker, price, currency, valuation_date, source, provider, retrieved_at, metadata)
+                VALUES (:id, :ticker, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata)
                 ON CONFLICT(ticker, valuation_date, source) DO UPDATE SET
-                    price = excluded.price, currency = excluded.currency
+                    price = excluded.price, currency = excluded.currency,
+                    provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata
                 """,
                 payload,
             )
@@ -430,7 +436,36 @@ class DatabaseManager:
                 f"SELECT * FROM asset_valuations {where} ORDER BY valuation_date, ticker, source",
                 params,
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [self._decode_market_row(dict(row)) for row in rows]
+
+    def get_latest_asset_valuations(self, source: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+        clauses, params = [], []
+        if source:
+            clauses.append("source = ?")
+            params.append(self._clean_source(source))
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT av.*
+                FROM asset_valuations av
+                JOIN (
+                    SELECT ticker, MAX(valuation_date) AS valuation_date
+                    FROM asset_valuations {where}
+                    GROUP BY ticker
+                ) latest
+                ON latest.ticker = av.ticker AND latest.valuation_date = av.valuation_date
+                ORDER BY av.ticker, av.source
+                """,
+                params,
+            ).fetchall()
+            latest: Dict[str, Dict[str, Any]] = {}
+            for row in rows:
+                item = self._decode_market_row(dict(row))
+                ticker = item["ticker"].upper()
+                if ticker not in latest or item.get("source") == "MARKET_DATA":
+                    latest[ticker] = item
+            return latest
 
     def import_asset_valuations_csv(self, content: str, source: str = "MANUAL") -> Dict[str, Any]:
         rows = self._parse_csv_rows(content)
@@ -464,6 +499,8 @@ class DatabaseManager:
 
     def save_benchmark_price(self, price: Dict[str, Any]) -> Dict[str, Any]:
         key = (price.get("benchmark_key") or price.get("ticker") or "BENCHMARK").strip().upper()
+        retrieved_at = price.get("retrieved_at") or datetime.now().isoformat()
+        metadata = price.get("metadata") or {}
         payload = {
             "id": price.get("id") or str(uuid.uuid4()),
             "benchmark_key": key,
@@ -472,6 +509,9 @@ class DatabaseManager:
             "currency": price.get("currency", "USD").upper(),
             "valuation_date": str(price["valuation_date"])[:10],
             "source": self._clean_source(price.get("source", "MANUAL")),
+            "provider": (price.get("provider") or "").strip().upper() or None,
+            "retrieved_at": retrieved_at,
+            "metadata": json.dumps(metadata if isinstance(metadata, dict) else self._safe_json(metadata), ensure_ascii=False),
         }
         with self.get_connection() as conn:
             existing = conn.execute(
@@ -485,10 +525,12 @@ class DatabaseManager:
                 payload["id"] = existing["id"]
             conn.execute(
                 """
-                INSERT INTO benchmark_prices (id, benchmark_key, label, price, currency, valuation_date, source, updated_at)
-                VALUES (:id, :benchmark_key, :label, :price, :currency, :valuation_date, :source, datetime('now'))
+                INSERT INTO benchmark_prices (id, benchmark_key, label, price, currency, valuation_date, source, provider, retrieved_at, metadata, updated_at)
+                VALUES (:id, :benchmark_key, :label, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata, datetime('now'))
                 ON CONFLICT(benchmark_key, valuation_date, source) DO UPDATE SET
-                    label = excluded.label, price = excluded.price, currency = excluded.currency, updated_at = datetime('now')
+                    label = excluded.label, price = excluded.price, currency = excluded.currency,
+                    provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata,
+                    updated_at = datetime('now')
                 """,
                 payload,
             )
@@ -512,7 +554,169 @@ class DatabaseManager:
                 f"SELECT * FROM benchmark_prices {where} ORDER BY benchmark_key, valuation_date",
                 params,
             ).fetchall()
-            return [dict(row) for row in rows]
+            return [self._decode_market_row(dict(row)) for row in rows]
+
+    def get_market_data_config(self) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM market_data_config WHERE id = 'default'").fetchone()
+            if row:
+                return dict(row)
+            return {
+                "id": "default",
+                "provider": "YFINANCE",
+                "benchmark_symbol": "SPY",
+                "benchmark_label": "SPY ETF",
+                "benchmark_provider": "YFINANCE",
+                "quote_ttl_minutes": 720,
+                "stale_after_days": 7,
+                "history_lookback_days": 365,
+                "fx_max_age_days": 5,
+            }
+
+    def save_market_data_config(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        current = self.get_market_data_config()
+        payload = {**current, **config, "id": "default"}
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO market_data_config (
+                    id, provider, benchmark_symbol, benchmark_label, benchmark_provider,
+                    quote_ttl_minutes, stale_after_days, history_lookback_days, fx_max_age_days, updated_at
+                )
+                VALUES (
+                    :id, :provider, :benchmark_symbol, :benchmark_label, :benchmark_provider,
+                    :quote_ttl_minutes, :stale_after_days, :history_lookback_days, :fx_max_age_days, datetime('now')
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    provider = excluded.provider,
+                    benchmark_symbol = excluded.benchmark_symbol,
+                    benchmark_label = excluded.benchmark_label,
+                    benchmark_provider = excluded.benchmark_provider,
+                    quote_ttl_minutes = excluded.quote_ttl_minutes,
+                    stale_after_days = excluded.stale_after_days,
+                    history_lookback_days = excluded.history_lookback_days,
+                    fx_max_age_days = excluded.fx_max_age_days,
+                    updated_at = datetime('now')
+                """,
+                payload,
+            )
+            conn.commit()
+        return self.get_market_data_config()
+
+    def get_market_cache(self, cache_key: str) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM market_data_cache WHERE cache_key = ?", (cache_key,)).fetchone()
+            if not row:
+                return None
+            item = dict(row)
+            if datetime.fromisoformat(item["expires_at"]) < datetime.now():
+                return None
+            item["payload"] = self._safe_json(item.get("payload"))
+            return item
+
+    def set_market_cache(self, cache_key: str, payload: Dict[str, Any], provider: str, expires_at: str) -> Dict[str, Any]:
+        row = {
+            "cache_key": cache_key,
+            "payload": json.dumps(payload or {}, ensure_ascii=False),
+            "provider": provider.upper(),
+            "expires_at": expires_at,
+        }
+        with self.get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO market_data_cache (cache_key, payload, provider, expires_at, updated_at)
+                VALUES (:cache_key, :payload, :provider, :expires_at, datetime('now'))
+                ON CONFLICT(cache_key) DO UPDATE SET
+                    payload = excluded.payload, provider = excluded.provider,
+                    expires_at = excluded.expires_at, updated_at = datetime('now')
+                """,
+                row,
+            )
+            conn.commit()
+        return row
+
+    def save_fx_rate(self, rate: Dict[str, Any]) -> Dict[str, Any]:
+        payload = {
+            "id": rate.get("id") or str(uuid.uuid4()),
+            "base_currency": rate["base_currency"].upper(),
+            "quote_currency": rate["quote_currency"].upper(),
+            "rate": float(rate.get("rate", 0) or 0),
+            "rate_date": str(rate["rate_date"])[:10],
+            "provider": (rate.get("provider") or "MANUAL").upper(),
+            "source": self._clean_source(rate.get("source", "MARKET_DATA")),
+            "retrieved_at": rate.get("retrieved_at") or datetime.now().isoformat(),
+            "metadata": json.dumps(rate.get("metadata") or {}, ensure_ascii=False),
+        }
+        if payload["rate"] <= 0:
+            raise ValueError("FX rate must be positive.")
+        with self.get_connection() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM fx_rates
+                WHERE base_currency = ? AND quote_currency = ? AND rate_date = ? AND provider = ?
+                """,
+                (payload["base_currency"], payload["quote_currency"], payload["rate_date"], payload["provider"]),
+            ).fetchone()
+            if existing:
+                payload["id"] = existing["id"]
+            conn.execute(
+                """
+                INSERT INTO fx_rates (
+                    id, base_currency, quote_currency, rate, rate_date, provider, source, retrieved_at, metadata, updated_at
+                )
+                VALUES (
+                    :id, :base_currency, :quote_currency, :rate, :rate_date, :provider, :source, :retrieved_at, :metadata, datetime('now')
+                )
+                ON CONFLICT(base_currency, quote_currency, rate_date, provider) DO UPDATE SET
+                    rate = excluded.rate, source = excluded.source, retrieved_at = excluded.retrieved_at,
+                    metadata = excluded.metadata, updated_at = datetime('now')
+                """,
+                payload,
+            )
+            conn.commit()
+        return self._decode_market_row(payload)
+
+    def get_fx_rates(self, base_currency: Optional[str] = None, quote_currency: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        if base_currency:
+            clauses.append("base_currency = ?")
+            params.append(base_currency.upper())
+        if quote_currency:
+            clauses.append("quote_currency = ?")
+            params.append(quote_currency.upper())
+        if start:
+            clauses.append("rate_date >= ?")
+            params.append(start[:10])
+        if end:
+            clauses.append("rate_date <= ?")
+            params.append(end[:10])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.get_connection() as conn:
+            rows = conn.execute(f"SELECT * FROM fx_rates {where} ORDER BY rate_date, base_currency, quote_currency", params).fetchall()
+            return [self._decode_market_row(dict(row)) for row in rows]
+
+    def get_fx_rate_on_or_before(self, base_currency: str, quote_currency: str, target_date: str, max_age_days: int = 5) -> Optional[Dict[str, Any]]:
+        base = base_currency.upper()
+        quote = quote_currency.upper()
+        if base == quote:
+            return {"base_currency": base, "quote_currency": quote, "rate": 1.0, "rate_date": target_date[:10], "provider": "IDENTITY", "source": "SYSTEM"}
+        with self.get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM fx_rates
+                WHERE base_currency = ? AND quote_currency = ? AND rate_date <= ?
+                ORDER BY rate_date DESC
+                LIMIT 1
+                """,
+                (base, quote, target_date[:10]),
+            ).fetchone()
+            if not row:
+                return None
+            item = self._decode_market_row(dict(row))
+            age = (datetime.fromisoformat(target_date[:10]).date() - datetime.fromisoformat(item["rate_date"]).date()).days
+            if age > max_age_days:
+                return None
+            return item
 
     def import_benchmark_prices_csv(self, content: str, benchmark_key: str, label: Optional[str] = None, source: str = "MANUAL") -> Dict[str, Any]:
         rows = self._parse_csv_rows(content)
@@ -1407,6 +1611,9 @@ class DatabaseManager:
             "source_mappings",
             "source_sync_state",
             "monthly_review_snapshots",
+            "fx_rates",
+            "market_data_cache",
+            "market_data_config",
             "schema_migrations",
         ]
         with self.get_connection() as conn:
@@ -1577,6 +1784,12 @@ class DatabaseManager:
             return json.loads(value)
         except Exception:
             return {}
+
+    def _decode_market_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        row = dict(row)
+        if "metadata" in row:
+            row["metadata"] = self._safe_json(row.get("metadata"))
+        return row
 
     def _transaction_fingerprint(self, tx: Dict[str, Any]) -> str:
         raw = f"{tx.get('date')}|{tx.get('amount')}|{tx.get('category')}|{tx.get('description')}|{tx.get('account_id')}"

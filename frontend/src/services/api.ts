@@ -15,6 +15,7 @@ import type {
   InvestmentOperation,
   PanoramaData,
   MonthlyReview,
+  MarketDataSyncResult,
   RecurringRule,
   ReconciliationSummary,
   SourceMapping,
@@ -377,4 +378,13 @@ export async function setPositionAuthority(ticker: string, authorityState: strin
     body: JSON.stringify({ ticker, authority_state: authorityState, notes })
   });
   return readJson<unknown>(res, 'Error al actualizar autoridad de posición.');
+}
+
+export async function syncMarketData(benchmarkSymbol?: string): Promise<MarketDataSyncResult> {
+  const res = await fetch(`${API_BASE}/market-data/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ benchmark_symbol: benchmarkSymbol || undefined })
+  });
+  return readJson<MarketDataSyncResult>(res, 'Error al actualizar datos de mercado.');
 }

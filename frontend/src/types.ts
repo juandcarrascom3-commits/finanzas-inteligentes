@@ -418,6 +418,23 @@ export interface WealthData {
     excess_return_pct?: number | null;
     beta?: MetricState;
   };
+  market_data: {
+    provider: string;
+    benchmark_symbol?: string;
+    last_sync_at?: string;
+    last_success_at?: string;
+    last_error?: string;
+    updated_assets: number;
+    fx_pairs: number;
+    stale_tickers: string[];
+    missing_tickers: string[];
+    status: string;
+    pricing_status: string;
+    price_policy: string;
+    history_policy: string;
+    issues: Array<{ type: string; ticker?: string; message: string; action: string }>;
+    config: Record<string, unknown>;
+  };
   ledger: {
     operations: InvestmentOperation[];
     positions: Array<{ ticker: string; quantity: number; remaining_cost_basis: number; avg_cost: number; currency: string }>;
@@ -442,6 +459,17 @@ export interface WealthData {
     };
   };
   action_items: Array<{ type: string; severity: string; title: string; why: string; action: string }>;
+}
+
+export interface MarketDataSyncResult {
+  provider: string;
+  status: string;
+  started_at: string;
+  completed_at: string;
+  assets: Array<{ ticker: string; status: string; history_rows?: number; error?: string }>;
+  fx: Array<{ pair: string; status: string; rows?: number; error?: string }>;
+  benchmark?: { symbol: string; status: string; rows?: number; error?: string } | null;
+  errors: Array<{ symbol: string; error: string }>;
 }
 
 export interface InvestmentOperation {

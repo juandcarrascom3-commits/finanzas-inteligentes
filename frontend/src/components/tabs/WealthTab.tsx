@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AlertTriangle, BarChart3, GitCompare, PieChart, RefreshCw, Target, Upload } from 'lucide-react';
-import { CsvImportResult, InvestmentOperation, WealthData } from '../../types';
+import { CsvImportResult, InvestmentOperation, MarketDataSyncResult, WealthData } from '../../types';
 
 interface WealthTabProps {
   data: WealthData | null;
@@ -14,12 +14,13 @@ interface WealthTabProps {
   onImportInvestmentCsv: (content: string) => Promise<CsvImportResult>;
   onSaveOpeningPosition: (position: { ticker: string; opened_at: string; quantity: number; unit_cost?: number; total_cost?: number; currency: string; notes?: string }) => Promise<void>;
   onSetPositionAuthority: (ticker: string, state: string, notes?: string) => Promise<void>;
+  onSyncMarketData: (benchmarkSymbol?: string) => Promise<MarketDataSyncResult>;
 }
 
 const panel = 'bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3';
 const input = 'bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500';
 
-export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv, onSaveOpeningPosition, onSetPositionAuthority }) => {
+export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv, onSaveOpeningPosition, onSetPositionAuthority, onSyncMarketData }) => {
   const [contribution, setContribution] = useState(0);
   const [benchmarkKey, setBenchmarkKey] = useState('');
   const [valuationCsv, setValuationCsv] = useState('');
@@ -38,6 +39,7 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
   const [ledgerFilter, setLedgerFilter] = useState('');
   const [selectedRecon, setSelectedRecon] = useState<string | null>(null);
   const [feedback, setFeedback] = useState('');
+  const [syncingMarket, setSyncingMarket] = useState(false);
 
   const money = (value?: number | null) => {
     if (value === null || value === undefined) return 'N/D';
@@ -64,6 +66,16 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
     const res = await onImportBenchmark(benchmarkCsv, key);
     setFeedback(`Benchmark importado: ${res.imported_count ?? 0}; rechazadas: ${res.rejected_count}`);
     await onRefresh(contribution, key);
+  };
+
+  const syncMarket = async () => {
+    setSyncingMarket(true);
+    try {
+      const res = await onSyncMarketData(benchmarkKey.trim().toUpperCase() || data?.market_data.benchmark_symbol);
+      setFeedback(`Market Data: ${res.assets.filter((row) => row.status === 'UPDATED').length} activos, ${res.fx.filter((row) => row.status === 'UPDATED').length} FX, ${res.errors.length} fallos.`);
+    } finally {
+      setSyncingMarket(false);
+    }
   };
 
   const saveOperation = async () => {
@@ -160,6 +172,24 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
           <div className="text-xs text-gray-400">{data.data_quality.issues.length} datos por completar</div>
                 <div className="text-xs text-gray-400">Ledger: {data.ledger.reconciliation.issues.length} acciones</div>
           <div className="text-xs text-gray-400">{data.history.policy}</div>
+        </div>
+      </section>
+
+      <section className={panel}>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <div className="text-sm font-bold text-white">Market Data</div>
+            <div className="text-xs text-gray-400">
+              {data.market_data.provider} · {data.market_data.last_sync_at ? `actualizado ${new Date(data.market_data.last_sync_at).toLocaleString()}` : 'sin sync'} · Benchmark {data.market_data.benchmark_symbol || 'N/D'}
+            </div>
+            <div className="text-xs text-gray-500">
+              {data.market_data.updated_assets} activos · {data.market_data.fx_pairs} FX · {data.market_data.stale_tickers.length} stale · {data.market_data.missing_tickers.length} missing
+              {data.market_data.last_error ? ` · ${data.market_data.last_error}` : ''}
+            </div>
+          </div>
+          <button onClick={syncMarket} disabled={syncingMarket} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-2">
+            <RefreshCw className={`w-4 h-4 ${syncingMarket ? 'animate-spin' : ''}`} />Actualizar datos de mercado
+          </button>
         </div>
       </section>
 
