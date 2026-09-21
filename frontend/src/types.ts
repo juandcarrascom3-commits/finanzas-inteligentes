@@ -418,5 +418,42 @@ export interface WealthData {
     excess_return_pct?: number | null;
     beta?: MetricState;
   };
+  ledger: {
+    operations: InvestmentOperation[];
+    positions: Array<{ ticker: string; quantity: number; remaining_cost_basis: number; avg_cost: number; currency: string }>;
+    open_lots: Array<{ ticker: string; buy_transaction_id: string; acquired_at: string; original_quantity: number; remaining_quantity: number; unit_cost: number; total_cost: number; currency: string }>;
+    realized_trades: Array<{ sell_transaction_id: string; ticker: string; occurred_at: string; quantity: number; proceeds: number; cost_basis: number; fee: number; realized_pnl: number; currency: string }>;
+    issues: Array<{ type: string; ticker?: string; message: string; action: string }>;
+    reconciliation: {
+      rows: Array<{ ticker: string; registered_quantity: number; derived_quantity: number; quantity_diff: number; registered_avg_price: number; derived_avg_price: number; avg_price_diff: number; status: 'MATCH' | 'MISMATCH' | 'INSUFFICIENT_HISTORY' }>;
+      issues: Array<{ type: string; ticker: string; message: string; action: string }>;
+    };
+    total_return_breakdown: {
+      status: string;
+      realized_pnl: { total_realized_pnl: number; status: string };
+      unrealized_pnl: { total_unrealized_pnl: number; status: string };
+      dividends: number;
+      interest: number;
+      fees: number;
+      external_contributions: number;
+    };
+  };
   action_items: Array<{ type: string; severity: string; title: string; why: string; action: string }>;
+}
+
+export interface InvestmentOperation {
+  id: string;
+  occurred_at: string;
+  ticker?: string;
+  account_id?: string;
+  operation_type: 'CONTRIBUTION' | 'WITHDRAWAL' | 'BUY' | 'SELL' | 'DIVIDEND' | 'INTEREST' | 'FEE' | 'TRANSFER_IN' | 'TRANSFER_OUT' | 'SPLIT' | 'ADJUSTMENT';
+  quantity: number;
+  price: number;
+  amount: number;
+  fee: number;
+  currency: string;
+  source: DataSource;
+  external_id?: string;
+  notes?: string;
+  metadata?: Record<string, unknown>;
 }

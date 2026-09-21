@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { AlertTriangle, BarChart3, GitCompare, PieChart, RefreshCw, Target, Upload } from 'lucide-react';
-import { CsvImportResult, WealthData } from '../../types';
+import { CsvImportResult, InvestmentOperation, WealthData } from '../../types';
 
 interface WealthTabProps {
   data: WealthData | null;
@@ -8,16 +8,32 @@ interface WealthTabProps {
   onRefresh: (contributionUsd?: number, benchmarkKey?: string) => Promise<void>;
   onImportValuations: (content: string) => Promise<CsvImportResult>;
   onImportBenchmark: (content: string, benchmarkKey: string) => Promise<CsvImportResult>;
+  onSaveInvestmentOperation: (operation: Partial<InvestmentOperation>) => Promise<void>;
+  onDeleteInvestmentOperation: (id: string) => Promise<void>;
+  onPreviewInvestmentCsv: (content: string) => Promise<CsvImportResult>;
+  onImportInvestmentCsv: (content: string) => Promise<CsvImportResult>;
 }
 
 const panel = 'bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3';
 const input = 'bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500';
 
-export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefresh, onImportValuations, onImportBenchmark }) => {
+export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv }) => {
   const [contribution, setContribution] = useState(0);
   const [benchmarkKey, setBenchmarkKey] = useState('');
   const [valuationCsv, setValuationCsv] = useState('');
   const [benchmarkCsv, setBenchmarkCsv] = useState('');
+  const [ledgerCsv, setLedgerCsv] = useState('');
+  const [opForm, setOpForm] = useState<Partial<InvestmentOperation>>({
+    occurred_at: new Date().toISOString().slice(0, 10),
+    operation_type: 'BUY',
+    currency: 'USD',
+    quantity: 0,
+    price: 0,
+    amount: 0,
+    fee: 0,
+    source: 'MANUAL',
+  });
+  const [ledgerFilter, setLedgerFilter] = useState('');
   const [feedback, setFeedback] = useState('');
 
   const money = (value?: number | null) => {
@@ -47,6 +63,22 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
     await onRefresh(contribution, key);
   };
 
+  const saveOperation = async () => {
+    await onSaveInvestmentOperation(opForm);
+    setOpForm({ occurred_at: new Date().toISOString().slice(0, 10), operation_type: 'BUY', currency: 'USD', quantity: 0, price: 0, amount: 0, fee: 0, source: 'MANUAL' });
+    setFeedback('Operación de inversión guardada.');
+  };
+
+  const previewLedger = async () => {
+    const res = await onPreviewInvestmentCsv(ledgerCsv);
+    setFeedback(`Preview ledger: ${res.accepted_count} aceptadas, ${res.rejected_count} rechazadas, ${res.duplicate_count ?? 0} duplicadas.`);
+  };
+
+  const importLedger = async () => {
+    const res = await onImportInvestmentCsv(ledgerCsv);
+    setFeedback(`Ledger importado: ${res.imported_count ?? 0}; duplicadas: ${res.duplicate_count ?? 0}; rechazadas: ${res.rejected_count}.`);
+  };
+
   if (!data) {
     return (
       <section className={panel}>
@@ -70,6 +102,7 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
           <div className="text-sm text-white">TWR: {metric(data.performance.twr)}</div>
           <div className="text-sm text-white">MWR: {metric(data.performance.mwr)}</div>
           <div className="text-xs text-gray-400">Retorno acumulado: {metric(data.performance.cumulative_return)}</div>
+          <div className="text-xs text-gray-400">P&L realizado: {money(data.performance.realized_pnl.value_usd)}</div>
         </div>
         <div className={panel}>
           <div className="flex items-center gap-2 text-gray-400 text-xs"><AlertTriangle className="w-4 h-4 text-amber-400" />Exposure & Risk</div>
@@ -81,6 +114,7 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
           <div className="flex items-center gap-2 text-gray-400 text-xs"><Target className="w-4 h-4 text-blue-400" />Calidad</div>
           <div className="text-sm text-white">{data.data_quality.history_coverage_pct}% con historial</div>
           <div className="text-xs text-gray-400">{data.data_quality.issues.length} datos por completar</div>
+          <div className="text-xs text-gray-400">Ledger: {data.ledger.reconciliation.issues.length} discrepancias</div>
           <div className="text-xs text-gray-400">{data.history.policy}</div>
         </div>
       </section>
@@ -92,6 +126,85 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
             <textarea className={`${input} w-full min-h-20`} placeholder="ticker,date,price,currency&#10;NVDA,2026-09-01,120,USD" value={valuationCsv} onChange={(e) => setValuationCsv(e.target.value)} />
           </div>
           <button onClick={importValuations} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-2"><Upload className="w-4 h-4" />Importar valoraciones</button>
+        </div>
+      </section>
+
+      <section className={panel}>
+        <div className="flex flex-col lg:flex-row lg:items-start gap-4">
+          <div className="lg:w-80 space-y-2">
+            <div className="text-sm font-bold text-white">Investment Ledger</div>
+            <div className="grid grid-cols-2 gap-2">
+              <input className={input} type="date" value={opForm.occurred_at || ''} onChange={(e) => setOpForm({ ...opForm, occurred_at: e.target.value })} />
+              <select className={input} value={opForm.operation_type || 'BUY'} onChange={(e) => setOpForm({ ...opForm, operation_type: e.target.value as InvestmentOperation['operation_type'] })}>
+                {['CONTRIBUTION', 'WITHDRAWAL', 'BUY', 'SELL', 'DIVIDEND', 'INTEREST', 'FEE', 'TRANSFER_IN', 'TRANSFER_OUT'].map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
+              <input className={input} placeholder="Ticker" value={opForm.ticker || ''} onChange={(e) => setOpForm({ ...opForm, ticker: e.target.value.toUpperCase() })} />
+              <input className={input} placeholder="Moneda" value={opForm.currency || 'USD'} onChange={(e) => setOpForm({ ...opForm, currency: e.target.value.toUpperCase() })} />
+              <input className={input} type="number" placeholder="Cantidad" value={opForm.quantity ?? 0} onChange={(e) => setOpForm({ ...opForm, quantity: Number(e.target.value) })} />
+              <input className={input} type="number" placeholder="Precio" value={opForm.price ?? 0} onChange={(e) => setOpForm({ ...opForm, price: Number(e.target.value) })} />
+              <input className={input} type="number" placeholder="Importe" value={opForm.amount ?? 0} onChange={(e) => setOpForm({ ...opForm, amount: Number(e.target.value) })} />
+              <input className={input} type="number" placeholder="Fee" value={opForm.fee ?? 0} onChange={(e) => setOpForm({ ...opForm, fee: Number(e.target.value) })} />
+            </div>
+            <input className={`${input} w-full`} placeholder="Notas" value={opForm.notes || ''} onChange={(e) => setOpForm({ ...opForm, notes: e.target.value })} />
+            <button onClick={saveOperation} className="w-full px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Guardar operación</button>
+          </div>
+
+          <div className="flex-1 space-y-2">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+              <div>
+                <div className="text-sm font-bold text-white">Actividad</div>
+                <div className="text-xs text-gray-400">CONTRIBUTION/WITHDRAWAL son cashflows externos; BUY/SELL son operaciones internas.</div>
+              </div>
+              <input className={input} placeholder="Filtrar ticker/tipo" value={ledgerFilter} onChange={(e) => setLedgerFilter(e.target.value.toUpperCase())} />
+            </div>
+            <div className="overflow-x-auto max-h-64">
+              <table className="w-full text-left text-xs">
+                <thead className="text-gray-500 uppercase text-[10px]"><tr><th className="py-2">Fecha</th><th>Tipo</th><th>Ticker</th><th>Cantidad</th><th>Precio</th><th>Importe</th><th>Fuente</th><th></th></tr></thead>
+                <tbody className="divide-y divide-gray-800">
+                  {data.ledger.operations
+                    .filter((op) => !ledgerFilter || `${op.ticker || ''} ${op.operation_type}`.includes(ledgerFilter))
+                    .slice(-50)
+                    .reverse()
+                    .map((op) => (
+                      <tr key={op.id}>
+                        <td className="py-2">{op.occurred_at.slice(0, 10)}</td>
+                        <td className="text-white">{op.operation_type}</td>
+                        <td>{op.ticker || '-'}</td>
+                        <td>{op.quantity}</td>
+                        <td>{money(op.price)}</td>
+                        <td>{money(op.amount)}</td>
+                        <td>{op.source}</td>
+                        <td><button onClick={() => window.confirm('Eliminar operación?') && onDeleteInvestmentOperation(op.id)} className="text-red-300">Eliminar</button></td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2">
+          <div className="space-y-2">
+            <div className="text-xs font-bold text-gray-300">Import CSV ledger</div>
+            <textarea className={`${input} w-full min-h-20`} placeholder="date,ticker,type,quantity,price,amount,fee,currency,account_id,external_id&#10;2026-01-01,NVDA,BUY,10,100,1000,1,USD,,trade-1" value={ledgerCsv} onChange={(e) => setLedgerCsv(e.target.value)} />
+            <div className="flex gap-2">
+              <button onClick={previewLedger} className="px-3 py-2 rounded-lg bg-gray-800 text-gray-200 text-xs">Preview</button>
+              <button onClick={importLedger} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold">Importar</button>
+            </div>
+          </div>
+          <div>
+            <div className="text-xs font-bold text-gray-300 mb-2">Ledger vs Holdings</div>
+            <div className="space-y-1 max-h-40 overflow-auto">
+              {data.ledger.reconciliation.rows.map((row) => (
+                <div key={row.ticker} className="flex items-center justify-between text-xs bg-gray-900/60 rounded-lg p-2">
+                  <span className="text-white">{row.ticker}</span>
+                  <span className={row.status === 'MATCH' ? 'text-emerald-300' : 'text-amber-300'}>{row.status}</span>
+                  <span className="text-gray-400">hold {row.registered_quantity} / ledger {row.derived_quantity}</span>
+                  <span className="text-gray-400">avg {row.registered_avg_price} / {row.derived_avg_price}</span>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </section>
 

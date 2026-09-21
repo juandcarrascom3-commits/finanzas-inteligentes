@@ -8,6 +8,14 @@ from math import sqrt
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.analytics.metrics import calculate_mwr_irr, calculate_twr
+from backend.analytics.investment_ledger import (
+    calculate_mwr as calculate_ledger_mwr,
+    get_investment_cashflows,
+    get_investment_income,
+    get_ledger_reconciliation,
+    get_realized_pnl,
+    get_unrealized_pnl_from_lots,
+)
 
 
 KNOWN_CURRENCIES = {"USD", "COP"}
@@ -136,7 +144,7 @@ def _external_flow_on_day(transactions: List[Dict[str, Any]], day: date) -> floa
     return round(total, 2)
 
 
-def get_performance(history: Dict[str, Any], transactions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+def get_performance(history: Dict[str, Any], transactions: Optional[List[Dict[str, Any]]] = None, ledger_operations: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     series = history.get("series", [])
     if len(series) < 2:
         return _insufficient_performance("Need at least two portfolio valuation dates.")
@@ -154,14 +162,23 @@ def get_performance(history: Dict[str, Any], transactions: Optional[List[Dict[st
         returns.append((end - start - flow) / start)
 
     cumulative = (values[-1] - values[0] - sum(float(p.get("external_cash_flow_usd") or 0) for p in series[1:])) / values[0]
-    mwr = _money_weighted_return(series)
+    mwr = calculate_ledger_mwr(ledger_operations, values[-1], series[-1]["date"]) if ledger_operations is not None else _money_weighted_return(series)
     risk = _risk_from_returns(returns)
+    realized = get_realized_pnl(ledger_operations or [])
+    income = get_investment_income(ledger_operations or [])
     return {
         "twr": {"status": "AVAILABLE", "value_pct": calculate_twr(returns), "reason": None},
         "mwr": mwr,
         "cumulative_return": {"status": "AVAILABLE", "value_pct": round(cumulative * 100, 2), "reason": None},
         "period_return": {"status": "AVAILABLE", "value_pct": round(returns[-1] * 100, 2) if returns else 0.0, "reason": None},
-        "realized_pnl": {"status": "INSUFFICIENT_DATA", "value_usd": None, "reason": "No lot/sale model exists yet."},
+        "realized_pnl": {
+            "status": realized["status"] if realized["trades"] else "INSUFFICIENT_DATA",
+            "value_usd": realized["total_realized_pnl"] if realized["trades"] else None,
+            "reason": None if realized["trades"] else "No closed FIFO lots/sells available.",
+            "details": realized,
+        },
+        "income": income,
+        "cashflows": get_investment_cashflows(ledger_operations or []),
         "risk": risk,
     }
 
@@ -392,7 +409,23 @@ def compare_benchmark(history: Dict[str, Any], benchmark_prices: List[Dict[str, 
     return {"status": "AVAILABLE", "portfolio_return_pct": round(portfolio_return * 100, 2), "benchmark_return_pct": round(benchmark_return * 100, 2), "excess_return_pct": round((portfolio_return - benchmark_return) * 100, 2), "beta": {"status": "INSUFFICIENT_DATA", "value": None, "reason": "Need aligned daily benchmark observations."}}
 
 
-def get_wealth_action_items(data_quality: Dict[str, Any], concentration: Dict[str, Any], rebalancing: Dict[str, Any]) -> List[Dict[str, Any]]:
+def get_total_return_breakdown(assets: List[Dict[str, Any]], operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    realized = get_realized_pnl(operations)
+    unrealized = get_unrealized_pnl_from_lots(assets, operations)
+    income = get_investment_income(operations)
+    cashflows = get_investment_cashflows(operations)
+    return {
+        "realized_pnl": realized,
+        "unrealized_pnl": unrealized,
+        "dividends": income["dividends_total"],
+        "interest": income["interest_total"],
+        "fees": income["fees_total"],
+        "external_contributions": cashflows["total_external_cashflow"],
+        "status": "AVAILABLE" if operations else "INSUFFICIENT_DATA",
+    }
+
+
+def get_wealth_action_items(data_quality: Dict[str, Any], concentration: Dict[str, Any], rebalancing: Dict[str, Any], ledger_reconciliation: Optional[Dict[str, Any]] = None, ledger_issues: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     items = []
     for issue in data_quality.get("issues", []):
         items.append({"type": issue["type"], "severity": "medium", "title": "Dato de cartera pendiente", "why": issue["message"], "action": issue["action"]})
@@ -401,4 +434,8 @@ def get_wealth_action_items(data_quality: Dict[str, Any], concentration: Dict[st
     for row in rebalancing.get("traditional", []):
         if abs(float(row.get("drift_pct") or 0)) >= 5 and float(row.get("target_pct") or 0) > 0:
             items.append({"type": "target_drift", "severity": "medium", "title": "Desviación frente al target", "why": f"{row['ticker']} está {row['drift_pct']} pp lejos del objetivo.", "action": "Revisar plan de rebalanceo."})
+    for issue in (ledger_reconciliation or {}).get("issues", []):
+        items.append({"type": issue["type"], "severity": "medium", "title": "Ledger vs Holdings", "why": issue["message"], "action": issue["action"]})
+    for issue in ledger_issues or []:
+        items.append({"type": issue["type"], "severity": "high", "title": "Ledger incompleto", "why": issue["message"], "action": issue["action"]})
     return items[:20]

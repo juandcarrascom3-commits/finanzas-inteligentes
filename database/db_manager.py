@@ -17,6 +17,10 @@ DEFAULT_DB_FILE = os.path.join(os.path.dirname(__file__), "finanzas.db")
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 SEED_FILE = os.path.join(os.path.dirname(__file__), "seeds", "initial_seed.sql")
 VALID_SOURCES = {"DEMO", "MANUAL", "CSV", "BUDGETBAKERS", "ETORO", "GOOGLE", "MARKET_DATA"}
+VALID_INVESTMENT_OPERATION_TYPES = {
+    "CONTRIBUTION", "WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "INTEREST", "FEE",
+    "TRANSFER_IN", "TRANSFER_OUT", "SPLIT", "ADJUSTMENT",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -540,6 +544,131 @@ class DatabaseManager:
             "rejected_count": len(rejected),
             "imported_count": len(accepted),
         }
+
+    def get_investment_transactions(
+        self,
+        ticker: Optional[str] = None,
+        operation_type: Optional[str] = None,
+        start: Optional[str] = None,
+        end: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        clauses, params = [], []
+        if ticker:
+            clauses.append("ticker = ?")
+            params.append(ticker.upper())
+        if operation_type:
+            clauses.append("operation_type = ?")
+            params.append(self._clean_investment_operation_type(operation_type))
+        if start:
+            clauses.append("occurred_at >= ?")
+            params.append(start[:10])
+        if end:
+            clauses.append("occurred_at <= ?")
+            params.append(end[:10])
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self.get_connection() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM investment_transactions {where} ORDER BY occurred_at, created_at, id",
+                params,
+            ).fetchall()
+            return [self._decode_investment_transaction(dict(row)) for row in rows]
+
+    def save_investment_transaction(self, operation: Dict[str, Any]) -> Dict[str, Any]:
+        payload = self._normalize_investment_transaction(operation)
+        with self.get_connection() as conn:
+            if payload.get("external_id"):
+                existing = conn.execute(
+                    "SELECT id FROM investment_transactions WHERE source = ? AND external_id = ?",
+                    (payload["source"], payload["external_id"]),
+                ).fetchone()
+                if existing:
+                    payload["id"] = existing["id"]
+            conn.execute(
+                """
+                INSERT INTO investment_transactions (
+                    id, occurred_at, ticker, account_id, operation_type, quantity, price,
+                    amount, fee, currency, source, external_id, notes, metadata, updated_at
+                )
+                VALUES (
+                    :id, :occurred_at, :ticker, :account_id, :operation_type, :quantity, :price,
+                    :amount, :fee, :currency, :source, :external_id, :notes, :metadata, datetime('now')
+                )
+                ON CONFLICT(id) DO UPDATE SET
+                    occurred_at = excluded.occurred_at, ticker = excluded.ticker, account_id = excluded.account_id,
+                    operation_type = excluded.operation_type, quantity = excluded.quantity, price = excluded.price,
+                    amount = excluded.amount, fee = excluded.fee, currency = excluded.currency, source = excluded.source,
+                    external_id = excluded.external_id, notes = excluded.notes, metadata = excluded.metadata,
+                    updated_at = datetime('now')
+                """,
+                payload,
+            )
+            conn.commit()
+        return self._decode_investment_transaction(payload)
+
+    def delete_investment_transaction(self, operation_id: str):
+        with self.get_connection() as conn:
+            conn.execute("DELETE FROM investment_transactions WHERE id = ?", (operation_id,))
+            conn.commit()
+
+    def preview_investment_transactions_csv(self, content: str, source: str = "CSV") -> Dict[str, Any]:
+        rows = self._parse_csv_rows(content)
+        accepted, rejected, duplicate_count = [], [], 0
+        with self.get_connection() as conn:
+            for index, row in enumerate(rows, start=2):
+                try:
+                    payload = self._normalize_investment_transaction({
+                        "occurred_at": row.get("occurred_at") or row.get("date") or row.get("fecha"),
+                        "ticker": row.get("ticker") or row.get("symbol"),
+                        "account_id": row.get("account_id") or None,
+                        "operation_type": row.get("operation_type") or row.get("type") or row.get("tipo"),
+                        "quantity": row.get("quantity") or row.get("cantidad") or 0,
+                        "price": row.get("price") or row.get("precio") or 0,
+                        "amount": row.get("amount") or row.get("importe") or 0,
+                        "fee": row.get("fee") or row.get("commission") or row.get("comision") or 0,
+                        "currency": row.get("currency") or row.get("moneda") or "USD",
+                        "source": row.get("source") or source,
+                        "external_id": row.get("external_id") or row.get("id") or None,
+                        "notes": row.get("notes") or row.get("descripcion") or "",
+                        "metadata": row,
+                    })
+                    if self._investment_transaction_exists(conn, payload):
+                        duplicate_count += 1
+                    accepted.append(payload)
+                except Exception as exc:
+                    rejected.append({"row_number": index, "row": row, "error": str(exc)})
+        return {
+            "accepted_rows": accepted,
+            "rejected_rows": rejected,
+            "accepted_count": len(accepted),
+            "rejected_count": len(rejected),
+            "duplicate_count": duplicate_count,
+            "new_count": max(len(accepted) - duplicate_count, 0),
+        }
+
+    def import_investment_transactions_csv(self, content: str, source: str = "CSV") -> Dict[str, Any]:
+        preview = self.preview_investment_transactions_csv(content, source=source)
+        imported, duplicates = 0, 0
+        with self.get_connection() as conn:
+            for row in preview["accepted_rows"]:
+                if self._investment_transaction_exists(conn, row):
+                    duplicates += 1
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO investment_transactions (
+                        id, occurred_at, ticker, account_id, operation_type, quantity, price,
+                        amount, fee, currency, source, external_id, notes, metadata, updated_at
+                    )
+                    VALUES (
+                        :id, :occurred_at, :ticker, :account_id, :operation_type, :quantity, :price,
+                        :amount, :fee, :currency, :source, :external_id, :notes, :metadata, datetime('now')
+                    )
+                    """,
+                    row,
+                )
+                imported += 1
+            conn.commit()
+        return {**preview, "imported_count": imported, "duplicate_count": max(preview["duplicate_count"], duplicates)}
 
     def get_investment_theses(self) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
@@ -1316,3 +1445,81 @@ class DatabaseManager:
     def _clean_source(self, source: str) -> str:
         value = (source or "MANUAL").upper()
         return value if value in VALID_SOURCES else "MANUAL"
+
+    def _clean_investment_operation_type(self, operation_type: str) -> str:
+        value = (operation_type or "").strip().upper()
+        if value not in VALID_INVESTMENT_OPERATION_TYPES:
+            raise ValueError(f"Unsupported investment operation type: {operation_type}")
+        return value
+
+    def _normalize_investment_transaction(self, operation: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = operation.get("metadata", {})
+        if isinstance(metadata, str):
+            try:
+                json.loads(metadata)
+                metadata_json = metadata
+            except Exception:
+                metadata_json = json.dumps({"raw": metadata}, ensure_ascii=False)
+        else:
+            metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        occurred_at = operation.get("occurred_at") or operation.get("date")
+        if not occurred_at:
+            raise ValueError("occurred_at/date is required")
+        payload = {
+            "id": operation.get("id") or str(uuid.uuid4()),
+            "occurred_at": str(occurred_at)[:19],
+            "ticker": (operation.get("ticker") or "").strip().upper() or None,
+            "account_id": operation.get("account_id") or None,
+            "operation_type": self._clean_investment_operation_type(operation.get("operation_type") or operation.get("type")),
+            "quantity": float(operation.get("quantity", 0) or 0),
+            "price": float(operation.get("price", 0) or 0),
+            "amount": float(operation.get("amount", 0) or 0),
+            "fee": float(operation.get("fee", 0) or 0),
+            "currency": (operation.get("currency") or "USD").upper(),
+            "source": self._clean_source(operation.get("source", "MANUAL")),
+            "external_id": operation.get("external_id") or None,
+            "notes": operation.get("notes") or "",
+            "metadata": metadata_json,
+        }
+        self._validate_investment_transaction(payload)
+        if not payload["external_id"]:
+            payload["external_id"] = self._investment_transaction_fingerprint(payload)
+        return payload
+
+    def _validate_investment_transaction(self, payload: Dict[str, Any]):
+        datetime.fromisoformat(str(payload["occurred_at"]).replace("Z", "+00:00"))
+        op = payload["operation_type"]
+        if payload["quantity"] < 0:
+            raise ValueError("quantity cannot be negative")
+        if payload["price"] < 0 or payload["fee"] < 0:
+            raise ValueError("price and fee cannot be negative")
+        if op in {"BUY", "SELL"}:
+            if not payload.get("ticker"):
+                raise ValueError("ticker is required for BUY/SELL")
+            if payload["quantity"] <= 0:
+                raise ValueError("quantity must be positive for BUY/SELL")
+            if payload["price"] <= 0 and payload["amount"] <= 0:
+                raise ValueError("price or amount is required for BUY/SELL")
+        if op in {"DIVIDEND", "INTEREST"} and payload["amount"] == 0:
+            raise ValueError("amount is required for income operations")
+        if op in {"CONTRIBUTION", "WITHDRAWAL", "FEE"} and payload["amount"] == 0:
+            raise ValueError("amount is required for cashflow/fee operations")
+
+    def _decode_investment_transaction(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        row = dict(row)
+        row["metadata"] = self._safe_json(row.get("metadata"))
+        return row
+
+    def _investment_transaction_exists(self, conn: sqlite3.Connection, row: Dict[str, Any]) -> bool:
+        if row.get("external_id"):
+            found = conn.execute(
+                "SELECT 1 FROM investment_transactions WHERE source = ? AND external_id = ? LIMIT 1",
+                (row.get("source", "CSV"), row["external_id"]),
+            ).fetchone()
+            if found:
+                return True
+        return False
+
+    def _investment_transaction_fingerprint(self, operation: Dict[str, Any]) -> str:
+        raw = "|".join(str(operation.get(key, "")) for key in ["occurred_at", "ticker", "operation_type", "quantity", "price", "amount", "fee", "currency", "account_id"])
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()

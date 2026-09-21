@@ -12,6 +12,7 @@ import type {
   DashboardSummary,
   DataSourceInfo,
   InvestmentThesis,
+  InvestmentOperation,
   PanoramaData,
   MonthlyReview,
   RecurringRule,
@@ -318,4 +319,36 @@ export async function importBenchmarkCsv(content: string, benchmarkKey: string, 
     body: JSON.stringify({ content, benchmark_key: benchmarkKey, label })
   });
   return readJson<CsvImportResult>(res, 'Error al importar benchmark.');
+}
+
+export async function saveInvestmentOperation(operation: Partial<InvestmentOperation>): Promise<InvestmentOperation> {
+  const res = await fetch(`${API_BASE}/investment-ledger`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(operation)
+  });
+  return readJson<InvestmentOperation>(res, 'Error al guardar operación de inversión.');
+}
+
+export async function deleteInvestmentOperation(id: string): Promise<unknown> {
+  const res = await fetch(`${API_BASE}/investment-ledger/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return readJson<unknown>(res, 'Error al eliminar operación de inversión.');
+}
+
+export async function previewInvestmentLedgerCsv(content: string, source: string = 'CSV'): Promise<CsvImportResult> {
+  const res = await fetch(`${API_BASE}/investment-ledger/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, source })
+  });
+  return readJson<CsvImportResult>(res, 'Error al previsualizar ledger.');
+}
+
+export async function importInvestmentLedgerCsv(content: string, source: string = 'CSV'): Promise<CsvImportResult> {
+  const res = await fetch(`${API_BASE}/investment-ledger/import`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, source })
+  });
+  return readJson<CsvImportResult>(res, 'Error al importar ledger.');
 }

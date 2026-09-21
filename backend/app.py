@@ -54,7 +54,13 @@ from backend.analytics.wealth import (
     get_portfolio_history,
     get_portfolio_summary,
     get_rebalancing_plan,
+    get_total_return_breakdown,
     get_wealth_action_items,
+)
+from backend.analytics.investment_ledger import (
+    derive_positions,
+    get_ledger_reconciliation,
+    get_realized_pnl,
 )
 from backend.services.budgetbakers_client import BudgetBakersClient, DailyQuotaExceededError
 from backend.services.guardrail_service import GuardrailService, TradeGuardrailBlockedError
@@ -165,6 +171,26 @@ class BenchmarkCsvInput(BaseModel):
 
 class RebalanceQueryInput(BaseModel):
     contribution_usd: float = 0.0
+
+class InvestmentOperationInput(BaseModel):
+    id: Optional[str] = None
+    occurred_at: str
+    ticker: Optional[str] = None
+    account_id: Optional[str] = None
+    operation_type: str
+    quantity: float = 0.0
+    price: float = 0.0
+    amount: float = 0.0
+    fee: float = 0.0
+    currency: str = "USD"
+    source: str = "MANUAL"
+    external_id: Optional[str] = None
+    notes: str = ""
+    metadata: Dict[str, Any] = {}
+
+class InvestmentLedgerCsvInput(BaseModel):
+    content: str
+    source: str = "CSV"
 
 class SourceMappingInput(BaseModel):
     id: Optional[str] = None
@@ -427,19 +453,54 @@ def get_benchmark_prices(benchmark_key: Optional[str] = None, start: Optional[st
 def import_benchmark_prices_csv(payload: BenchmarkCsvInput):
     return db.import_benchmark_prices_csv(payload.content, payload.benchmark_key, label=payload.label, source=payload.source)
 
+@app.get("/api/investment-ledger")
+def get_investment_ledger(ticker: Optional[str] = None, operation_type: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):
+    return db.get_investment_transactions(ticker=ticker, operation_type=operation_type, start=start, end=end)
+
+@app.post("/api/investment-ledger")
+def save_investment_operation(payload: InvestmentOperationInput):
+    try:
+        return db.save_investment_transaction(payload.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+@app.delete("/api/investment-ledger/{operation_id}")
+def delete_investment_operation(operation_id: str):
+    db.delete_investment_transaction(operation_id)
+    return {"status": "SUCCESS"}
+
+@app.post("/api/investment-ledger/preview")
+def preview_investment_ledger_csv(payload: InvestmentLedgerCsvInput):
+    return db.preview_investment_transactions_csv(payload.content, source=payload.source)
+
+@app.post("/api/investment-ledger/import")
+def import_investment_ledger_csv(payload: InvestmentLedgerCsvInput):
+    return db.import_investment_transactions_csv(payload.content, source=payload.source)
+
+@app.get("/api/investment-ledger/reconciliation")
+def investment_ledger_reconciliation():
+    return get_ledger_reconciliation(db.get_assets(include_watchlist=False), db.get_investment_transactions())
+
+@app.get("/api/investment-ledger/realized-pnl")
+def investment_ledger_realized_pnl(ticker: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):
+    return get_realized_pnl(db.get_investment_transactions(), ticker=ticker, start=start, end=end)
+
 @app.get("/api/wealth")
 def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Optional[str] = None):
     assets = db.get_assets(include_watchlist=False)
     valuations = db.get_asset_valuations()
     transactions = db.get_transactions(limit=5000)
+    ledger_operations = db.get_investment_transactions()
     history = get_portfolio_history(assets, valuations, transactions)
-    performance = get_performance(history, transactions)
+    performance = get_performance(history, transactions, ledger_operations=ledger_operations)
     allocation = get_allocation(assets)
     concentration = get_concentration(allocation)
     data_quality = get_data_quality(assets, valuations)
     rebalancing = get_rebalancing_plan(assets, contribution_usd=contribution_usd)
     attribution = get_performance_attribution(assets, valuations)
     benchmark = compare_benchmark(history, db.get_benchmark_prices(benchmark_key=benchmark_key) if benchmark_key else [])
+    ledger_positions = derive_positions(ledger_operations)
+    ledger_reconciliation = get_ledger_reconciliation(assets, ledger_operations)
     return {
         "summary": get_portfolio_summary(assets),
         "history": history,
@@ -450,7 +511,16 @@ def get_wealth(contribution_usd: float = Query(0.0, ge=0.0), benchmark_key: Opti
         "attribution": attribution,
         "rebalancing": rebalancing,
         "benchmark": benchmark,
-        "action_items": get_wealth_action_items(data_quality, concentration, rebalancing),
+        "ledger": {
+            "operations": ledger_operations,
+            "positions": ledger_positions["positions"],
+            "open_lots": ledger_positions["open_lots"],
+            "realized_trades": ledger_positions["realized_trades"],
+            "issues": ledger_positions["issues"],
+            "reconciliation": ledger_reconciliation,
+            "total_return_breakdown": get_total_return_breakdown(assets, ledger_operations),
+        },
+        "action_items": get_wealth_action_items(data_quality, concentration, rebalancing, ledger_reconciliation, ledger_positions["issues"]),
     }
 
 @app.get("/api/budgets")

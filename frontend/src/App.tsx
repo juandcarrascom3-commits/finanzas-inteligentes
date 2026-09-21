@@ -10,6 +10,7 @@ import { UnderstandTab } from './components/tabs/UnderstandTab';
 import { PlanningTab } from './components/tabs/PlanningTab';
 import {
   deleteBudget,
+  deleteInvestmentOperation,
   deleteAccount,
   deleteAsset,
   deleteTransaction,
@@ -23,11 +24,14 @@ import {
   fetchTransactions,
   fetchWealth,
   importBenchmarkCsv,
+  importInvestmentLedgerCsv,
   importTransactionsCsv,
   importValuationsCsv,
+  previewInvestmentLedgerCsv,
   previewTransactionsCsv,
   saveAccount,
   saveAsset,
+  saveInvestmentOperation,
   saveThesis,
   saveTransaction,
   restoreBackup,
@@ -325,6 +329,10 @@ export const App: React.FC = () => {
                   onRefresh={refreshWealth}
                   onImportValuations={importValuationsCsv}
                   onImportBenchmark={importBenchmarkCsv}
+                  onSaveInvestmentOperation={async (operation) => { await saveInvestmentOperation(operation); await refreshWealth(); }}
+                  onDeleteInvestmentOperation={async (id) => { await deleteInvestmentOperation(id); await refreshWealth(); }}
+                  onPreviewInvestmentCsv={previewInvestmentLedgerCsv}
+                  onImportInvestmentCsv={async (content) => { const result = await importInvestmentLedgerCsv(content); await refreshWealth(); return result; }}
                 />
                 <AssetListTab
                   assets={assets}
