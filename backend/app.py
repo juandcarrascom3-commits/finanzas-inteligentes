@@ -52,6 +52,7 @@ from backend.analytics.understand import (
     get_budget_risks,
     get_cashflow_forecast,
     get_financial_changes,
+    get_plan_vs_actual,
     get_recurring_transactions,
 )
 from backend.analytics.monthly_review import get_monthly_review
@@ -1666,6 +1667,7 @@ def get_understand(period: str = Query("current_month", pattern="^(current_month
         "what_changed": what_changed,
         "recurring": recurring,
         "budget_burn": budget_risks,
+        "plan_vs_actual": get_plan_vs_actual(transactions, budgets, datetime.date.today().replace(day=1), datetime.date.today()),
         "cashflow_forecast": get_cashflow_forecast(accounts, transactions, recurring),
         "action_items": get_action_items(reconciliation, budget_risks, recurring, sync_state),
         "reconciliation": reconciliation,

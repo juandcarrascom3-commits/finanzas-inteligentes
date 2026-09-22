@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta, timezone
 from statistics import mean
 from typing import Any, Dict, List, Optional, Tuple
 
+BUDGET_PACE_TOLERANCE = 0.10
+
 
 def _parse_date(value: str) -> date:
     return datetime.fromisoformat(str(value).replace("Z", "+00:00")).date()
@@ -44,20 +46,67 @@ def _in_range(tx: Dict[str, Any], start: date, end: date) -> bool:
     return start <= tx_date <= end
 
 
+def _flow_type(tx: Dict[str, Any]) -> Optional[str]:
+    value = tx.get("flow_type")
+    return str(value).upper() if value else None
+
+
+def _is_transfer(tx: Dict[str, Any]) -> bool:
+    return _flow_type(tx) == "TRANSFER"
+
+
+def _is_income(tx: Dict[str, Any]) -> bool:
+    amount = float(tx.get("amount", 0) or 0)
+    flow_type = _flow_type(tx)
+    if flow_type:
+        return flow_type == "INCOME" and amount > 0
+    return amount > 0
+
+
+def _is_expense(tx: Dict[str, Any]) -> bool:
+    amount = float(tx.get("amount", 0) or 0)
+    flow_type = _flow_type(tx)
+    if flow_type:
+        return flow_type == "EXPENSE" and amount < 0
+    return amount < 0
+
+
+def _savings_rate_state(income: float, cashflow: float) -> Dict[str, Any]:
+    if income <= 0:
+        return {"value": None, "value_pct": None, "evaluability": "UNEVALUABLE", "reason": "NO_INCOME"}
+    value = cashflow / income
+    return {"value": round(value, 6), "value_pct": round(value * 100, 2), "evaluability": "EVALUABLE", "reason": None}
+
+
+def _savings_rate_change(current: Dict[str, Any], previous: Dict[str, Any]) -> Dict[str, Any]:
+    if current.get("evaluability") != "EVALUABLE" or previous.get("evaluability") != "EVALUABLE":
+        return {"delta_pp": None, "relative_delta_pct": None}
+    current_pct = float(current.get("value_pct") or 0)
+    previous_pct = float(previous.get("value_pct") or 0)
+    delta_pp = round(current_pct - previous_pct, 2)
+    return {
+        "delta_pp": delta_pp,
+        "relative_delta_pct": round(delta_pp / abs(previous_pct) * 100, 2) if previous_pct != 0 else None,
+    }
+
+
 def summarize_transactions(transactions: List[Dict[str, Any]], start: date, end: date) -> Dict[str, Any]:
     selected = [tx for tx in transactions if _in_range(tx, start, end)]
-    income = sum(float(tx.get("amount", 0) or 0) for tx in selected if float(tx.get("amount", 0) or 0) > 0)
-    expenses = sum(abs(float(tx.get("amount", 0) or 0)) for tx in selected if float(tx.get("amount", 0) or 0) < 0)
+    income = sum(float(tx.get("amount", 0) or 0) for tx in selected if _is_income(tx))
+    expenses = sum(abs(float(tx.get("amount", 0) or 0)) for tx in selected if _is_expense(tx))
     by_category: Dict[str, float] = defaultdict(float)
     for tx in selected:
         amount = float(tx.get("amount", 0) or 0)
-        if amount < 0:
+        if _is_expense(tx):
             by_category[tx.get("category") or "General"] += abs(amount)
+    cashflow = income - expenses
+    savings_rate = _savings_rate_state(income, cashflow)
     return {
         "income": round(income, 2),
         "expenses": round(expenses, 2),
-        "cashflow": round(income - expenses, 2),
+        "cashflow": round(cashflow, 2),
         "savings_rate_pct": round(((income - expenses) / income) * 100, 2) if income > 0 else 0.0,
+        "savings_rate": savings_rate,
         "by_category": dict(by_category),
         "transactions": selected,
     }
@@ -80,6 +129,51 @@ def _delta_metric(current: float, previous: float) -> Dict[str, Any]:
 def _summaries_by_currency(transactions: List[Dict[str, Any]], start: date, end: date) -> Dict[str, Dict[str, Any]]:
     currencies = sorted({_tx_currency(tx) for tx in transactions if _in_range(tx, start, end)})
     return {currency: summarize_transactions([tx for tx in transactions if _tx_currency(tx) == currency], start, end) for currency in currencies}
+
+
+def eligible_budget_spend(transactions: List[Dict[str, Any]], category: str, currency: str, start: date, end: date) -> float:
+    expected_currency = (currency or "").upper()
+    total = 0.0
+    for tx in transactions:
+        if not _in_range(tx, start, end):
+            continue
+        if not tx.get("currency") or _tx_currency(tx) != expected_currency:
+            continue
+        if (tx.get("category") or "General") != category:
+            continue
+        if _is_transfer(tx) or not _is_expense(tx):
+            continue
+        total += abs(float(tx.get("amount", 0) or 0))
+    return round(total, 2)
+
+
+def get_plan_vs_actual(transactions: List[Dict[str, Any]], budgets: List[Dict[str, Any]], start: date, end: date) -> List[Dict[str, Any]]:
+    rows = []
+    for budget in budgets:
+        if not budget.get("is_active", 1):
+            continue
+        planned = float(budget.get("monthly_limit", 0) or 0)
+        currency = (budget.get("currency") or "USD").upper()
+        actual = eligible_budget_spend(transactions, budget["category"], currency, start, end)
+        variance = round(actual - planned, 2)
+        if actual < planned:
+            status = "UNDER_PLAN"
+        elif actual == planned:
+            status = "ON_PLAN"
+        else:
+            status = "OVER_PLAN"
+        rows.append({
+            "objective_type": "EXPENSE_CAP",
+            "category": budget["category"],
+            "currency": currency,
+            "planned": round(planned, 2),
+            "actual": round(actual, 2),
+            "variance": variance,
+            "variance_pct": round(variance / abs(planned) * 100, 2) if planned != 0 else None,
+            "status": status,
+            "source": budget.get("source", "MANUAL"),
+        })
+    return sorted(rows, key=lambda item: abs(item["variance"]), reverse=True)
 
 
 def explain_financial_changes(what_changed: Dict[str, Any]) -> Dict[str, Any]:
@@ -144,6 +238,11 @@ def get_financial_changes(transactions: List[Dict[str, Any]], period: str = "cur
             "expenses": _delta_metric(now["expenses"], before["expenses"]),
             "net_cash_flow": _delta_metric(now["cashflow"], before["cashflow"]),
             "savings_rate": _delta_metric(now["savings_rate_pct"], before["savings_rate_pct"]),
+            "savings_rate_semantics": {
+                "current": now["savings_rate"],
+                "previous": before["savings_rate"],
+                **_savings_rate_change(now["savings_rate"], before["savings_rate"]),
+            },
             "category_contributors": category_contributors[:8],
         }
     primary_currency = all_currencies[0] if len(all_currencies) == 1 else None
@@ -328,24 +427,41 @@ def get_recurring_transactions(transactions: List[Dict[str, Any]], today: Option
 def get_budget_risks(transactions: List[Dict[str, Any]], budgets: List[Dict[str, Any]], today: Optional[date] = None) -> List[Dict[str, Any]]:
     today = today or date.today()
     start = today.replace(day=1)
-    elapsed_pct = today.day / 31 * 100
+    days_in_period = calendar.monthrange(today.year, today.month)[1]
+    elapsed_days = today.day
+    elapsed_pct = elapsed_days / days_in_period * 100
     risks = []
-    current = summarize_transactions(transactions, start, today)
     for budget in budgets:
+        if not budget.get("is_active", 1):
+            continue
         limit = float(budget.get("monthly_limit", 0) or 0)
         if limit <= 0:
             continue
-        spent = current["by_category"].get(budget["category"], 0.0)
+        currency = (budget.get("currency") or "USD").upper()
+        spent = eligible_budget_spend(transactions, budget["category"], currency, start, today)
         pct = (spent / limit) * 100
-        projected = spent / max(today.day, 1) * 31
+        burn_ratio = spent / limit
+        time_ratio = elapsed_days / days_in_period
+        burn_pressure = burn_ratio / time_ratio if time_ratio > 0 else None
+        projected = spent / max(elapsed_days, 1) * days_in_period
+        budget_status = "WITHIN_BUDGET" if spent <= limit else "EXCEEDED"
+        if burn_pressure is None:
+            pace_status = "UNEVALUABLE"
+        elif burn_pressure < 1 - BUDGET_PACE_TOLERANCE:
+            pace_status = "UNDER_PACE"
+        elif burn_pressure <= 1 + BUDGET_PACE_TOLERANCE:
+            pace_status = "ON_PACE"
+        else:
+            pace_status = "OVER_PACE"
         if pct >= 100:
             status = "probably_exceeded"
-        elif pct > elapsed_pct + 15 or projected > limit:
+        elif pace_status == "OVER_PACE" or projected > limit:
             status = "at_risk"
         else:
             status = "on_track"
         risks.append({
             "category": budget["category"],
+            "currency": currency,
             "budget": round(limit, 2),
             "spent": round(spent, 2),
             "remaining": round(limit - spent, 2),
@@ -353,6 +469,14 @@ def get_budget_risks(transactions: List[Dict[str, Any]], budgets: List[Dict[str,
             "month_elapsed_pct": round(elapsed_pct, 2),
             "projected_close": round(projected, 2),
             "status": status,
+            "burn_ratio": round(burn_ratio, 4),
+            "time_ratio": round(time_ratio, 4),
+            "burn_pressure": round(burn_pressure, 4) if burn_pressure is not None else None,
+            "pace_projection": round(projected, 2),
+            "budget_status": budget_status,
+            "pace_status": pace_status,
+            "days_in_period": days_in_period,
+            "elapsed_days": elapsed_days,
         })
     return risks
 

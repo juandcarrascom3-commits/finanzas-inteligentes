@@ -452,6 +452,12 @@ export interface UnderstandSummary {
       expenses: { current: number; previous: number; delta: number; delta_pct: number | null };
       net_cash_flow: { current: number; previous: number; delta: number; delta_pct: number | null };
       savings_rate: { current: number; previous: number; delta: number; delta_pct: number | null };
+      savings_rate_semantics?: {
+        current: SavingsRateSemantic;
+        previous: SavingsRateSemantic;
+        delta_pp: number | null;
+        relative_delta_pct: number | null;
+      };
       category_contributors: Array<{ category: string; currency: string; current: number; previous: number; delta: number }>;
     }>;
     category_contributors?: Array<{ category: string; currency: string; current: number; previous: number; delta: number }>;
@@ -468,7 +474,8 @@ export interface UnderstandSummary {
     data_confidence?: DataConfidence;
   };
   recurring: Array<{ merchant: string; category: string; typical_amount: number; frequency: string; confidence: string; occurrences: number; last_seen: string; next_expected?: string }>;
-  budget_burn: Array<{ category: string; budget: number; spent: number; remaining: number; spent_pct: number; month_elapsed_pct: number; projected_close: number; status: string }>;
+  budget_burn: BudgetBurnRow[];
+  plan_vs_actual?: PlanVsActualRow[];
   cashflow_forecast: { starting_balance: number; expected_inflows: number; expected_outflows: number; projected_balance: number; uncertainty: string; range: { from: string; to: string } };
   action_items: Array<{ type: string; severity: string; title: string; why: string; action: string }>;
   reconciliation: ReconciliationSummary;
@@ -480,6 +487,45 @@ export interface DataConfidence {
   reasons: string[];
   inputs: Record<string, number | string | null | undefined>;
   provenance: string[];
+}
+
+export interface SavingsRateSemantic {
+  value: number | null;
+  value_pct: number | null;
+  evaluability: 'EVALUABLE' | 'UNEVALUABLE';
+  reason?: string | null;
+}
+
+export interface PlanVsActualRow {
+  objective_type: 'EXPENSE_CAP';
+  category: string;
+  currency: string;
+  planned: number;
+  actual: number;
+  variance: number;
+  variance_pct: number | null;
+  status: 'UNDER_PLAN' | 'ON_PLAN' | 'OVER_PLAN';
+  source?: DataSource;
+}
+
+export interface BudgetBurnRow {
+  category: string;
+  currency?: string;
+  budget: number;
+  spent: number;
+  remaining: number;
+  spent_pct: number;
+  month_elapsed_pct: number;
+  projected_close: number;
+  status: string;
+  burn_ratio?: number;
+  time_ratio?: number;
+  burn_pressure?: number | null;
+  pace_projection?: number;
+  budget_status?: 'WITHIN_BUDGET' | 'EXCEEDED';
+  pace_status?: 'UNDER_PACE' | 'ON_PACE' | 'OVER_PACE' | 'UNEVALUABLE';
+  days_in_period?: number;
+  elapsed_days?: number;
 }
 
 export interface RecurringRule {
@@ -509,7 +555,11 @@ export interface MonthlyReview {
     previous_expenses: number;
     previous_cashflow: number;
   };
-  budget_variances: Array<{ category: string; budget: number; spent: number; variance: number; variance_pct: number; status: string; source: string }>;
+  what_changed?: UnderstandSummary['what_changed'];
+  plan_vs_actual?: PlanVsActualRow[];
+  budget_variances: Array<{ category: string; currency?: string; budget: number; spent: number; variance: number; variance_pct: number; status: string; plan_status?: PlanVsActualRow['status']; source: string }>;
+  budget_burn?: BudgetBurnRow[];
+  data_confidence?: DataConfidence;
   recurring: { confirmed: RecurringRule[]; detected: Array<{ merchant: string; typical_amount: number; confidence: string; frequency: string; next_expected?: string }> };
   upcoming_obligations: Array<{ merchant: string; amount: number; category: string; date: string; source: string }>;
   forecast: UnderstandSummary['cashflow_forecast'];

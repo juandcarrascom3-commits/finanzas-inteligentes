@@ -14,6 +14,17 @@ interface PlanningTabProps {
 }
 
 const inputClass = "bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500";
+const planLabel: Record<string, string> = {
+  UNDER_PLAN: 'Por debajo del presupuesto',
+  ON_PLAN: 'En el límite previsto',
+  OVER_PLAN: 'Por encima del presupuesto',
+};
+const paceLabel: Record<string, string> = {
+  UNDER_PACE: 'Ritmo por debajo del esperado',
+  ON_PACE: 'Ritmo alineado con el mes',
+  OVER_PACE: 'Ritmo por encima del esperado',
+  UNEVALUABLE: 'Ritmo no evaluable',
+};
 
 export const PlanningTab: React.FC<PlanningTabProps> = ({
   budgets,
@@ -54,10 +65,19 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
             </div>
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <div>
-                <div className="text-xs font-bold text-gray-300 mb-2">Desviaciones</div>
-                {review.budget_variances.slice(0, 6).map((item) => (
+                <div className="text-xs font-bold text-gray-300 mb-2">Plan vs actual</div>
+                {(review.plan_vs_actual || []).slice(0, 6).map((item) => (
                   <div key={item.category} className="flex justify-between text-xs border-b border-gray-800 py-1">
-                    <span>{item.category}</span><span className={item.variance > 0 ? 'text-red-300' : 'text-emerald-300'}>{money(item.variance)}</span>
+                    <span>{item.category}<span className="text-gray-500"> · {planLabel[item.status] || item.status}</span></span>
+                    <span className={item.status === 'OVER_PLAN' ? 'text-red-300' : item.status === 'ON_PLAN' ? 'text-amber-300' : 'text-emerald-300'}>{money(item.variance)} {item.currency}</span>
+                  </div>
+                ))}
+                {(review.plan_vs_actual || []).length === 0 && <div className="text-xs text-gray-500">Sin presupuestos comparables.</div>}
+                <div className="text-xs font-bold text-gray-300 mt-3 mb-2">Ritmo de presupuesto</div>
+                {(review.budget_burn || []).slice(0, 4).map((item) => (
+                  <div key={`${item.category}-${item.currency}`} className="flex justify-between text-xs border-b border-gray-800 py-1">
+                    <span>{item.category}<span className="text-gray-500"> · {paceLabel[item.pace_status || ''] || item.pace_status}</span></span>
+                    <span>{money(item.pace_projection || item.projected_close)} {item.currency}</span>
                   </div>
                 ))}
               </div>

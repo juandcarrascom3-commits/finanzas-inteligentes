@@ -4,9 +4,11 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from backend.analytics.understand import (
+    get_data_confidence,
     get_budget_risks,
     get_cashflow_forecast,
     get_financial_changes,
+    get_plan_vs_actual,
     get_recurring_transactions,
     summarize_transactions,
 )
@@ -41,22 +43,19 @@ def get_confirmed_recurring(stored_rules: List[Dict[str, Any]], detected: List[D
 
 def get_budget_variances(transactions: List[Dict[str, Any]], budgets: List[Dict[str, Any]], period: str) -> List[Dict[str, Any]]:
     start, end = _month_range(period)
-    summary = summarize_transactions(transactions, start, end)
+    plan_rows = get_plan_vs_actual(transactions, budgets, start, end)
     variances = []
-    for budget in budgets:
-        if not budget.get("is_active", 1):
-            continue
-        limit = float(budget.get("monthly_limit", 0) or 0)
-        spent = summary["by_category"].get(budget["category"], 0.0)
-        variance = spent - limit
+    for row in plan_rows:
         variances.append({
-            "category": budget["category"],
-            "budget": round(limit, 2),
-            "spent": round(spent, 2),
-            "variance": round(variance, 2),
-            "variance_pct": round((variance / limit) * 100, 2) if limit > 0 else 0.0,
-            "status": "over" if variance > 0 else "under",
-            "source": budget.get("source", "MANUAL"),
+            "category": row["category"],
+            "currency": row["currency"],
+            "budget": row["planned"],
+            "spent": row["actual"],
+            "variance": row["variance"],
+            "variance_pct": row["variance_pct"] if row["variance_pct"] is not None else 0.0,
+            "status": "over" if row["status"] == "OVER_PLAN" else "under" if row["status"] == "UNDER_PLAN" else "on_plan",
+            "plan_status": row["status"],
+            "source": row.get("source", "MANUAL"),
         })
     return sorted(variances, key=lambda item: abs(item["variance"]), reverse=True)
 
@@ -112,6 +111,15 @@ def get_monthly_action_items(review: Dict[str, Any]) -> List[Dict[str, Any]]:
             "reference": {"projected_balance": review["forecast"]["projected_balance"]},
             "action": "Revisar entradas previstas y gastos próximos",
         })
+    for row in review.get("budget_burn", []):
+        if row.get("pace_status") == "OVER_PACE" and row.get("budget_status") != "EXCEEDED":
+            actions.append({
+                "type": "budget_pace",
+                "severity": "medium",
+                "reason": f"{row['category']} va por encima del ritmo esperado.",
+                "reference": {"category": row["category"], "burn_pressure": row.get("burn_pressure")},
+                "action": "Revisar el gasto restante del mes",
+            })
     return actions
 
 
@@ -134,8 +142,11 @@ def get_monthly_review(
     detected = get_recurring_transactions(transactions, today=today)
     recurring = get_confirmed_recurring(stored_recurring, detected)
     budget_variances = get_budget_variances(transactions, budgets, period)
+    plan_vs_actual = get_plan_vs_actual(transactions, budgets, start, end)
     budget_burn = get_budget_risks(transactions, budgets, today=today)
     forecast = get_cashflow_forecast(accounts, transactions, recurring["confirmed"] or recurring["detected"], today=today)
+    comparison = get_financial_changes(transactions, "current_month", today=end)
+    confidence = get_data_confidence(transactions, budgets, recurring["confirmed"] or recurring["detected"], reconciliation, {})
     review = {
         "period": period,
         "range": {"from": start.isoformat(), "to": end.isoformat()},
@@ -149,12 +160,15 @@ def get_monthly_review(
             "previous_expenses": previous_summary["expenses"],
             "previous_cashflow": previous_summary["cashflow"],
         },
-        "comparison": get_financial_changes(transactions, "current_month", today=end),
+        "comparison": comparison,
+        "what_changed": comparison,
+        "plan_vs_actual": plan_vs_actual,
         "budget_variances": budget_variances,
         "recurring": recurring,
         "upcoming_obligations": get_upcoming_obligations(recurring["confirmed"], today=today),
         "forecast": forecast,
         "budget_burn": budget_burn,
+        "data_confidence": confidence,
         "reconciliation": reconciliation,
     }
     review["action_items"] = get_monthly_action_items(review)

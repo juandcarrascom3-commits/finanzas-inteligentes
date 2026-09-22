@@ -1393,8 +1393,10 @@ class DatabaseManager:
         with self.get_connection() as conn:
             rows = conn.execute(
                 f"""
-                SELECT t.*, a.name as account_name
-                FROM transactions t LEFT JOIN accounts a ON t.account_id = a.id
+                SELECT t.*, a.name as account_name, c.flow_type as flow_type
+                FROM transactions t
+                LEFT JOIN accounts a ON t.account_id = a.id
+                LEFT JOIN categories c ON t.category = c.name
                 {where}
                 ORDER BY t.date DESC, t.created_at DESC
                 LIMIT ?
@@ -1430,9 +1432,10 @@ class DatabaseManager:
             row = conn.execute(
                 """
                 SELECT
-                    COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) as income,
-                    COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) as expenses
-                FROM transactions
+                    COALESCE(SUM(CASE WHEN COALESCE(c.flow_type, CASE WHEN t.amount > 0 THEN 'INCOME' ELSE 'EXPENSE' END) = 'INCOME' AND t.amount > 0 THEN t.amount ELSE 0 END), 0) as income,
+                    COALESCE(SUM(CASE WHEN COALESCE(c.flow_type, CASE WHEN t.amount < 0 THEN 'EXPENSE' ELSE 'INCOME' END) = 'EXPENSE' AND t.amount < 0 THEN ABS(t.amount) ELSE 0 END), 0) as expenses
+                FROM transactions t
+                LEFT JOIN categories c ON t.category = c.name
                 """
             ).fetchone()
         income = float(row["income"] or 0)

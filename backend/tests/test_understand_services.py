@@ -2,17 +2,23 @@ from datetime import date
 
 from backend.analytics.understand import (
     build_analysis_export,
+    eligible_budget_spend,
     get_data_confidence,
     get_action_items,
     get_budget_risks,
     get_cashflow_forecast,
     get_financial_changes,
+    get_plan_vs_actual,
     get_recurring_transactions,
 )
+from backend.analytics.monthly_review import get_monthly_review
 
 
-def tx(id, amount, day, category="General", description="Store", account_id="acc", currency="USD"):
-    return {"id": id, "amount": amount, "date": day, "category": category, "description": description, "account_id": account_id, "currency": currency, "source": "MANUAL"}
+def tx(id, amount, day, category="General", description="Store", account_id="acc", currency="USD", flow_type=None):
+    row = {"id": id, "amount": amount, "date": day, "category": category, "description": description, "account_id": account_id, "currency": currency, "source": "MANUAL"}
+    if flow_type:
+        row["flow_type"] = flow_type
+    return row
 
 
 def test_what_changed_is_deterministic():
@@ -112,3 +118,125 @@ def test_analysis_export_has_expected_shape_and_no_secret_fields():
     assert "api_key" not in serialized
     assert "token" not in serialized
     assert "secret" not in serialized
+
+
+def test_transfer_neutrality_for_cashflow_and_savings_rate():
+    transactions = [
+        tx("salary", 5_000_000, "2026-09-01", "Salario", currency="COP", flow_type="INCOME"),
+        tx("food", -1_000_000, "2026-09-02", "Mercado", currency="COP", flow_type="EXPENSE"),
+        tx("out", -2_000_000, "2026-09-03", "Transferencia", currency="COP", flow_type="TRANSFER"),
+        tx("in", 2_000_000, "2026-09-03", "Transferencia", currency="COP", flow_type="TRANSFER"),
+    ]
+    result = get_financial_changes(transactions, "current_month", today=date(2026, 9, 20))
+    cop = result["by_currency"]["COP"]
+    assert cop["income"]["current"] == 5_000_000
+    assert cop["expenses"]["current"] == 1_000_000
+    assert cop["net_cash_flow"]["current"] == 4_000_000
+    assert cop["savings_rate_semantics"]["current"]["value_pct"] == 80
+
+
+def test_transfer_in_and_out_are_independently_neutral():
+    base = [tx("food", -100, "2026-09-02", "Mercado", flow_type="EXPENSE")]
+    out = get_financial_changes(base + [tx("out", -900, "2026-09-03", "Transferencia", flow_type="TRANSFER")], today=date(2026, 9, 20))
+    inbound = get_financial_changes(base + [tx("in", 900, "2026-09-03", "Transferencia", flow_type="TRANSFER")], today=date(2026, 9, 20))
+    assert out["by_currency"]["USD"]["expenses"]["current"] == 100
+    assert inbound["by_currency"]["USD"]["expenses"]["current"] == 100
+    assert inbound["by_currency"]["USD"]["income"]["current"] == 0
+
+
+def test_zero_income_savings_rate_is_unevaluable_but_cashflow_remains():
+    result = get_financial_changes([tx("expense", -500_000, "2026-09-02", "Mercado", currency="COP", flow_type="EXPENSE")], today=date(2026, 9, 20))
+    cop = result["by_currency"]["COP"]
+    assert cop["net_cash_flow"]["current"] == -500_000
+    assert cop["savings_rate_semantics"]["current"]["value"] is None
+    assert cop["savings_rate_semantics"]["current"]["evaluability"] == "UNEVALUABLE"
+    assert cop["savings_rate_semantics"]["current"]["reason"] == "NO_INCOME"
+
+
+def test_savings_rate_delta_pp_relative_and_previous_zero():
+    transactions = [
+        tx("i1", 1000, "2026-09-01", "Income", flow_type="INCOME"),
+        tx("e1", -700, "2026-09-02", "Food", flow_type="EXPENSE"),
+        tx("i0", 1000, "2026-08-01", "Income", flow_type="INCOME"),
+        tx("e0", -800, "2026-08-02", "Food", flow_type="EXPENSE"),
+    ]
+    result = get_financial_changes(transactions, today=date(2026, 9, 20))
+    sem = result["by_currency"]["USD"]["savings_rate_semantics"]
+    assert sem["delta_pp"] == 10
+    assert sem["relative_delta_pct"] == 50
+
+    previous_zero = [
+        tx("i1", 1000, "2026-09-01", "Income", flow_type="INCOME"),
+        tx("e1", -700, "2026-09-02", "Food", flow_type="EXPENSE"),
+        tx("i0", 1000, "2026-08-01", "Income", flow_type="INCOME"),
+        tx("e0", -1000, "2026-08-02", "Food", flow_type="EXPENSE"),
+    ]
+    sem_zero = get_financial_changes(previous_zero, today=date(2026, 9, 20))["by_currency"]["USD"]["savings_rate_semantics"]
+    assert sem_zero["delta_pp"] == 30
+    assert sem_zero["relative_delta_pct"] is None
+
+
+def test_budget_spend_excludes_transfers_mismatched_currency_and_missing_currency():
+    rows = [
+        tx("expense", -700_000, "2026-09-02", "Mercado", currency="COP", flow_type="EXPENSE"),
+        tx("transfer", -400_000, "2026-09-02", "Mercado", currency="COP", flow_type="TRANSFER"),
+        tx("usd", -250, "2026-09-02", "Mercado", currency="USD", flow_type="EXPENSE"),
+        {"id": "missing", "amount": -100_000, "date": "2026-09-02", "category": "Mercado", "flow_type": "EXPENSE"},
+    ]
+    assert eligible_budget_spend(rows, "Mercado", "COP", date(2026, 9, 1), date(2026, 9, 30)) == 700_000
+
+
+def test_plan_vs_actual_expense_cap_statuses_and_identity():
+    rows = [tx("expense", -1_200_000, "2026-09-02", "Mercado", currency="COP", flow_type="EXPENSE")]
+    over = get_plan_vs_actual(rows, [{"category": "Mercado", "monthly_limit": 1_000_000, "currency": "COP"}], date(2026, 9, 1), date(2026, 9, 30))[0]
+    assert over["variance"] == 200_000
+    assert over["variance_pct"] == 20
+    assert over["status"] == "OVER_PLAN"
+
+    exact = get_plan_vs_actual([tx("expense", -1_000_000, "2026-09-02", "Mercado", currency="COP", flow_type="EXPENSE")], [{"category": "Mercado", "monthly_limit": 1_000_000, "currency": "COP"}], date(2026, 9, 1), date(2026, 9, 30))[0]
+    assert exact["variance"] == 0
+    assert exact["variance_pct"] == 0
+    assert exact["status"] == "ON_PLAN"
+
+
+def test_budget_burn_uses_actual_calendar_days_and_independent_statuses():
+    rows = [tx("expense", -700_000, "2026-09-02", "Mercado", currency="COP", flow_type="EXPENSE")]
+    burn = get_budget_risks(rows, [{"category": "Mercado", "monthly_limit": 1_000_000, "currency": "COP"}], today=date(2026, 9, 15))[0]
+    assert burn["days_in_period"] == 30
+    assert burn["burn_ratio"] == 0.7
+    assert burn["time_ratio"] == 0.5
+    assert burn["burn_pressure"] == 1.4
+    assert burn["pace_projection"] == 1_400_000
+    assert burn["pace_status"] == "OVER_PACE"
+    assert burn["budget_status"] == "WITHIN_BUDGET"
+
+
+def test_budget_burn_february_and_exceeded_budget():
+    feb = get_budget_risks([tx("expense", -500_000, "2026-02-02", "Mercado", currency="COP", flow_type="EXPENSE")], [{"category": "Mercado", "monthly_limit": 1_000_000, "currency": "COP"}], today=date(2026, 2, 14))[0]
+    assert feb["days_in_period"] == 28
+    assert feb["time_ratio"] == 0.5
+    assert feb["burn_pressure"] == 1.0
+    assert feb["pace_projection"] == 1_000_000
+    assert feb["pace_status"] == "ON_PACE"
+
+    leap = get_budget_risks([tx("expense", -500_000, "2028-02-02", "Mercado", currency="COP", flow_type="EXPENSE")], [{"category": "Mercado", "monthly_limit": 1_000_000, "currency": "COP"}], today=date(2028, 2, 14))[0]
+    assert leap["days_in_period"] == 29
+
+    exceeded = get_budget_risks([tx("expense", -1_100_000, "2026-09-02", "Mercado", currency="COP", flow_type="EXPENSE")], [{"category": "Mercado", "monthly_limit": 1_000_000, "currency": "COP"}], today=date(2026, 9, 15))[0]
+    assert exceeded["budget_status"] == "EXCEEDED"
+
+
+def test_monthly_review_composes_wave1_domain_outputs():
+    review = get_monthly_review(
+        transactions=[tx("expense", -700_000, "2026-09-02", "Mercado", currency="COP", flow_type="EXPENSE")],
+        accounts=[],
+        budgets=[{"category": "Mercado", "monthly_limit": 1_000_000, "currency": "COP"}],
+        stored_recurring=[],
+        reconciliation={"unmapped_accounts": [], "unmapped_categories": []},
+        period="2026-09",
+        today=date(2026, 9, 15),
+    )
+    assert review["what_changed"]["by_currency"]["COP"]["expenses"]["current"] == 700_000
+    assert review["plan_vs_actual"][0]["status"] == "UNDER_PLAN"
+    assert review["budget_burn"][0]["pace_status"] == "OVER_PACE"
+    assert "data_confidence" in review
