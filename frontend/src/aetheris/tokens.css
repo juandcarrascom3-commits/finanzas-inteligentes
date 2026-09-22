@@ -1,0 +1,187 @@
+.aetheris-lab {
+  --a-bg: #070a0f;
+  --a-canvas: #0d121a;
+  --a-surface: #121923;
+  --a-elevated: #17202b;
+  --a-floating: rgba(20, 28, 38, 0.88);
+  --a-inspector: rgba(11, 16, 23, 0.94);
+  --a-line: rgba(196, 212, 229, 0.12);
+  --a-line-strong: rgba(196, 212, 229, 0.22);
+  --a-text: #eef4f8;
+  --a-secondary: #aab8c5;
+  --a-muted: #72808e;
+  --a-brand: #8ab4ff;
+  --a-positive: #69d59d;
+  --a-negative: #ff7f8f;
+  --a-warning: #f2c66d;
+  --a-info: #70d7e5;
+  --a-analytical: #b99cff;
+  --a-radius: 18px;
+  --a-radius-sm: 12px;
+  --a-fast: 180ms;
+
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 18% 8%, rgba(138, 180, 255, 0.12), transparent 32rem),
+    linear-gradient(180deg, var(--a-bg), #090d13 55%, var(--a-bg));
+  color: var(--a-text);
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-feature-settings: "tnum";
+}
+
+.aetheris-lab * {
+  box-sizing: border-box;
+}
+
+.aetheris-lab button,
+.aetheris-lab [tabindex] {
+  outline: none;
+}
+
+.aetheris-lab button:focus-visible,
+.aetheris-lab [tabindex]:focus-visible {
+  box-shadow: 0 0 0 3px rgba(138, 180, 255, 0.45);
+}
+
+.a-shell {
+  width: min(1440px, 100%);
+  margin: 0 auto;
+  padding: 28px;
+}
+
+.a-page-kicker {
+  color: var(--a-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.a-page-title {
+  margin: 8px 0 0;
+  font-size: clamp(28px, 4vw, 48px);
+  line-height: 0.98;
+  letter-spacing: 0;
+  font-weight: 720;
+}
+
+.a-page-subtitle {
+  max-width: 760px;
+  margin: 14px 0 0;
+  color: var(--a-secondary);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.a-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  gap: 22px;
+  margin-top: 28px;
+}
+
+.a-canvas {
+  min-width: 0;
+  border: 1px solid var(--a-line);
+  border-radius: 28px;
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.035), transparent 36%),
+    var(--a-canvas);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.35);
+  padding: clamp(18px, 3vw, 32px);
+}
+
+.a-surface {
+  border: 1px solid var(--a-line);
+  border-radius: var(--a-radius);
+  background: var(--a-surface);
+}
+
+.a-elevated {
+  border: 1px solid var(--a-line-strong);
+  border-radius: 24px;
+  background: var(--a-elevated);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.22);
+}
+
+.a-floating,
+.a-inspector {
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+
+.a-floating {
+  background: var(--a-floating);
+  box-shadow: 0 18px 56px rgba(0, 0, 0, 0.34);
+}
+
+.a-inspector {
+  background: var(--a-inspector);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+}
+
+.a-module-title {
+  color: var(--a-text);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.a-meta {
+  color: var(--a-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.a-motion {
+  transition: transform var(--a-fast) ease, border-color var(--a-fast) ease, background-color var(--a-fast) ease, opacity var(--a-fast) ease;
+}
+
+.a-motion:hover {
+  transform: translateY(-1px);
+  border-color: var(--a-line-strong);
+}
+
+.a-enter {
+  animation: a-enter var(--a-fast) ease both;
+}
+
+@keyframes a-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aetheris-lab *,
+  .aetheris-lab *::before,
+  .aetheris-lab *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+
+  .a-motion:hover {
+    transform: none;
+  }
+}
+
+@media (max-width: 1040px) {
+  .a-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 680px) {
+  .a-shell {
+    padding: 16px;
+  }
+
+  .a-canvas {
+    border-radius: 22px;
+  }
+}
