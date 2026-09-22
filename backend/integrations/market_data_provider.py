@@ -134,7 +134,55 @@ class YFinanceProvider:
         return self.get_price_history(symbol, start, end)
 
     def get_etf_holdings(self, symbol: str) -> Dict[str, Any]:
-        return {"symbol": symbol.upper(), "status": "UNAVAILABLE", "coverage": "PARTIAL_HOLDINGS", "holdings": [], "provider": self.name}
+        yf = self._yf()
+        ticker = yf.Ticker(symbol)
+        funds_data = getattr(ticker, "funds_data", None)
+        if funds_data is None:
+            return {"symbol": symbol.upper(), "status": "UNAVAILABLE", "reasons": ["funds_data_unavailable"], "holdings": [], "asset_classes": [], "sectors": [], "provider": self.name}
+
+        def table_rows(value: Any, symbol_keys: List[str], label_keys: List[str], weight_keys: List[str]) -> List[Dict[str, Any]]:
+            rows: List[Dict[str, Any]] = []
+            try:
+                records = value.reset_index().to_dict("records") if hasattr(value, "reset_index") else []
+            except Exception:
+                records = []
+            for record in records:
+                lowered = {str(key).strip().lower().replace(" ", "_"): val for key, val in record.items()}
+                weight = next((lowered.get(key) for key in weight_keys if lowered.get(key) is not None), None)
+                if weight is None:
+                    continue
+                try:
+                    raw_weight = float(weight)
+                except Exception:
+                    continue
+                normalized = raw_weight / 100 if abs(raw_weight) > 1 else raw_weight
+                sym = next((lowered.get(key) for key in symbol_keys if lowered.get(key)), None)
+                label = next((lowered.get(key) for key in label_keys if lowered.get(key)), None)
+                rows.append({"symbol": str(sym or label or "").upper(), "label": str(label or sym or ""), "weight": normalized})
+            return rows
+
+        try:
+            top_holdings = getattr(funds_data, "top_holdings")
+        except Exception:
+            top_holdings = None
+        try:
+            asset_classes = getattr(funds_data, "asset_classes")
+        except Exception:
+            asset_classes = None
+        try:
+            sectors = getattr(funds_data, "sector_weightings")
+        except Exception:
+            sectors = None
+        return {
+            "symbol": symbol.upper(),
+            "status": "READY",
+            "provider": self.name,
+            "source_as_of": None,
+            "holdings": table_rows(top_holdings, ["symbol", "holding", "index"], ["name", "holding", "index"], ["holding_percent", "weight", "%_assets", "percent", "value"]),
+            "asset_classes": table_rows(asset_classes, ["index", "asset_class"], ["index", "asset_class"], ["weight", "value", "percent"]),
+            "sectors": table_rows(sectors, ["index", "sector"], ["index", "sector"], ["weight", "value", "percent"]),
+            "reasons": [],
+        }
 
 
 def get_market_provider(name: str = "YFINANCE") -> MarketDataProvider:

@@ -297,6 +297,15 @@ def test_financial_inbox_endpoint_contract():
     assert payload["assumptions"]["scenario_data_excluded"] is True
 
 
+def test_portfolio_exposure_endpoint_contract():
+    response = client.get("/api/portfolio/exposure")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] in {"READY", "PARTIAL", "UNEVALUABLE"}
+    assert "lenses" in payload
+    assert "provenance" in payload
+
+
 def test_phase4_budget_recurring_monthly_review_endpoints():
     wallet_plan = client.post("/api/budgetbakers/import-plan", json={
         "budgets": [{"category": "Wallet Food", "monthly_limit": 250, "currency": "USD", "external_id": "bb-budget-1"}],

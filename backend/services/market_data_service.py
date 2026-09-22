@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from database.db_manager import DatabaseManager
 from backend.integrations.market_data_provider import MarketDataProvider, get_market_provider
+from backend.analytics.portfolio_xray import normalize_fund_composition_snapshot
 
 
 def _today() -> str:
@@ -244,6 +245,41 @@ def get_market_data_status(db: DatabaseManager, holdings: Optional[List[Dict[str
         "price_policy": "External fresh > manual current price > stale external > unavailable.",
         "history_policy": "Adjusted close from provider when available; no provider calls during normal reads.",
     }
+
+
+def _fund_cache_key(provider: str, symbol: str) -> str:
+    return f"fund_composition:{provider.upper()}:{symbol.upper()}"
+
+
+def get_cached_fund_compositions(db: DatabaseManager, symbols: List[str], provider_name: str = "YFINANCE") -> Dict[str, Dict[str, Any]]:
+    snapshots: Dict[str, Dict[str, Any]] = {}
+    for symbol in sorted({s.upper() for s in symbols if s}):
+        cached = db.get_market_cache(_fund_cache_key(provider_name, symbol))
+        if cached:
+            snapshots[symbol] = cached["payload"]
+    return snapshots
+
+
+def refresh_fund_compositions(db: DatabaseManager, symbols: List[str], provider: Optional[MarketDataProvider] = None) -> Dict[str, Any]:
+    config = db.get_market_data_config()
+    provider = provider or get_market_provider(config.get("provider") or "YFINANCE")
+    now = datetime.now().isoformat()
+    ttl = int(config.get("quote_ttl_minutes") or 720)
+    expires = (datetime.now() + timedelta(minutes=ttl)).isoformat()
+    rows = []
+    errors = []
+    for symbol in sorted({s.upper() for s in symbols if s}):
+        try:
+            raw = provider.get_etf_holdings(symbol)
+            snapshot = normalize_fund_composition_snapshot(symbol, provider.name, raw, fetched_at=now)
+            db.set_market_cache(_fund_cache_key(provider.name, symbol), snapshot, provider.name, expires)
+            rows.append({"symbol": symbol, "status": snapshot["status"], "known_holdings_weight": snapshot["known_holdings_weight"], "residual_weight": snapshot["residual_weight"], "reasons": snapshot["reasons"]})
+        except Exception as exc:
+            rows.append({"symbol": symbol, "status": "FAILED", "error": str(exc)})
+            errors.append({"symbol": symbol, "error": str(exc)})
+    status = "PARTIAL" if errors else "CONNECTED"
+    db.set_sync_state("FUND_COMPOSITIONS", {"status": status, "last_sync_at": now, "last_success_at": now if not errors else None, "last_error": errors[0]["error"] if errors else None})
+    return {"provider": provider.name, "status": status, "started_at": now, "completed_at": datetime.now().isoformat(), "symbols": rows, "errors": errors}
 
 
 def _relevant_fx_pairs(holdings: List[Dict[str, Any]], operations: List[Dict[str, Any]]) -> Set[Tuple[str, str]]:

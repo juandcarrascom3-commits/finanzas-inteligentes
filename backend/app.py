@@ -85,6 +85,7 @@ from backend.analytics.wealth import (
     get_total_return_breakdown,
     get_wealth_action_items,
 )
+from backend.analytics.portfolio_xray import calculate_portfolio_exposure
 from backend.analytics.investment_ledger import (
     derive_positions,
     get_effective_holdings,
@@ -93,7 +94,7 @@ from backend.analytics.investment_ledger import (
 )
 from backend.services.budgetbakers_client import BudgetBakersClient, DailyQuotaExceededError
 from backend.services.guardrail_service import GuardrailService, TradeGuardrailBlockedError
-from backend.services.market_data_service import apply_market_prices, get_market_data_status, sync_market_data
+from backend.services.market_data_service import apply_market_prices, get_cached_fund_compositions, get_market_data_status, refresh_fund_compositions, sync_market_data
 
 app = FastAPI(
     title="Finanzas Inteligentes API",
@@ -306,6 +307,9 @@ class MarketDataSyncInput(BaseModel):
     end: Optional[str] = None
     mode: str = "FULL"
 
+class FundCompositionRefreshInput(BaseModel):
+    symbols: Optional[List[str]] = None
+
 class SymbolMappingInput(BaseModel):
     internal_symbol: str
     provider: str = "YFINANCE"
@@ -515,6 +519,14 @@ def _projection_from_payload(payload: CashProjectionInput) -> Dict[str, Any]:
         balance_as_of=balance_as_of,
         balance_freshness=freshness,
     )
+
+
+def _effective_priced_assets() -> tuple[List[Dict[str, Any]], Dict[str, Any], Dict[str, Any]]:
+    assets = db.get_assets(include_watchlist=False)
+    ledger_operations = db.get_investment_transactions()
+    effective = get_effective_holdings(assets, ledger_operations, db.get_opening_positions(), db.get_position_authority())
+    priced = apply_market_prices(db, effective["holdings"])
+    return priced["holdings"], effective, priced
 
 
 def _cash_scenario_engine_inputs(context: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
@@ -922,6 +934,30 @@ def run_market_data_sync(payload: MarketDataSyncInput = MarketDataSyncInput()):
         now = datetime.datetime.now().isoformat()
         db.set_sync_state("MARKET_DATA", {"status": "FAILED", "last_sync_at": now, "last_error": str(exc)})
         raise HTTPException(status_code=502, detail=str(exc))
+
+@app.post("/api/market-data/fund-compositions/refresh")
+def run_fund_composition_refresh(payload: FundCompositionRefreshInput = FundCompositionRefreshInput()):
+    try:
+        symbols = payload.symbols
+        if not symbols:
+            assets, _, _ = _effective_priced_assets()
+            symbols = [row["ticker"] for row in assets if str(row.get("asset_type") or "").upper() in {"ETF", "FUND", "MUTUAL_FUND", "INDEX_FUND"}]
+        return refresh_fund_compositions(db, symbols or [])
+    except Exception as exc:
+        now = datetime.datetime.now().isoformat()
+        db.set_sync_state("FUND_COMPOSITIONS", {"status": "FAILED", "last_sync_at": now, "last_error": str(exc)})
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.get("/api/portfolio/exposure")
+def get_portfolio_exposure():
+    assets, effective, priced = _effective_priced_assets()
+    market_config = db.get_market_data_config()
+    fund_symbols = [row["ticker"] for row in assets if str(row.get("asset_type") or "").upper() in {"ETF", "FUND", "MUTUAL_FUND", "INDEX_FUND"}]
+    snapshots = get_cached_fund_compositions(db, fund_symbols, market_config.get("provider") or "YFINANCE")
+    result = calculate_portfolio_exposure(assets, snapshots, base_currency="USD")
+    result["source_status"] = {"effective_holdings": effective.get("status"), "pricing": priced.get("status"), "fund_compositions_cached": len(snapshots)}
+    return result
 
 @app.get("/api/investment-ledger")
 def get_investment_ledger(ticker: Optional[str] = None, operation_type: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):

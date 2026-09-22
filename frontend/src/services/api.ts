@@ -17,6 +17,7 @@ import type {
   EtoroStatus,
   FinancialEvent,
   FinancialInboxResult,
+  FundCompositionRefreshResult,
   InvestmentThesis,
   InvestmentOperation,
   MappingConfig,
@@ -28,6 +29,7 @@ import type {
   SourceMapping,
   SafeToSpendResult,
   ScenarioEvaluationResult,
+  PortfolioExposureResult,
   Transaction,
   UnderstandSummary,
   WealthData
@@ -481,6 +483,20 @@ export async function syncMarketData(benchmarkSymbol?: string, mode: 'QUICK' | '
     body: JSON.stringify({ benchmark_symbol: benchmarkSymbol || undefined, mode })
   });
   return readJson<MarketDataSyncResult>(res, 'Error al actualizar datos de mercado.');
+}
+
+export async function refreshFundCompositions(symbols?: string[]): Promise<FundCompositionRefreshResult> {
+  const res = await fetch(`${API_BASE}/market-data/fund-compositions/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ symbols })
+  });
+  return readJson<FundCompositionRefreshResult>(res, 'Error al actualizar composiciones de fondos.');
+}
+
+export async function fetchPortfolioExposure(): Promise<PortfolioExposureResult> {
+  const res = await fetch(`${API_BASE}/portfolio/exposure`);
+  return readJson<PortfolioExposureResult>(res, 'Error al cargar Portfolio X-Ray.');
 }
 
 export async function saveMarketDataConfig(config: Record<string, unknown>): Promise<unknown> {

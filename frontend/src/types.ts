@@ -727,6 +727,62 @@ export interface WealthData {
   action_items: Array<{ type: string; severity: string; title: string; why: string; action: string }>;
 }
 
+export interface PortfolioExposureLens {
+  dimension: string;
+  status: string;
+  coverage_ratio: number;
+  coverage_pct: number;
+  classified_ratio?: number;
+  residual_weight: number;
+  unclassified_weight: number;
+  opaque_weight: number;
+  reasons: string[];
+  items: Array<{
+    id: string;
+    label: string;
+    effective_weight: number;
+    allocation_pct: number;
+    value_usd: number;
+    contributors: Array<{
+      source_position_id: string;
+      source_symbol: string;
+      exposure_type: string;
+      underlying_id: string;
+      underlying_symbol?: string | null;
+      label: string;
+      portfolio_weight: number;
+      source_weight: number;
+      effective_weight: number;
+      provenance?: string;
+    }>;
+  }>;
+}
+
+export interface PortfolioExposureResult {
+  as_of?: string;
+  base_currency: string;
+  portfolio_value: number;
+  status: string;
+  reason?: string;
+  reasons?: string[];
+  valuation_coverage?: number;
+  lenses: Record<'asset_class' | 'sector' | 'underlying_security', PortfolioExposureLens>;
+  intersections: Array<{ id: string; label: string; effective_weight: number; allocation_pct: number; contributors: PortfolioExposureLens['items'][number]['contributors'] }>;
+  opaque_positions: Array<{ ticker: string; portfolio_weight: number; reason: string }>;
+  concentration?: { status: string; reason: string };
+  provenance?: Record<string, unknown>;
+  source_status?: Record<string, unknown>;
+}
+
+export interface FundCompositionRefreshResult {
+  provider: string;
+  status: string;
+  started_at: string;
+  completed_at: string;
+  symbols: Array<{ symbol: string; status: string; known_holdings_weight?: number; residual_weight?: number; reasons?: string[]; error?: string }>;
+  errors: Array<{ symbol: string; error: string }>;
+}
+
 export interface MarketDataSyncResult {
   provider: string;
   mode: string;

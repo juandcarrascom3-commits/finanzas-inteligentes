@@ -22,6 +22,7 @@ import {
   fetchDataSource,
   fetchEtoroStatus,
   fetchFinancialEvents,
+  fetchPortfolioExposure,
   fetchEtoroMappings,
   fetchTheses,
   fetchTransactions,
@@ -32,6 +33,7 @@ import {
   importValuationsCsv,
   previewInvestmentLedgerCsv,
   previewTransactionsCsv,
+  refreshFundCompositions,
   saveAccount,
   saveAsset,
   saveInvestmentOperation,
@@ -76,7 +78,7 @@ import {
   updateRecurringStatus,
   validateBackup
 } from './services/api';
-import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview, WealthData, FinancialEvent, FinancialInboxResult } from './types';
+import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview, WealthData, FinancialEvent, FinancialInboxResult, PortfolioExposureResult } from './types';
 import { Compass, AlertTriangle, WalletCards, LineChart, Target } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -100,6 +102,7 @@ export const App: React.FC = () => {
   const [financialInbox, setFinancialInbox] = useState<FinancialInboxResult | null>(null);
   const [monthlyReview, setMonthlyReview] = useState<MonthlyReview | null>(null);
   const [wealth, setWealth] = useState<WealthData | null>(null);
+  const [portfolioExposure, setPortfolioExposure] = useState<PortfolioExposureResult | null>(null);
 
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -115,7 +118,7 @@ export const App: React.FC = () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const [dashData, assetsData, thesesData, accountsData, transactionsData, categoriesData, sourceData, understandData, budgetsData, recurringData, eventsData, reviewData, wealthData, inboxData] = await Promise.all([
+      const [dashData, assetsData, thesesData, accountsData, transactionsData, categoriesData, sourceData, understandData, budgetsData, recurringData, eventsData, reviewData, wealthData, exposureData, inboxData] = await Promise.all([
         fetchDashboard(exchangeRate),
         fetchAssets(),
         fetchTheses(),
@@ -129,6 +132,7 @@ export const App: React.FC = () => {
         fetchFinancialEvents(),
         fetchMonthlyReview(),
         fetchWealth(),
+        fetchPortfolioExposure().catch(() => null),
         evaluateFinancialInbox({ currency, horizon_days: 30 }).catch(() => null)
       ]);
       setDashboard(dashData);
@@ -144,6 +148,7 @@ export const App: React.FC = () => {
       setFinancialEvents(eventsData.events);
       setMonthlyReview(reviewData);
       setWealth(wealthData);
+      setPortfolioExposure(exposureData);
       setFinancialInbox(inboxData);
     } catch (err: any) {
       console.error('Error loading data:', err);
@@ -174,6 +179,7 @@ export const App: React.FC = () => {
 
   const refreshWealth = async (contributionUsd: number = 0, benchmarkKey?: string) => {
     setWealth(await fetchWealth(contributionUsd, benchmarkKey));
+    setPortfolioExposure(await fetchPortfolioExposure().catch(() => null));
     const updatedAssets = await fetchAssets();
     setAssets(updatedAssets);
     const updatedDashboard = await fetchDashboard(exchangeRate);
@@ -483,6 +489,7 @@ export const App: React.FC = () => {
               <div className="space-y-5">
                 <WealthTab
                   data={wealth}
+                  exposure={portfolioExposure}
                   privacyMode={privacyMode}
                   onRefresh={refreshWealth}
                   onImportValuations={importValuationsCsv}
@@ -494,6 +501,7 @@ export const App: React.FC = () => {
                   onSaveOpeningPosition={async (position) => { await saveOpeningPosition(position); await refreshWealth(); }}
                   onSetPositionAuthority={async (ticker, state, notes) => { await setPositionAuthority(ticker, state, notes); await refreshWealth(); }}
                   onSyncMarketData={async (benchmarkSymbol, mode) => { const result = await syncMarketData(benchmarkSymbol, mode); await refreshWealth(undefined, benchmarkSymbol); return result; }}
+                  onRefreshFundCompositions={async (symbols) => { const result = await refreshFundCompositions(symbols); await refreshWealth(); return result; }}
                   onSaveSymbolMapping={async (mapping) => { await saveSymbolMapping(mapping); await refreshWealth(); }}
                   onSavePriceAuthority={async (authority) => { await savePriceAuthority(authority); await refreshWealth(); }}
                   onSaveMarketDataConfig={async (config) => { await saveMarketDataConfig(config); await refreshWealth(); }}

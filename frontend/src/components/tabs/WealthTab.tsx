@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { AlertTriangle, BarChart3, GitCompare, PieChart, RefreshCw, Target, Upload } from 'lucide-react';
-import { CsvImportResult, InvestmentOperation, MarketDataSyncResult, WealthData } from '../../types';
+import { CsvImportResult, FundCompositionRefreshResult, InvestmentOperation, MarketDataSyncResult, PortfolioExposureResult, WealthData } from '../../types';
 
 interface WealthTabProps {
   data: WealthData | null;
+  exposure: PortfolioExposureResult | null;
   privacyMode: boolean;
   onRefresh: (contributionUsd?: number, benchmarkKey?: string) => Promise<void>;
   onImportValuations: (content: string) => Promise<CsvImportResult>;
@@ -15,6 +16,7 @@ interface WealthTabProps {
   onSaveOpeningPosition: (position: { ticker: string; opened_at: string; quantity: number; unit_cost?: number; total_cost?: number; currency: string; notes?: string }) => Promise<void>;
   onSetPositionAuthority: (ticker: string, state: string, notes?: string) => Promise<void>;
   onSyncMarketData: (benchmarkSymbol?: string, mode?: 'QUICK' | 'FULL') => Promise<MarketDataSyncResult>;
+  onRefreshFundCompositions: (symbols?: string[]) => Promise<FundCompositionRefreshResult>;
   onSaveSymbolMapping: (mapping: { internal_symbol: string; provider?: string; provider_symbol: string; instrument_type?: string; expected_currency?: string; status?: string }) => Promise<void>;
   onSavePriceAuthority: (authority: { ticker: string; authority_mode: 'AUTO' | 'MANUAL'; manual_price?: number; manual_currency?: string; notes?: string }) => Promise<void>;
   onSaveMarketDataConfig: (config: Record<string, unknown>) => Promise<void>;
@@ -24,7 +26,7 @@ interface WealthTabProps {
 const panel = 'bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3';
 const input = 'bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500';
 
-export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv, onSaveOpeningPosition, onSetPositionAuthority, onSyncMarketData, onSaveSymbolMapping, onSavePriceAuthority, onSaveMarketDataConfig, onSaveFxRate }) => {
+export const WealthTab: React.FC<WealthTabProps> = ({ data, exposure, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv, onSaveOpeningPosition, onSetPositionAuthority, onSyncMarketData, onRefreshFundCompositions, onSaveSymbolMapping, onSavePriceAuthority, onSaveMarketDataConfig, onSaveFxRate }) => {
   const [contribution, setContribution] = useState(0);
   const [benchmarkKey, setBenchmarkKey] = useState('');
   const [valuationCsv, setValuationCsv] = useState('');
@@ -44,6 +46,8 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
   const [selectedRecon, setSelectedRecon] = useState<string | null>(null);
   const [feedback, setFeedback] = useState('');
   const [syncingMarket, setSyncingMarket] = useState(false);
+  const [refreshingFunds, setRefreshingFunds] = useState(false);
+  const [xrayLens, setXrayLens] = useState<'asset_class' | 'sector' | 'underlying_security'>('underlying_security');
   const [symbolDrafts, setSymbolDrafts] = useState<Record<string, string>>({});
   const [manualPriceDrafts, setManualPriceDrafts] = useState<Record<string, string>>({});
   const [fxForm, setFxForm] = useState({ base_currency: 'COP', quote_currency: 'USD', rate: 0, rate_date: new Date().toISOString().slice(0, 10) });
@@ -82,6 +86,16 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
       setFeedback(`Market Data ${mode}: ${res.assets.filter((row) => row.status === 'UPDATED').length} activos, ${res.fx.filter((row) => row.status === 'UPDATED').length} FX, ${res.errors.length} fallos.`);
     } finally {
       setSyncingMarket(false);
+    }
+  };
+
+  const refreshFunds = async () => {
+    setRefreshingFunds(true);
+    try {
+      const res = await onRefreshFundCompositions();
+      setFeedback(`Fund compositions: ${res.symbols.length} símbolos, ${res.errors.length} fallos.`);
+    } finally {
+      setRefreshingFunds(false);
     }
   };
 
@@ -216,6 +230,72 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, privacyMode, onRefre
                 <div className="text-xs text-gray-400">Ledger: {data.ledger.reconciliation.issues.length} acciones</div>
           <div className="text-xs text-gray-400">{data.history.policy}</div>
         </div>
+      </section>
+
+      <section className={panel}>
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <div className="text-sm font-bold text-white">Portfolio X-Ray</div>
+            <div className="text-xs text-gray-400">
+              {exposure ? `${exposure.status} · Look-through ${exposure.lenses?.underlying_security?.coverage_pct ?? 0}% · ${money(exposure.portfolio_value)}` : 'Sin exposición calculada'}
+            </div>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {(['asset_class', 'sector', 'underlying_security'] as const).map((lens) => (
+              <button key={lens} onClick={() => setXrayLens(lens)} className={`px-3 py-2 rounded-lg text-xs font-bold ${xrayLens === lens ? 'bg-emerald-600 text-white' : 'bg-gray-800 text-gray-300'}`}>
+                {lens === 'asset_class' ? 'Asset Class' : lens === 'sector' ? 'Sector' : 'Underlying'}
+              </button>
+            ))}
+            <button onClick={refreshFunds} disabled={refreshingFunds} className="px-3 py-2 rounded-lg bg-gray-800 disabled:opacity-60 text-gray-200 text-xs font-bold">
+              {refreshingFunds ? 'Actualizando...' : 'Refresh funds'}
+            </button>
+          </div>
+        </div>
+        {exposure?.lenses?.[xrayLens] ? (
+          <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
+            <div className="space-y-2">
+              <div className="h-2 bg-gray-900 rounded-full overflow-hidden">
+                <div className="h-full bg-emerald-500" style={{ width: `${Math.min(100, Math.max(0, exposure.lenses[xrayLens].coverage_pct || 0))}%` }} />
+              </div>
+              <div className="text-xs text-gray-400">
+                Cobertura {exposure.lenses[xrayLens].coverage_pct}% · residual {(exposure.lenses[xrayLens].residual_weight * 100).toFixed(2)}% · opaque {(exposure.lenses[xrayLens].opaque_weight * 100).toFixed(2)}% · unclassified {(exposure.lenses[xrayLens].unclassified_weight * 100).toFixed(2)}%
+              </div>
+              {exposure.lenses[xrayLens].items.slice(0, 10).map((row) => (
+                <details key={row.id} className="bg-gray-900/60 border border-gray-800 rounded-lg p-3 text-xs">
+                  <summary className="cursor-pointer">
+                    <span className="text-white font-bold">{row.label}</span>
+                    <span className="float-right text-gray-300">{row.allocation_pct}% · {money(row.value_usd)}</span>
+                  </summary>
+                  <div className="mt-2 space-y-1">
+                    {row.contributors.map((contributor) => (
+                      <div key={`${row.id}-${contributor.source_symbol}-${contributor.effective_weight}`} className="flex justify-between border-t border-gray-800 pt-1 text-gray-400">
+                        <span>{contributor.source_symbol}<span className="text-gray-600"> · source {(contributor.source_weight * 100).toFixed(2)}%</span></span>
+                        <span>{(contributor.effective_weight * 100).toFixed(2)}%</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              ))}
+            </div>
+            <div className="space-y-2 text-xs">
+              <div className="bg-gray-900/60 border border-gray-800 rounded-lg p-3">
+                <div className="text-gray-500">Opaque</div>
+                {(exposure.opaque_positions || []).slice(0, 5).map((row) => <div key={row.ticker} className="flex justify-between"><span>{row.ticker}</span><span>{(row.portfolio_weight * 100).toFixed(2)}%</span></div>)}
+                {(exposure.opaque_positions || []).length === 0 && <div className="text-gray-500">Sin posiciones opacas.</div>}
+              </div>
+              <div className="bg-gray-900/60 border border-gray-800 rounded-lg p-3">
+                <div className="text-gray-500">Intersections</div>
+                {(exposure.intersections || []).slice(0, 5).map((row) => <div key={row.id} className="flex justify-between"><span>{row.label}</span><span>{row.allocation_pct}%</span></div>)}
+                {(exposure.intersections || []).length === 0 && <div className="text-gray-500">Sin exposición compartida.</div>}
+              </div>
+              <div className="bg-gray-900/60 border border-gray-800 rounded-lg p-3 text-gray-500">
+                Concentración: {exposure.concentration?.status || 'DEFERRED'}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="text-xs text-gray-500 bg-gray-900/60 rounded-lg p-3">X-Ray no evaluable todavía.</div>
+        )}
       </section>
 
       <section className={panel}>
