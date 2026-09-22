@@ -809,6 +809,47 @@ export interface ScenarioEvaluationResult {
   status: string;
 }
 
+export interface AttentionItem {
+  id: string;
+  type: string;
+  severity: 'WATCH' | 'ATTENTION' | 'URGENT' | 'INFO' | string;
+  title: string;
+  summary: string;
+  effective_date: string;
+  currency?: string | null;
+  source: string;
+  source_id?: string | null;
+  confidence?: string | null;
+  evidence: Array<Record<string, unknown>>;
+  actions: string[];
+}
+
+export interface TimelineItem {
+  id: string;
+  date: string;
+  temporal_relation: 'NOW' | 'FUTURE' | string;
+  type: string;
+  title: string;
+  summary: string;
+  amount?: number;
+  currency?: string | null;
+  certainty?: string;
+  confidence?: string | null;
+  source?: string;
+  source_id?: string | null;
+}
+
+export interface FinancialInboxResult {
+  as_of: string;
+  currency: string;
+  horizon_days: number;
+  status: 'READY' | 'EMPTY' | 'PARTIAL' | string;
+  attention_items: AttentionItem[];
+  summary: { urgent_count: number; attention_count: number; watch_count: number };
+  timeline: TimelineItem[];
+  assumptions: Record<string, unknown>;
+}
+
 export interface InvestmentOperation {
   id: string;
   occurred_at: string;

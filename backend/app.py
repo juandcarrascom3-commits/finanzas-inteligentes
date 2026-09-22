@@ -45,6 +45,7 @@ from backend.analytics.cash_projection import (
     project_cash,
 )
 from backend.analytics.scenarios import evaluate_scenario
+from backend.analytics.financial_inbox import compose_financial_inbox
 from backend.analytics.projections import calculate_budget_projections
 from backend.integrations.budgetbakers_adapter import (
     BudgetBakersAdapter,
@@ -405,6 +406,14 @@ class ScenarioEvaluateInput(BaseModel):
     overrides: Dict[str, Any] = Field(default_factory=dict)
 
 
+class FinancialInboxInput(BaseModel):
+    currency: str = "USD"
+    horizon_days: int = Field(default=30, ge=1, le=90)
+    as_of: Optional[str] = None
+    starting_balance: Optional[float] = None
+    reserve_floor: Optional[float] = None
+
+
 def get_budgetbakers_adapter() -> BudgetBakersAdapter:
     return BudgetBakersAdapter()
 
@@ -621,6 +630,37 @@ def scenario_evaluate(payload: ScenarioEvaluateInput):
         return evaluate_scenario(scenario_type, context, dict(payload.overrides), engine_inputs)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/financial-inbox/evaluate")
+def financial_inbox_evaluate(payload: FinancialInboxInput):
+    as_of = _parse_optional_day(payload.as_of)
+    currency = payload.currency.upper()
+    projection = _projection_from_payload(CashProjectionInput(
+        currency=currency,
+        horizon_days=payload.horizon_days,
+        as_of=as_of.isoformat(),
+        starting_balance=payload.starting_balance,
+    ))
+    safe = calculate_safe_to_spend(projection, payload.reserve_floor) if payload.reserve_floor is not None else None
+    transactions = db.get_transactions(limit=5000)
+    budgets = db.get_budgets()
+    recurring = get_recurring_transactions(transactions)
+    reconciliation = db.get_reconciliation_summary("BUDGETBAKERS")
+    data_confidence = get_understand_data_confidence(transactions, budgets, recurring, reconciliation, db.get_sync_state("BUDGETBAKERS"))
+    month_start = as_of.replace(day=1)
+    events = get_financial_events(from_date=as_of.isoformat(), to=(as_of + datetime.timedelta(days=payload.horizon_days)).isoformat())["events"]
+    return compose_financial_inbox(
+        as_of=as_of,
+        currency=currency,
+        horizon_days=payload.horizon_days,
+        projection=projection,
+        safe_to_spend=safe,
+        plan_vs_actual=get_plan_vs_actual(transactions, budgets, month_start, as_of),
+        budget_burn=get_budget_risks(transactions, budgets, today=as_of),
+        data_confidence=data_confidence,
+        financial_events=events,
+    )
 
 @app.get("/api/data-source")
 def get_data_source():

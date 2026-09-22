@@ -281,6 +281,22 @@ def test_scenario_evaluate_endpoint_validation():
     assert invalid.status_code == 422
 
 
+def test_financial_inbox_endpoint_contract():
+    response = client.post("/api/financial-inbox/evaluate", json={
+        "currency": "USD",
+        "horizon_days": 7,
+        "as_of": "2026-09-21",
+        "starting_balance": 5000,
+    })
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["currency"] == "USD"
+    assert payload["status"] in {"READY", "EMPTY", "PARTIAL"}
+    assert "attention_items" in payload
+    assert "timeline" in payload
+    assert payload["assumptions"]["scenario_data_excluded"] is True
+
+
 def test_phase4_budget_recurring_monthly_review_endpoints():
     wallet_plan = client.post("/api/budgetbakers/import-plan", json={
         "budgets": [{"category": "Wallet Food", "monthly_limit": 250, "currency": "USD", "external_id": "bb-budget-1"}],

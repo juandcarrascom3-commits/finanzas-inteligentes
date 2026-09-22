@@ -44,6 +44,7 @@ import {
   runRunway,
   runSafeToSpend,
   evaluateScenario,
+  evaluateFinancialInbox,
   simulatePurchase,
   fetchBudgetBakersStatus,
   fetchBudgets,
@@ -75,7 +76,7 @@ import {
   updateRecurringStatus,
   validateBackup
 } from './services/api';
-import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview, WealthData, FinancialEvent } from './types';
+import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview, WealthData, FinancialEvent, FinancialInboxResult } from './types';
 import { Compass, AlertTriangle, WalletCards, LineChart, Target } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -96,6 +97,7 @@ export const App: React.FC = () => {
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [recurring, setRecurring] = useState<RecurringRule[]>([]);
   const [financialEvents, setFinancialEvents] = useState<FinancialEvent[]>([]);
+  const [financialInbox, setFinancialInbox] = useState<FinancialInboxResult | null>(null);
   const [monthlyReview, setMonthlyReview] = useState<MonthlyReview | null>(null);
   const [wealth, setWealth] = useState<WealthData | null>(null);
 
@@ -113,7 +115,7 @@ export const App: React.FC = () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const [dashData, assetsData, thesesData, accountsData, transactionsData, categoriesData, sourceData, understandData, budgetsData, recurringData, eventsData, reviewData, wealthData] = await Promise.all([
+      const [dashData, assetsData, thesesData, accountsData, transactionsData, categoriesData, sourceData, understandData, budgetsData, recurringData, eventsData, reviewData, wealthData, inboxData] = await Promise.all([
         fetchDashboard(exchangeRate),
         fetchAssets(),
         fetchTheses(),
@@ -126,7 +128,8 @@ export const App: React.FC = () => {
         fetchRecurring(),
         fetchFinancialEvents(),
         fetchMonthlyReview(),
-        fetchWealth()
+        fetchWealth(),
+        evaluateFinancialInbox({ currency, horizon_days: 30 }).catch(() => null)
       ]);
       setDashboard(dashData);
       setAssets(assetsData);
@@ -141,13 +144,14 @@ export const App: React.FC = () => {
       setFinancialEvents(eventsData.events);
       setMonthlyReview(reviewData);
       setWealth(wealthData);
+      setFinancialInbox(inboxData);
     } catch (err: any) {
       console.error('Error loading data:', err);
       setErrorMsg('No se pudo conectar al servidor local. Verifique que el backend de FastAPI esté en ejecución.');
     } finally {
       setIsLoading(false);
     }
-  }, [exchangeRate, understandPeriod]);
+  }, [exchangeRate, understandPeriod, currency]);
 
   useEffect(() => {
     loadAllData();
@@ -289,6 +293,56 @@ export const App: React.FC = () => {
                       ))}
                     </div>
                   </details>
+                </div>
+              </section>
+            )}
+
+            {financialInbox && (
+              <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-bold text-white">Financial Inbox</h2>
+                    <p className="text-xs text-gray-400">Qué requiere atención ahora y qué viene después.</p>
+                  </div>
+                  <div className="text-[11px] text-gray-400">{financialInbox.status} · {financialInbox.currency} · {financialInbox.horizon_days} días</div>
+                </div>
+                {financialInbox.attention_items.length === 0 && (
+                  <div className="text-xs text-gray-400 bg-gray-900/60 rounded-lg p-3">No priority issues detected.</div>
+                )}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
+                  <div className="space-y-2">
+                    <div className="font-bold text-gray-300">Needs Attention</div>
+                    {financialInbox.attention_items.filter((item) => item.severity === 'URGENT' || item.severity === 'ATTENTION').slice(0, 4).map((item) => (
+                      <div key={item.id} className="bg-gray-900/60 rounded-lg p-3 border border-gray-800">
+                        <div className={item.severity === 'URGENT' ? 'text-red-300 font-bold' : 'text-amber-300 font-bold'}>{item.title}</div>
+                        <div className="text-gray-400 mt-1">{item.summary}</div>
+                      </div>
+                    ))}
+                    {financialInbox.attention_items.filter((item) => item.severity === 'URGENT' || item.severity === 'ATTENTION').length === 0 && <div className="text-gray-500">Sin asuntos prioritarios.</div>}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="font-bold text-gray-300">To Review</div>
+                    {financialInbox.attention_items.filter((item) => item.severity === 'WATCH').slice(0, 4).map((item) => (
+                      <div key={item.id} className="bg-gray-900/60 rounded-lg p-3 border border-gray-800">
+                        <div className="text-blue-300 font-bold">{item.title}</div>
+                        <div className="text-gray-400 mt-1">{item.summary}</div>
+                      </div>
+                    ))}
+                    {financialInbox.attention_items.filter((item) => item.severity === 'WATCH').length === 0 && <div className="text-gray-500">Sin revisiones pendientes.</div>}
+                  </div>
+                  <div className="space-y-2">
+                    <div className="font-bold text-gray-300">Coming Up</div>
+                    {financialInbox.timeline.filter((item) => item.temporal_relation === 'FUTURE').slice(0, 5).map((item) => (
+                      <div key={item.id} className="flex justify-between gap-2 bg-gray-900/60 rounded-lg p-3 border border-gray-800">
+                        <div>
+                          <div className="text-white font-bold">{item.title}</div>
+                          <div className="text-gray-500">{item.date} · {item.certainty || item.confidence || item.source}</div>
+                        </div>
+                        {item.amount != null && <div className="text-gray-300">{formatMoney(item.amount, item.currency)}</div>}
+                      </div>
+                    ))}
+                    {financialInbox.timeline.filter((item) => item.temporal_relation === 'FUTURE').length === 0 && <div className="text-gray-500">Sin eventos próximos.</div>}
+                  </div>
                 </div>
               </section>
             )}

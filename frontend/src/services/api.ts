@@ -16,6 +16,7 @@ import type {
   EtoroPreview,
   EtoroStatus,
   FinancialEvent,
+  FinancialInboxResult,
   InvestmentThesis,
   InvestmentOperation,
   MappingConfig,
@@ -582,4 +583,13 @@ export async function evaluateScenario(payload: Record<string, unknown>): Promis
     body: JSON.stringify(payload)
   });
   return readJson<ScenarioEvaluationResult>(res, 'Error al evaluar escenario.');
+}
+
+export async function evaluateFinancialInbox(payload: Record<string, unknown>): Promise<FinancialInboxResult> {
+  const res = await fetch(`${API_BASE}/financial-inbox/evaluate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return readJson<FinancialInboxResult>(res, 'Error al evaluar inbox financiero.');
 }
