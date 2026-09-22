@@ -220,6 +220,25 @@ def test_calculator_endpoints_contracts_and_validation():
     assert invalid.status_code == 422
 
 
+def test_financial_events_endpoint_returns_expected_recurring_events():
+    for idx, day in enumerate(["2026-09-01", "2026-09-08", "2026-09-15", "2026-09-22"]):
+        created = client.post("/api/transactions", json={
+            "amount": -100,
+            "category": "General",
+            "date": day,
+            "description": "Wave3 Weekly Test",
+            "currency": "USD",
+            "external_id": f"wave3-weekly-{idx}",
+        })
+        assert created.status_code == 200
+    response = client.get("/api/financial-events?from=2026-09-23&to=2026-10-14")
+    assert response.status_code == 200
+    data = response.json()
+    events = [event for event in data["events"] if event["label"].startswith("wave3 weekly test")]
+    assert [event["date"] for event in events] == ["2026-09-29", "2026-10-06", "2026-10-13"]
+    assert all(event["certainty"] == "EXPECTED" for event in events)
+
+
 def test_phase4_budget_recurring_monthly_review_endpoints():
     wallet_plan = client.post("/api/budgetbakers/import-plan", json={
         "budgets": [{"category": "Wallet Food", "monthly_limit": 250, "currency": "USD", "external_id": "bb-budget-1"}],

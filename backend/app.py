@@ -55,6 +55,7 @@ from backend.integrations.etoro_adapter import (
 )
 from backend.analytics.understand import (
     build_analysis_export,
+    expand_financial_events,
     get_data_confidence as get_understand_data_confidence,
     get_action_items,
     get_budget_risks,
@@ -1516,6 +1517,23 @@ def get_recurring():
     detected = get_recurring_transactions(db.get_transactions(limit=5000))
     stored = db.sync_detected_recurring_rules(detected)
     return stored
+
+
+@app.get("/api/financial-events")
+def get_financial_events(from_date: Optional[str] = Query(None, alias="from"), to: Optional[str] = None):
+    try:
+        start = datetime.date.fromisoformat(from_date) if from_date else datetime.date.today()
+        end = datetime.date.fromisoformat(to) if to else start + datetime.timedelta(days=30)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid date range")
+    if end < start:
+        raise HTTPException(status_code=422, detail="Invalid date range")
+    max_end = start + datetime.timedelta(days=90)
+    if end > max_end:
+        end = max_end
+    patterns = get_recurring_transactions(db.get_transactions(limit=5000), today=start)
+    events = expand_financial_events(patterns, start, end)
+    return {"range": {"from": start.isoformat(), "to": end.isoformat()}, "events": events, "patterns_considered": len(patterns)}
 
 @app.patch("/api/recurring/{rule_id}")
 def update_recurring(rule_id: str, payload: RecurringStatusInput):

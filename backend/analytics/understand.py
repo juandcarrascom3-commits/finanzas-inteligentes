@@ -4,10 +4,17 @@ import re
 import calendar
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
-from statistics import mean
+from statistics import mean, median
 from typing import Any, Dict, List, Optional, Tuple
 
 BUDGET_PACE_TOLERANCE = 0.10
+WEEKLY_DAYS = 7
+BIWEEKLY_DAYS = 14
+MONTHLY_MIN_DAYS = 27
+MONTHLY_MAX_DAYS = 32
+INTERVAL_TOLERANCE_DAYS = 2
+AMOUNT_MAD_HIGH_RATIO = 0.10
+AMOUNT_MAD_MEDIUM_RATIO = 0.25
 
 
 def _parse_date(value: str) -> date:
@@ -379,6 +386,107 @@ def _merchant_key(tx: Dict[str, Any]) -> str:
     return re.sub(r"\s+", " ", text).strip()[:80] or "sin descripcion"
 
 
+def _is_end_of_month(day: date) -> bool:
+    return day.day == calendar.monthrange(day.year, day.month)[1]
+
+
+def _add_month(day: date, end_of_month: bool = False) -> date:
+    year = day.year + (1 if day.month == 12 else 0)
+    month = 1 if day.month == 12 else day.month + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, last_day if end_of_month else min(day.day, last_day))
+
+
+def _median_abs_deviation(values: List[float], center: float) -> float:
+    return float(median([abs(value - center) for value in values])) if values else 0.0
+
+
+def _classify_frequency(days: List[date], typical_interval: Optional[float]) -> Tuple[str, Optional[str]]:
+    if not typical_interval:
+        return "OTHER", None
+    if abs(typical_interval - WEEKLY_DAYS) <= INTERVAL_TOLERANCE_DAYS:
+        return "WEEKLY", None
+    if abs(typical_interval - BIWEEKLY_DAYS) <= INTERVAL_TOLERANCE_DAYS:
+        return "BIWEEKLY", None
+    if MONTHLY_MIN_DAYS <= typical_interval <= MONTHLY_MAX_DAYS:
+        if all(_is_end_of_month(day) for day in days):
+            return "MONTHLY", "END_OF_MONTH"
+        if len({day.day for day in days}) == 1:
+            return "MONTHLY", "SAME_DAY_OF_MONTH"
+        return "MONTHLY", "MONTHLY_INTERVAL"
+    return "OTHER", None
+
+
+def _next_date(last_seen: date, frequency: str, anchor: Optional[str], interval_days: Optional[float]) -> Optional[date]:
+    if frequency == "WEEKLY":
+        return last_seen + timedelta(days=7)
+    if frequency == "BIWEEKLY":
+        return last_seen + timedelta(days=14)
+    if frequency == "MONTHLY":
+        return _add_month(last_seen, anchor == "END_OF_MONTH")
+    if interval_days:
+        return last_seen + timedelta(days=round(interval_days))
+    return None
+
+
+def _confidence(occurrences: int, interval_mad: float, amount_mad: float, typical_amount: float, context_consistent: bool) -> Tuple[str, List[str]]:
+    reasons = [f"{occurrences} observations"]
+    amount_ratio = (amount_mad / typical_amount) if typical_amount else 0.0
+    timing_stable = interval_mad <= INTERVAL_TOLERANCE_DAYS
+    if timing_stable:
+        reasons.append("stable timing")
+    else:
+        reasons.append("variable timing")
+    if amount_ratio <= AMOUNT_MAD_HIGH_RATIO:
+        reasons.append("stable amount")
+    elif amount_ratio <= AMOUNT_MAD_MEDIUM_RATIO:
+        reasons.append("moderately variable amount")
+    else:
+        reasons.append("variable amount")
+    if not context_consistent:
+        reasons.append("mixed account/category context")
+    if occurrences >= 4 and timing_stable and amount_ratio <= AMOUNT_MAD_HIGH_RATIO and context_consistent:
+        return "HIGH", reasons
+    if occurrences >= 3 and timing_stable and amount_ratio <= AMOUNT_MAD_MEDIUM_RATIO and context_consistent:
+        return "MEDIUM", reasons
+    return "LOW", reasons
+
+
+def expand_financial_events(patterns: List[Dict[str, Any]], start: date, end: date, min_confidence: Tuple[str, ...] = ("MEDIUM", "HIGH")) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for pattern in patterns:
+        if pattern.get("confidence") not in min_confidence:
+            continue
+        next_date_raw = pattern.get("next_expected_date") or pattern.get("next_expected")
+        if not next_date_raw:
+            continue
+        current = _parse_date(next_date_raw)
+        emitted = 0
+        while current <= end and emitted < 64:
+            if current >= start:
+                events.append({
+                    "id": f"evt:{pattern['id']}:{current.isoformat()}",
+                    "date": current.isoformat(),
+                    "amount": pattern["typical_amount"],
+                    "currency": pattern["currency"],
+                    "direction": pattern["direction"],
+                    "event_type": "RECURRING",
+                    "certainty": "EXPECTED",
+                    "source": "recurrence_pattern",
+                    "source_id": pattern["id"],
+                    "confidence": pattern["confidence"],
+                    "label": pattern["merchant"],
+                })
+                emitted += 1
+            if pattern["frequency"] == "OTHER":
+                break
+            next_value = _next_date(current, pattern["frequency"], pattern.get("monthly_anchor"), pattern.get("typical_interval_days"))
+            if not next_value or next_value <= current:
+                break
+            current = next_value
+    return sorted(events, key=lambda item: (item["date"], item["label"], item["id"]))
+
+
 def get_recurring_transactions(transactions: List[Dict[str, Any]], today: Optional[date] = None) -> List[Dict[str, Any]]:
     today = today or date.today()
     groups: Dict[tuple, List[Dict[str, Any]]] = defaultdict(list)
@@ -388,40 +496,57 @@ def get_recurring_transactions(transactions: List[Dict[str, Any]], today: Option
             tx_date = _parse_date(tx["date"])
         except Exception:
             continue
-        rounded_amount = round(amount / 5) * 5
-        groups[(_merchant_key(tx), rounded_amount, tx.get("category") or "General", tx.get("account_id") or "")].append({**tx, "_date": tx_date})
+        if _is_transfer(tx) or amount == 0:
+            continue
+        direction = "INFLOW" if _is_income(tx) else "OUTFLOW" if _is_expense(tx) else None
+        if not direction:
+            continue
+        groups[(_merchant_key(tx), _tx_currency(tx), direction, tx.get("category") or "General", tx.get("account_id") or "")].append({**tx, "_date": tx_date})
 
     candidates = []
-    for (merchant, rounded_amount, category, account_id), rows in groups.items():
+    for (merchant, currency, direction, category, account_id), rows in groups.items():
         rows.sort(key=lambda tx: tx["_date"])
         if len(rows) < 2:
             continue
         gaps = [(rows[i]["_date"] - rows[i - 1]["_date"]).days for i in range(1, len(rows))]
-        avg_gap = mean(gaps) if gaps else 0
-        if 25 <= avg_gap <= 35:
-            frequency = "monthly"
-        elif 6 <= avg_gap <= 8:
-            frequency = "weekly"
-        elif 13 <= avg_gap <= 16:
-            frequency = "biweekly"
-        else:
-            continue
-        confidence = "probable" if len(rows) >= 3 else "possible"
+        typical_interval = float(median(gaps)) if gaps else None
+        interval_mad = _median_abs_deviation([float(gap) for gap in gaps], typical_interval or 0.0)
+        frequency, monthly_anchor = _classify_frequency([row["_date"] for row in rows], typical_interval)
+        magnitudes = [abs(float(tx.get("amount", 0) or 0)) for tx in rows]
+        typical_amount_abs = float(median(magnitudes))
+        amount_mad = _median_abs_deviation(magnitudes, typical_amount_abs)
+        context_consistent = len({row.get("category") or "General" for row in rows}) == 1 and len({row.get("account_id") or "" for row in rows}) == 1
+        confidence, confidence_reasons = _confidence(len(rows), interval_mad, amount_mad, typical_amount_abs, context_consistent)
         last_seen = rows[-1]["_date"]
-        next_date = last_seen + timedelta(days=round(avg_gap)) if avg_gap else None
-        amounts = [float(tx.get("amount", 0) or 0) for tx in rows]
+        next_date = _next_date(last_seen, frequency, monthly_anchor, typical_interval)
+        signed_amount = typical_amount_abs if direction == "INFLOW" else -typical_amount_abs
+        pattern_id = f"rec:{merchant}:{currency}:{direction}:{category}:{account_id}"
         candidates.append({
+            "id": pattern_id,
             "merchant": merchant,
+            "merchant_key": merchant,
             "category": category,
             "account_id": account_id,
-            "typical_amount": round(mean(amounts), 2),
+            "account": account_id,
+            "currency": currency,
+            "direction": direction,
+            "typical_amount": round(signed_amount, 2),
+            "amount_mad": round(amount_mad, 2),
             "frequency": frequency,
+            "frequency_legacy": frequency.lower(),
             "confidence": confidence,
+            "confidence_legacy": "probable" if confidence in {"MEDIUM", "HIGH"} else "possible",
+            "confidence_reasons": confidence_reasons,
             "occurrences": len(rows),
+            "first_seen": rows[0]["_date"].isoformat(),
             "last_seen": last_seen.isoformat(),
+            "next_expected_date": next_date.isoformat() if next_date else None,
             "next_expected": next_date.isoformat() if next_date and next_date >= today - timedelta(days=7) else None,
+            "typical_interval_days": typical_interval,
+            "interval_mad": round(interval_mad, 2),
+            "monthly_anchor": monthly_anchor,
         })
-    return sorted(candidates, key=lambda item: (item["confidence"] != "probable", item["next_expected"] or "9999"))
+    return sorted(candidates, key=lambda item: ({"HIGH": 0, "MEDIUM": 1, "LOW": 2}.get(item["confidence"], 3), item["next_expected"] or "9999", item["merchant"]))
 
 
 def get_budget_risks(transactions: List[Dict[str, Any]], budgets: List[Dict[str, Any]], today: Optional[date] = None) -> List[Dict[str, Any]]:

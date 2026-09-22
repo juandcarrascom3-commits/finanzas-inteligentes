@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
-import { Budget, CalculatorKind, CalculatorResult, Category, MonthlyReview, RecurringRule } from '../../types';
+import { Budget, CalculatorKind, CalculatorResult, Category, FinancialEvent, MonthlyReview, RecurringRule } from '../../types';
 
 interface PlanningTabProps {
   budgets: Budget[];
   categories: Category[];
   recurring: RecurringRule[];
+  financialEvents: FinancialEvent[];
   review: MonthlyReview | null;
   privacyMode: boolean;
   onSaveBudget: (budget: Partial<Budget>) => Promise<void>;
@@ -31,6 +32,7 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
   budgets,
   categories,
   recurring,
+  financialEvents,
   review,
   privacyMode,
   onSaveBudget,
@@ -60,6 +62,8 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
   const [calcResult, setCalcResult] = useState<CalculatorResult | null>(null);
   const [calcError, setCalcError] = useState<string | null>(null);
   const money = (value: number) => privacyMode ? '••••' : value.toLocaleString(undefined, { maximumFractionDigits: 0 });
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const sevenDaysOut = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
   const submitBudget = async () => {
     await onSaveBudget(budgetForm);
@@ -93,6 +97,11 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
     if (calculatorKind === 'emergency-fund') return <div className="text-xs text-gray-300">Cobertura: <span className="text-white font-bold">{calcResult.coverage_months == null ? 'No evaluable' : `${calcResult.coverage_months.toFixed(2)} meses`}</span><div className="text-gray-500">{calcResult.reason || calcResult.evaluability}</div></div>;
     if (calculatorKind === 'debt-payoff') return <div className="text-xs text-gray-300">Estado: <span className="text-white font-bold">{calcResult.payoff_status}</span><div className="text-gray-500">Periodos: {calcResult.periods ?? 'N/A'} · Interés: {calcResult.total_interest == null ? 'N/A' : money(calcResult.total_interest)}</div></div>;
     return <div className="text-xs text-gray-300">Costo de oportunidad: <span className="text-white font-bold">{money(calcResult.opportunity_cost || 0)} {calcResult.currency}</span><div className="text-gray-500">Valor supuesto: {money(calcResult.assumed_future_value || 0)}</div></div>;
+  };
+  const eventGroups = {
+    TODAY: financialEvents.filter((event) => event.date === todayIso),
+    NEXT_7_DAYS: financialEvents.filter((event) => event.date > todayIso && event.date <= sevenDaysOut),
+    LATER: financialEvents.filter((event) => event.date > sevenDaysOut),
   };
 
   return (
@@ -156,6 +165,22 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
+          <h3 className="text-sm font-bold text-white">Agenda financiera</h3>
+          {(['TODAY', 'NEXT_7_DAYS', 'LATER'] as const).map((group) => (
+            <div key={group}>
+              <div className="text-xs font-bold text-gray-400 mb-1">{group === 'TODAY' ? 'Hoy' : group === 'NEXT_7_DAYS' ? 'Próximos 7 días' : 'Después'}</div>
+              {eventGroups[group].slice(0, 6).map((event) => (
+                <div key={event.id} className="flex justify-between gap-2 text-xs border-b border-gray-800 py-1">
+                  <span className="truncate">{event.label}<span className="text-gray-500"> · {event.date} · {event.certainty} · {event.confidence}</span></span>
+                  <span className={event.direction === 'INFLOW' ? 'text-emerald-300' : 'text-red-300'}>{money(event.amount)} {event.currency}</span>
+                </div>
+              ))}
+              {eventGroups[group].length === 0 && <div className="text-xs text-gray-600 mb-2">Sin eventos esperados.</div>}
+            </div>
+          ))}
+        </section>
+
         <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-bold text-white">Calculadoras</h3>
           <select className={inputClass} value={calculatorKind} onChange={(e) => { setCalculatorKind(e.target.value as CalculatorKind); setCalcResult(null); }}>

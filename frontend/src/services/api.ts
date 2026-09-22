@@ -14,6 +14,7 @@ import type {
   DataSourceInfo,
   EtoroPreview,
   EtoroStatus,
+  FinancialEvent,
   InvestmentThesis,
   InvestmentOperation,
   MappingConfig,
@@ -345,6 +346,15 @@ export async function deleteBudget(id: string): Promise<unknown> {
 export async function fetchRecurring(): Promise<RecurringRule[]> {
   const res = await fetch(`${API_BASE}/recurring`);
   return readJson<RecurringRule[]>(res, 'Error al cargar recurrentes.');
+}
+
+export async function fetchFinancialEvents(from?: string, to?: string): Promise<{ range: { from: string; to: string }; events: FinancialEvent[]; patterns_considered: number }> {
+  const params = new URLSearchParams();
+  if (from) params.set('from', from);
+  if (to) params.set('to', to);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${API_BASE}/financial-events${suffix}`);
+  return readJson<{ range: { from: string; to: string }; events: FinancialEvent[]; patterns_considered: number }>(res, 'Error al cargar agenda financiera.');
 }
 
 export async function updateRecurringStatus(id: string, status: RecurringRule['status']): Promise<RecurringRule> {

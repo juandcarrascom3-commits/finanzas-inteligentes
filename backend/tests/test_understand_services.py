@@ -46,7 +46,7 @@ def test_recurring_budget_forecast_and_actions():
         tx("f1", -500, "2026-09-10", "Food", "Market"),
     ]
     recurring = get_recurring_transactions(transactions, today=date(2026, 9, 20))
-    assert any(item["merchant"].startswith("payroll") and item["confidence"] == "probable" for item in recurring)
+    assert any(item["merchant"].startswith("payroll") and item["confidence"] in {"MEDIUM", "HIGH"} for item in recurring)
     budgets = get_budget_risks(transactions, [{"category": "Food", "monthly_limit": 400}], today=date(2026, 9, 20))
     assert budgets[0]["status"] == "probably_exceeded"
     forecast = get_cashflow_forecast([{"current_balance": 1000, "is_active": 1}], transactions, recurring, today=date(2026, 9, 20))

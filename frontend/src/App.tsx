@@ -21,6 +21,7 @@ import {
   fetchCategories,
   fetchDataSource,
   fetchEtoroStatus,
+  fetchFinancialEvents,
   fetchEtoroMappings,
   fetchTheses,
   fetchTransactions,
@@ -70,7 +71,7 @@ import {
   updateRecurringStatus,
   validateBackup
 } from './services/api';
-import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview, WealthData } from './types';
+import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview, WealthData, FinancialEvent } from './types';
 import { Compass, AlertTriangle, WalletCards, LineChart, Target } from 'lucide-react';
 
 export const App: React.FC = () => {
@@ -90,6 +91,7 @@ export const App: React.FC = () => {
   const [understand, setUnderstand] = useState<UnderstandSummary | null>(null);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [recurring, setRecurring] = useState<RecurringRule[]>([]);
+  const [financialEvents, setFinancialEvents] = useState<FinancialEvent[]>([]);
   const [monthlyReview, setMonthlyReview] = useState<MonthlyReview | null>(null);
   const [wealth, setWealth] = useState<WealthData | null>(null);
 
@@ -107,7 +109,7 @@ export const App: React.FC = () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const [dashData, assetsData, thesesData, accountsData, transactionsData, categoriesData, sourceData, understandData, budgetsData, recurringData, reviewData, wealthData] = await Promise.all([
+      const [dashData, assetsData, thesesData, accountsData, transactionsData, categoriesData, sourceData, understandData, budgetsData, recurringData, eventsData, reviewData, wealthData] = await Promise.all([
         fetchDashboard(exchangeRate),
         fetchAssets(),
         fetchTheses(),
@@ -118,6 +120,7 @@ export const App: React.FC = () => {
         fetchUnderstand(understandPeriod),
         fetchBudgets(),
         fetchRecurring(),
+        fetchFinancialEvents(),
         fetchMonthlyReview(),
         fetchWealth()
       ]);
@@ -131,6 +134,7 @@ export const App: React.FC = () => {
       setUnderstand(understandData);
       setBudgets(budgetsData);
       setRecurring(recurringData);
+      setFinancialEvents(eventsData.events);
       setMonthlyReview(reviewData);
       setWealth(wealthData);
     } catch (err: any) {
@@ -402,6 +406,7 @@ export const App: React.FC = () => {
                 budgets={budgets}
                 categories={categories}
                 recurring={recurring}
+                financialEvents={financialEvents}
                 review={monthlyReview}
                 privacyMode={privacyMode}
                 onSaveBudget={async (budget) => { await saveBudget(budget); await refreshAfterMutation(); }}

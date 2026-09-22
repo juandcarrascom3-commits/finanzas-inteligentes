@@ -531,15 +531,39 @@ export interface BudgetBurnRow {
 export interface RecurringRule {
   id: string;
   merchant: string;
+  merchant_key?: string;
   category: string;
   account_id?: string;
   typical_amount: number;
+  amount_mad?: number;
   frequency: string;
+  typical_interval_days?: number;
+  interval_mad?: number;
+  direction?: 'INFLOW' | 'OUTFLOW';
+  currency?: string;
   status: 'detected' | 'confirmed' | 'rejected' | 'ignored';
   source: string;
   external_id?: string;
+  confidence?: 'LOW' | 'MEDIUM' | 'HIGH' | string;
+  confidence_reasons?: string[];
   next_expected?: string;
+  next_expected_date?: string;
   last_seen?: string;
+  first_seen?: string;
+}
+
+export interface FinancialEvent {
+  id: string;
+  date: string;
+  amount: number;
+  currency: string;
+  direction: 'INFLOW' | 'OUTFLOW';
+  event_type: 'RECURRING' | string;
+  certainty: 'ACTUAL' | 'COMMITTED' | 'EXPECTED' | 'ESTIMATED' | 'SIMULATED';
+  source: string;
+  source_id: string;
+  confidence: 'LOW' | 'MEDIUM' | 'HIGH';
+  label: string;
 }
 
 export interface MonthlyReview {
