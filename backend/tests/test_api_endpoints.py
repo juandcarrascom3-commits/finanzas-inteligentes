@@ -190,6 +190,36 @@ def test_analysis_export_endpoint_returns_structured_json_without_sensitive_keys
     assert sensitive.isdisjoint(set(_collect_keys(data)))
 
 
+def test_calculator_endpoints_contracts_and_validation():
+    compound = client.post("/api/calculators/compound", json={"principal": 1000000, "periodic_contribution": 100000, "annual_effective_rate_pct": 12, "periods": 12, "contribution_timing": "END", "currency": "COP"})
+    assert compound.status_code == 200
+    assert compound.json()["future_value"] > 2_300_000
+    assert compound.json()["assumptions"]["contribution_timing"] == "END"
+
+    goal = client.post("/api/calculators/savings-goal", json={"target": 12000000, "current_amount": 3000000, "annual_effective_rate_pct": 0, "periods": 9, "currency": "COP"})
+    assert goal.status_code == 200
+    assert goal.json()["required_contribution"] == 1_000_000
+
+    eta = client.post("/api/calculators/goal-eta", json={"target": 5000000, "current_amount": 2000000, "periodic_contribution": 500000, "annual_effective_rate_pct": 0})
+    assert eta.status_code == 200
+    assert eta.json()["periods_required"] == 6
+
+    emergency = client.post("/api/calculators/emergency-fund", json={"liquid_resources": 1000, "essential_monthly_expenses": 0})
+    assert emergency.status_code == 200
+    assert emergency.json()["evaluability"] == "UNEVALUABLE"
+
+    debt = client.post("/api/calculators/debt-payoff", json={"balance": 12000000, "annual_effective_rate_pct": 0, "monthly_payment": 1000000, "extra_payment": 0})
+    assert debt.status_code == 200
+    assert debt.json()["periods"] == 12
+
+    opportunity = client.post("/api/calculators/opportunity-cost", json={"amount": 1000000, "annual_effective_rate_pct": 12, "periods": 12})
+    assert opportunity.status_code == 200
+    assert opportunity.json()["opportunity_cost"] > 100000
+
+    invalid = client.post("/api/calculators/compound", json={"principal": 1, "periodic_contribution": 0, "annual_effective_rate_pct": -100, "periods": 1})
+    assert invalid.status_code == 422
+
+
 def test_phase4_budget_recurring_monthly_review_endpoints():
     wallet_plan = client.post("/api/budgetbakers/import-plan", json={
         "budgets": [{"category": "Wallet Food", "monthly_limit": 250, "currency": "USD", "external_id": "bb-budget-1"}],

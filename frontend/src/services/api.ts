@@ -7,6 +7,7 @@ import type {
   BudgetBakersMapping,
   BudgetBakersPreview,
   BudgetBakersStatus,
+  CalculatorResult,
   Category,
   CsvImportResult,
   DashboardSummary,
@@ -523,4 +524,13 @@ export async function saveFxRate(rate: {
     body: JSON.stringify(rate)
   });
   return readJson<unknown>(res, 'Error al guardar FX manual.');
+}
+
+export async function runCalculator(kind: string, payload: Record<string, unknown>): Promise<CalculatorResult> {
+  const res = await fetch(`${API_BASE}/calculators/${kind}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return readJson<CalculatorResult>(res, 'Error al calcular.');
 }

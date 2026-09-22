@@ -38,6 +38,7 @@ import {
   saveThesis,
   saveTransaction,
   restoreBackup,
+  runCalculator,
   simulatePurchase,
   fetchBudgetBakersStatus,
   fetchBudgets,
@@ -407,6 +408,7 @@ export const App: React.FC = () => {
                 onDeleteBudget={async (id) => { await deleteBudget(id); await refreshAfterMutation(); }}
                 onUpdateRecurring={async (id, status) => { await updateRecurringStatus(id, status); await refreshAfterMutation(); }}
                 onSaveSnapshot={async () => { await saveMonthlyReviewSnapshot(monthlyReview?.period); await refreshAfterMutation(); }}
+                onRunCalculator={runCalculator}
               />
             )}
 

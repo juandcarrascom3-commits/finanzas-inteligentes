@@ -715,6 +715,32 @@ export interface MarketDataSyncResult {
   errors: Array<{ symbol: string; error: string }>;
 }
 
+export type CalculatorKind = 'savings-goal' | 'compound' | 'emergency-fund' | 'debt-payoff' | 'opportunity-cost';
+
+export interface CalculatorResult {
+  status?: string;
+  payoff_status?: string;
+  reason?: string | null;
+  reached?: boolean;
+  currency?: string;
+  future_value?: number;
+  total_contributions?: number;
+  growth?: number;
+  required_contribution?: number | null;
+  periods_required?: number | null;
+  coverage_months?: number | null;
+  evaluability?: string;
+  total_interest?: number | null;
+  total_paid?: number | null;
+  periods?: number | null;
+  final_payment?: number | null;
+  assumed_future_value?: number;
+  opportunity_cost?: number;
+  assumptions?: Record<string, unknown>;
+  comparison?: Record<string, unknown>;
+  note?: string;
+}
+
 export interface InvestmentOperation {
   id: string;
   occurred_at: string;

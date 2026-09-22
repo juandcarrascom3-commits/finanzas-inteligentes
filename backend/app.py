@@ -31,6 +31,14 @@ from backend.analytics.metrics import (
     calculate_portfolio_risk_metrics,
     USD_COP_EXCHANGE_RATE
 )
+from backend.analytics.goal_math import (
+    amortize_debt,
+    emergency_coverage,
+    future_value,
+    opportunity_cost,
+    required_payment_for_target,
+    solve_periods_to_target,
+)
 from backend.analytics.projections import calculate_budget_projections
 from backend.integrations.budgetbakers_adapter import (
     BudgetBakersAdapter,
@@ -319,6 +327,54 @@ class FxCsvInput(BaseModel):
     source: str = "MANUAL"
 
 
+class CompoundCalculatorInput(BaseModel):
+    principal: float = 0.0
+    periodic_contribution: float = 0.0
+    annual_effective_rate_pct: float
+    periods: int = Field(ge=0)
+    contribution_timing: str = "END"
+    currency: str = "USD"
+
+
+class SavingsGoalCalculatorInput(BaseModel):
+    target: float = Field(gt=0)
+    current_amount: float = 0.0
+    annual_effective_rate_pct: float
+    periods: int
+    contribution_timing: str = "END"
+    currency: str = "USD"
+
+
+class GoalEtaCalculatorInput(BaseModel):
+    target: float = Field(gt=0)
+    current_amount: float = 0.0
+    periodic_contribution: float = 0.0
+    annual_effective_rate_pct: float
+    contribution_timing: str = "END"
+    currency: str = "USD"
+
+
+class EmergencyFundCalculatorInput(BaseModel):
+    liquid_resources: float = Field(ge=0)
+    essential_monthly_expenses: float = 0.0
+    currency: str = "USD"
+
+
+class DebtPayoffCalculatorInput(BaseModel):
+    balance: float = Field(ge=0)
+    annual_effective_rate_pct: float
+    monthly_payment: float = Field(ge=0)
+    extra_payment: float = Field(ge=0)
+    currency: str = "USD"
+
+
+class OpportunityCostCalculatorInput(BaseModel):
+    amount: float = Field(ge=0)
+    annual_effective_rate_pct: float
+    periods: int = Field(ge=0)
+    currency: str = "USD"
+
+
 def get_budgetbakers_adapter() -> BudgetBakersAdapter:
     return BudgetBakersAdapter()
 
@@ -369,6 +425,74 @@ def etoro_error_response(exc: Exception):
 @app.get("/api/health")
 def health():
     return {"status": "healthy", "timestamp": datetime.datetime.now().isoformat()}
+
+
+def _calculator_result(fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/api/calculators/compound")
+def calculator_compound(data: CompoundCalculatorInput):
+    return _calculator_result(
+        future_value,
+        data.principal,
+        data.periodic_contribution,
+        data.annual_effective_rate_pct,
+        data.periods,
+        data.contribution_timing,
+        data.currency,
+    )
+
+
+@app.post("/api/calculators/savings-goal")
+def calculator_savings_goal(data: SavingsGoalCalculatorInput):
+    return _calculator_result(
+        required_payment_for_target,
+        data.target,
+        data.current_amount,
+        data.annual_effective_rate_pct,
+        data.periods,
+        data.contribution_timing,
+        data.currency,
+    )
+
+
+@app.post("/api/calculators/goal-eta")
+def calculator_goal_eta(data: GoalEtaCalculatorInput):
+    return _calculator_result(
+        solve_periods_to_target,
+        data.target,
+        data.current_amount,
+        data.periodic_contribution,
+        data.annual_effective_rate_pct,
+        data.contribution_timing,
+        data.currency,
+    )
+
+
+@app.post("/api/calculators/emergency-fund")
+def calculator_emergency_fund(data: EmergencyFundCalculatorInput):
+    return _calculator_result(emergency_coverage, data.liquid_resources, data.essential_monthly_expenses, data.currency)
+
+
+@app.post("/api/calculators/debt-payoff")
+def calculator_debt_payoff(data: DebtPayoffCalculatorInput):
+    return _calculator_result(
+        amortize_debt,
+        data.balance,
+        data.annual_effective_rate_pct,
+        data.monthly_payment,
+        data.extra_payment,
+        data.currency,
+    )
+
+
+@app.post("/api/calculators/opportunity-cost")
+def calculator_opportunity_cost(data: OpportunityCostCalculatorInput):
+    return _calculator_result(opportunity_cost, data.amount, data.annual_effective_rate_pct, data.periods, data.currency)
 
 @app.get("/api/data-source")
 def get_data_source():

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Budget, Category, MonthlyReview, RecurringRule } from '../../types';
+import { Budget, CalculatorKind, CalculatorResult, Category, MonthlyReview, RecurringRule } from '../../types';
 
 interface PlanningTabProps {
   budgets: Budget[];
@@ -11,6 +11,7 @@ interface PlanningTabProps {
   onDeleteBudget: (id: string) => Promise<void>;
   onUpdateRecurring: (id: string, status: RecurringRule['status']) => Promise<void>;
   onSaveSnapshot: () => Promise<void>;
+  onRunCalculator: (kind: string, payload: Record<string, unknown>) => Promise<CalculatorResult>;
 }
 
 const inputClass = "bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500";
@@ -35,14 +36,63 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
   onSaveBudget,
   onDeleteBudget,
   onUpdateRecurring,
-  onSaveSnapshot
+  onSaveSnapshot,
+  onRunCalculator
 }) => {
   const [budgetForm, setBudgetForm] = useState<Partial<Budget>>({ category: 'General', monthly_limit: 0, currency: 'USD', period: 'MONTHLY', is_active: true, source: 'MANUAL' });
+  const [calculatorKind, setCalculatorKind] = useState<CalculatorKind>('savings-goal');
+  const [calcForm, setCalcForm] = useState<Record<string, number | string>>({
+    currency: 'COP',
+    target: 12000000,
+    current_amount: 3000000,
+    annual_effective_rate_pct: 0,
+    periods: 9,
+    periodic_contribution: 100000,
+    principal: 1000000,
+    liquid_resources: 12000000,
+    essential_monthly_expenses: 3000000,
+    balance: 12000000,
+    monthly_payment: 1000000,
+    extra_payment: 0,
+    amount: 1000000,
+    contribution_timing: 'END'
+  });
+  const [calcResult, setCalcResult] = useState<CalculatorResult | null>(null);
+  const [calcError, setCalcError] = useState<string | null>(null);
   const money = (value: number) => privacyMode ? '••••' : value.toLocaleString(undefined, { maximumFractionDigits: 0 });
 
   const submitBudget = async () => {
     await onSaveBudget(budgetForm);
     setBudgetForm({ category: 'General', monthly_limit: 0, currency: 'USD', period: 'MONTHLY', is_active: true, source: 'MANUAL' });
+  };
+
+  const setCalcValue = (key: string, value: number | string) => setCalcForm((current) => ({ ...current, [key]: value }));
+
+  const calculatorPayload = (): Record<string, unknown> => {
+    const base = { annual_effective_rate_pct: Number(calcForm.annual_effective_rate_pct || 0), currency: String(calcForm.currency || 'COP') };
+    if (calculatorKind === 'compound') return { ...base, principal: Number(calcForm.principal || 0), periodic_contribution: Number(calcForm.periodic_contribution || 0), periods: Number(calcForm.periods || 0), contribution_timing: calcForm.contribution_timing || 'END' };
+    if (calculatorKind === 'emergency-fund') return { currency: base.currency, liquid_resources: Number(calcForm.liquid_resources || 0), essential_monthly_expenses: Number(calcForm.essential_monthly_expenses || 0) };
+    if (calculatorKind === 'debt-payoff') return { ...base, balance: Number(calcForm.balance || 0), monthly_payment: Number(calcForm.monthly_payment || 0), extra_payment: Number(calcForm.extra_payment || 0) };
+    if (calculatorKind === 'opportunity-cost') return { ...base, amount: Number(calcForm.amount || 0), periods: Number(calcForm.periods || 0) };
+    return { ...base, target: Number(calcForm.target || 0), current_amount: Number(calcForm.current_amount || 0), periods: Number(calcForm.periods || 0), contribution_timing: calcForm.contribution_timing || 'END' };
+  };
+
+  const runSelectedCalculator = async () => {
+    setCalcError(null);
+    try {
+      setCalcResult(await onRunCalculator(calculatorKind, calculatorPayload()));
+    } catch (err: any) {
+      setCalcError(err.message || 'No se pudo calcular.');
+    }
+  };
+
+  const renderCalculatorResult = () => {
+    if (!calcResult) return <div className="text-xs text-gray-500">Sin resultado todavía.</div>;
+    if (calculatorKind === 'savings-goal') return <div className="text-xs text-gray-300">Aporte requerido: <span className="text-white font-bold">{calcResult.required_contribution == null ? 'No evaluable' : `${money(calcResult.required_contribution)} ${calcResult.currency}`}</span><div className="text-gray-500">Estado: {calcResult.status || calcResult.reason}</div></div>;
+    if (calculatorKind === 'compound') return <div className="text-xs text-gray-300">Valor futuro: <span className="text-white font-bold">{money(calcResult.future_value || 0)} {calcResult.currency}</span><div className="text-gray-500">Crecimiento: {money(calcResult.growth || 0)}</div></div>;
+    if (calculatorKind === 'emergency-fund') return <div className="text-xs text-gray-300">Cobertura: <span className="text-white font-bold">{calcResult.coverage_months == null ? 'No evaluable' : `${calcResult.coverage_months.toFixed(2)} meses`}</span><div className="text-gray-500">{calcResult.reason || calcResult.evaluability}</div></div>;
+    if (calculatorKind === 'debt-payoff') return <div className="text-xs text-gray-300">Estado: <span className="text-white font-bold">{calcResult.payoff_status}</span><div className="text-gray-500">Periodos: {calcResult.periods ?? 'N/A'} · Interés: {calcResult.total_interest == null ? 'N/A' : money(calcResult.total_interest)}</div></div>;
+    return <div className="text-xs text-gray-300">Costo de oportunidad: <span className="text-white font-bold">{money(calcResult.opportunity_cost || 0)} {calcResult.currency}</span><div className="text-gray-500">Valor supuesto: {money(calcResult.assumed_future_value || 0)}</div></div>;
   };
 
   return (
@@ -106,6 +156,46 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
+          <h3 className="text-sm font-bold text-white">Calculadoras</h3>
+          <select className={inputClass} value={calculatorKind} onChange={(e) => { setCalculatorKind(e.target.value as CalculatorKind); setCalcResult(null); }}>
+            <option value="savings-goal">Meta de ahorro</option>
+            <option value="compound">Interés compuesto / DCA</option>
+            <option value="emergency-fund">Fondo de emergencia</option>
+            <option value="debt-payoff">Pago de deuda</option>
+            <option value="opportunity-cost">Costo de oportunidad</option>
+          </select>
+          <div className="grid grid-cols-2 gap-2">
+            <input className={inputClass} placeholder="Moneda" value={calcForm.currency} onChange={(e) => setCalcValue('currency', e.target.value.toUpperCase())} />
+            {calculatorKind === 'savings-goal' && <>
+              <input className={inputClass} type="number" placeholder="Meta" value={calcForm.target} onChange={(e) => setCalcValue('target', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Actual" value={calcForm.current_amount} onChange={(e) => setCalcValue('current_amount', Number(e.target.value))} />
+            </>}
+            {calculatorKind === 'compound' && <>
+              <input className={inputClass} type="number" placeholder="Principal" value={calcForm.principal} onChange={(e) => setCalcValue('principal', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Aporte periódico" value={calcForm.periodic_contribution} onChange={(e) => setCalcValue('periodic_contribution', Number(e.target.value))} />
+            </>}
+            {calculatorKind === 'emergency-fund' && <>
+              <input className={inputClass} type="number" placeholder="Recursos líquidos" value={calcForm.liquid_resources} onChange={(e) => setCalcValue('liquid_resources', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Gastos esenciales/mes" value={calcForm.essential_monthly_expenses} onChange={(e) => setCalcValue('essential_monthly_expenses', Number(e.target.value))} />
+            </>}
+            {calculatorKind === 'debt-payoff' && <>
+              <input className={inputClass} type="number" placeholder="Saldo deuda" value={calcForm.balance} onChange={(e) => setCalcValue('balance', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Pago mensual" value={calcForm.monthly_payment} onChange={(e) => setCalcValue('monthly_payment', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Pago extra" value={calcForm.extra_payment} onChange={(e) => setCalcValue('extra_payment', Number(e.target.value))} />
+            </>}
+            {calculatorKind === 'opportunity-cost' && <input className={inputClass} type="number" placeholder="Monto" value={calcForm.amount} onChange={(e) => setCalcValue('amount', Number(e.target.value))} />}
+            {calculatorKind !== 'emergency-fund' && <>
+              <input className={inputClass} type="number" placeholder="Tasa % E.A." value={calcForm.annual_effective_rate_pct} onChange={(e) => setCalcValue('annual_effective_rate_pct', Number(e.target.value))} />
+              {calculatorKind !== 'debt-payoff' && <input className={inputClass} type="number" placeholder="Periodos" value={calcForm.periods} onChange={(e) => setCalcValue('periods', Number(e.target.value))} />}
+            </>}
+          </div>
+          <button onClick={runSelectedCalculator} className="w-full px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Calcular</button>
+          {calcError && <div className="text-xs text-red-300">{calcError}</div>}
+          <div className="bg-gray-900/60 rounded-lg p-3">{renderCalculatorResult()}</div>
+          {calcResult?.assumptions && <div className="text-[11px] text-gray-500">Supuestos: tasa efectiva anual, sin FX, moneda única del cálculo.</div>}
+        </section>
+
         <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-bold text-white">Presupuestos</h3>
           <div className="grid grid-cols-2 gap-2">
