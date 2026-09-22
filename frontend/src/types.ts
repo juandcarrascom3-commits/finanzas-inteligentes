@@ -437,17 +437,49 @@ export interface UnderstandSummary {
   what_changed: {
     period: string;
     range: { from: string; to: string };
+    previous_range?: { from: string; to: string };
     facts: { income: number; expenses: number; cashflow: number; savings_rate_pct: number };
     variation: { income: number; expenses: number; cashflow: number; savings_rate_pct: number };
     category_changes: Array<{ category: string; delta: number; current: number; previous: number }>;
     largest_transactions: Transaction[];
     interpretation: string[];
+    primary_currency?: string | null;
+    mixed_currencies?: boolean;
+    metrics?: Record<string, { current: number; previous: number; delta: number; delta_pct: number | null }>;
+    by_currency?: Record<string, {
+      currency: string;
+      income: { current: number; previous: number; delta: number; delta_pct: number | null };
+      expenses: { current: number; previous: number; delta: number; delta_pct: number | null };
+      net_cash_flow: { current: number; previous: number; delta: number; delta_pct: number | null };
+      savings_rate: { current: number; previous: number; delta: number; delta_pct: number | null };
+      category_contributors: Array<{ category: string; currency: string; current: number; previous: number; delta: number }>;
+    }>;
+    category_contributors?: Array<{ category: string; currency: string; current: number; previous: number; delta: number }>;
+    explain?: {
+      metric: string;
+      currency?: string | null;
+      current: number;
+      previous: number;
+      delta: number;
+      contributors: Array<{ category: string; currency: string; current: number; previous: number; delta: number }>;
+      data_quality?: DataConfidence;
+      reasons: string[];
+    };
+    data_confidence?: DataConfidence;
   };
   recurring: Array<{ merchant: string; category: string; typical_amount: number; frequency: string; confidence: string; occurrences: number; last_seen: string; next_expected?: string }>;
   budget_burn: Array<{ category: string; budget: number; spent: number; remaining: number; spent_pct: number; month_elapsed_pct: number; projected_close: number; status: string }>;
   cashflow_forecast: { starting_balance: number; expected_inflows: number; expected_outflows: number; projected_balance: number; uncertainty: string; range: { from: string; to: string } };
   action_items: Array<{ type: string; severity: string; title: string; why: string; action: string }>;
   reconciliation: ReconciliationSummary;
+  data_confidence?: DataConfidence;
+}
+
+export interface DataConfidence {
+  level: 'HIGH' | 'MEDIUM' | 'LOW';
+  reasons: string[];
+  inputs: Record<string, number | string | null | undefined>;
+  provenance: string[];
 }
 
 export interface RecurringRule {

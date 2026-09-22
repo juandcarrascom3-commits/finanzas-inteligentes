@@ -3,7 +3,7 @@
 import re
 import calendar
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from statistics import mean
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -63,10 +63,90 @@ def summarize_transactions(transactions: List[Dict[str, Any]], start: date, end:
     }
 
 
+def _tx_currency(tx: Dict[str, Any]) -> str:
+    return str(tx.get("currency") or "UNKNOWN").upper()
+
+
+def _delta_metric(current: float, previous: float) -> Dict[str, Any]:
+    delta = round(current - previous, 2)
+    return {
+        "current": round(current, 2),
+        "previous": round(previous, 2),
+        "delta": delta,
+        "delta_pct": round(delta / abs(previous) * 100, 2) if previous != 0 else None,
+    }
+
+
+def _summaries_by_currency(transactions: List[Dict[str, Any]], start: date, end: date) -> Dict[str, Dict[str, Any]]:
+    currencies = sorted({_tx_currency(tx) for tx in transactions if _in_range(tx, start, end)})
+    return {currency: summarize_transactions([tx for tx in transactions if _tx_currency(tx) == currency], start, end) for currency in currencies}
+
+
+def explain_financial_changes(what_changed: Dict[str, Any]) -> Dict[str, Any]:
+    primary = what_changed.get("primary_currency")
+    metrics = what_changed.get("metrics", {})
+    contributors = what_changed.get("category_contributors", [])
+    reasons = []
+    cashflow = metrics.get("net_cash_flow", {})
+    expenses = metrics.get("expenses", {})
+    income = metrics.get("income", {})
+    if cashflow.get("delta", 0) < 0:
+        reasons.append("El cashflow empeoró frente al periodo comparable.")
+    elif cashflow.get("delta", 0) > 0:
+        reasons.append("El cashflow mejoró frente al periodo comparable.")
+    else:
+        reasons.append("El cashflow se mantuvo estable frente al periodo comparable.")
+    if expenses.get("delta", 0) > 0:
+        reasons.append("Los gastos aumentaron.")
+    if income.get("delta", 0) < 0:
+        reasons.append("Los ingresos bajaron.")
+    if contributors:
+        top = contributors[0]
+        reasons.append(f"La categoría con mayor cambio fue {top['category']}.")
+    return {
+        "metric": "net_cash_flow",
+        "currency": primary,
+        "current": cashflow.get("current", 0),
+        "previous": cashflow.get("previous", 0),
+        "delta": cashflow.get("delta", 0),
+        "contributors": contributors[:5],
+        "data_quality": what_changed.get("data_confidence", {}),
+        "reasons": reasons,
+    }
+
+
 def get_financial_changes(transactions: List[Dict[str, Any]], period: str = "current_month", today: Optional[date] = None) -> Dict[str, Any]:
     start, end, previous_start, previous_end = _period_range(period, today)
     current = summarize_transactions(transactions, start, end)
     previous = summarize_transactions(transactions, previous_start, previous_end)
+    current_by_currency = _summaries_by_currency(transactions, start, end)
+    previous_by_currency = _summaries_by_currency(transactions, previous_start, previous_end)
+    all_currencies = sorted(set(current_by_currency) | set(previous_by_currency))
+    by_currency = {}
+    for currency in all_currencies:
+        now = current_by_currency.get(currency, summarize_transactions([], start, end))
+        before = previous_by_currency.get(currency, summarize_transactions([], previous_start, previous_end))
+        category_contributors = []
+        for category in set(now["by_category"]) | set(before["by_category"]):
+            now_value = now["by_category"].get(category, 0.0)
+            before_value = before["by_category"].get(category, 0.0)
+            category_contributors.append({
+                "category": category or "General",
+                "currency": currency,
+                "current": round(now_value, 2),
+                "previous": round(before_value, 2),
+                "delta": round(now_value - before_value, 2),
+            })
+        category_contributors.sort(key=lambda item: abs(item["delta"]), reverse=True)
+        by_currency[currency] = {
+            "currency": currency,
+            "income": _delta_metric(now["income"], before["income"]),
+            "expenses": _delta_metric(now["expenses"], before["expenses"]),
+            "net_cash_flow": _delta_metric(now["cashflow"], before["cashflow"]),
+            "savings_rate": _delta_metric(now["savings_rate_pct"], before["savings_rate_pct"]),
+            "category_contributors": category_contributors[:8],
+        }
+    primary_currency = all_currencies[0] if len(all_currencies) == 1 else None
     category_delta = []
     all_categories = set(current["by_category"]) | set(previous["by_category"])
     for category in all_categories:
@@ -75,7 +155,7 @@ def get_financial_changes(transactions: List[Dict[str, Any]], period: str = "cur
         category_delta.append({"category": category, "delta": round(now_value - before_value, 2), "current": round(now_value, 2), "previous": round(before_value, 2)})
     category_delta.sort(key=lambda item: abs(item["delta"]), reverse=True)
     impactful = sorted(current["transactions"], key=lambda tx: abs(float(tx.get("amount", 0) or 0)), reverse=True)[:10]
-    return {
+    result = {
         "period": period,
         "range": {"from": start.isoformat(), "to": end.isoformat()},
         "previous_range": {"from": previous_start.isoformat(), "to": previous_end.isoformat()},
@@ -97,6 +177,100 @@ def get_financial_changes(transactions: List[Dict[str, Any]], period: str = "cur
             "Gastos subieron frente al periodo anterior." if current["expenses"] > previous["expenses"] else "Gastos bajaron o se mantuvieron frente al periodo anterior.",
             "Cashflow positivo." if current["cashflow"] >= 0 else "Cashflow negativo.",
         ],
+        "by_currency": by_currency,
+        "primary_currency": primary_currency,
+        "metrics": by_currency.get(primary_currency, {}) if primary_currency else {},
+        "category_contributors": by_currency.get(primary_currency, {}).get("category_contributors", []) if primary_currency else [],
+        "mixed_currencies": len(all_currencies) > 1,
+    }
+    result["explain"] = explain_financial_changes(result)
+    return result
+
+
+def get_data_confidence(
+    transactions: List[Dict[str, Any]],
+    budgets: Optional[List[Dict[str, Any]]] = None,
+    recurring: Optional[List[Dict[str, Any]]] = None,
+    reconciliation: Optional[Dict[str, Any]] = None,
+    sync_state: Optional[Dict[str, Any]] = None,
+    wealth_quality: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    budgets = budgets or []
+    recurring = recurring or []
+    reconciliation = reconciliation or {}
+    sync_state = sync_state or {}
+    reasons = []
+    critical_missing = False
+    medium_issue = False
+    if not transactions:
+        critical_missing = True
+        reasons.append("No hay transacciones persistidas para evaluar cashflow.")
+    if any(not tx.get("date") or tx.get("amount") is None or not tx.get("currency") for tx in transactions):
+        critical_missing = True
+        reasons.append("Hay transacciones sin fecha, monto o moneda.")
+    unmapped_accounts = reconciliation.get("unmapped_accounts") or []
+    unmapped_categories = reconciliation.get("unmapped_categories") or []
+    if unmapped_accounts or unmapped_categories:
+        medium_issue = True
+        reasons.append("Existen mappings pendientes de cuentas o categorías.")
+    if not budgets:
+        medium_issue = True
+        reasons.append("No hay presupuestos configurados para comparar desviaciones.")
+    if not recurring:
+        medium_issue = True
+        reasons.append("No hay recurrentes confirmados/detectados suficientes.")
+    if sync_state.get("status") in {"AUTH_ERROR", "NETWORK_ERROR", "RATE_LIMITED", "PARTIAL"}:
+        medium_issue = True
+        reasons.append(f"Fuente externa relevante en estado {sync_state.get('status')}.")
+    if wealth_quality and wealth_quality.get("issues"):
+        medium_issue = True
+        reasons.append("Wealth tiene observaciones de calidad de datos.")
+    level = "LOW" if critical_missing else "MEDIUM" if medium_issue else "HIGH"
+    if not reasons:
+        reasons.append("Inputs críticos presentes y sin brechas relevantes detectadas.")
+    return {
+        "level": level,
+        "reasons": reasons,
+        "inputs": {
+            "transactions": len(transactions),
+            "budgets": len(budgets),
+            "recurring": len(recurring),
+            "unmapped_accounts": len(unmapped_accounts),
+            "unmapped_categories": len(unmapped_categories),
+            "sync_status": sync_state.get("status"),
+        },
+        "provenance": sorted({str(tx.get("source") or "UNKNOWN") for tx in transactions}),
+    }
+
+
+def build_analysis_export(
+    period: str,
+    what_changed: Dict[str, Any],
+    recurring: List[Dict[str, Any]],
+    budget_burn: List[Dict[str, Any]],
+    monthly_review: Optional[Dict[str, Any]],
+    wealth_summary: Optional[Dict[str, Any]],
+    data_confidence: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "period": period,
+        "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "sources": data_confidence.get("provenance", []),
+        "cash_flow": what_changed.get("metrics", {}),
+        "what_changed": {
+            "range": what_changed.get("range"),
+            "previous_range": what_changed.get("previous_range"),
+            "primary_currency": what_changed.get("primary_currency"),
+            "mixed_currencies": what_changed.get("mixed_currencies"),
+            "by_currency": what_changed.get("by_currency", {}),
+            "category_contributors": what_changed.get("category_contributors", []),
+            "explain": what_changed.get("explain", {}),
+        },
+        "recurring": recurring,
+        "budgets": budget_burn,
+        "monthly_review": monthly_review,
+        "wealth_summary": wealth_summary,
+        "data_confidence": data_confidence,
     }
 
 

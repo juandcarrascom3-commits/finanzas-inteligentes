@@ -96,6 +96,11 @@ export const App: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const exchangeRate = dashboard?.kpis?.net_worth?.exchange_rate || 4050;
+  const formatMoney = (value: number | undefined, currencyCode?: string | null) => {
+    if (privacyMode) return '••••';
+    return `${currencyCode || currency} ${(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+  };
+  const hasCurrencySafeOverview = !!understand?.what_changed.primary_currency;
 
   const loadAllData = useCallback(async () => {
     setIsLoading(true);
@@ -222,6 +227,62 @@ export const App: React.FC = () => {
               currency={currency}
               privacyMode={privacyMode}
             />
+
+            {understand && (
+              <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                  <div>
+                    <h2 className="text-sm font-bold text-white">Overview inteligente</h2>
+                    <p className="text-xs text-gray-400">Calculado desde datos locales persistidos. Sin IA.</p>
+                  </div>
+                  <div className={`text-[11px] font-bold px-2 py-1 rounded border w-fit ${
+                    understand.data_confidence?.level === 'HIGH'
+                      ? 'text-emerald-200 border-emerald-500/40 bg-emerald-500/10'
+                      : understand.data_confidence?.level === 'LOW'
+                        ? 'text-red-200 border-red-500/40 bg-red-500/10'
+                        : 'text-amber-200 border-amber-500/40 bg-amber-500/10'
+                  }`}>
+                    Confianza: {understand.data_confidence?.level || 'MEDIUM'}
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                  <div className="bg-gray-900/60 rounded-lg p-3">
+                    <div className="text-gray-500">Cómo estoy</div>
+                    <div className="text-white font-bold mt-1">
+                      {hasCurrencySafeOverview
+                        ? `Cashflow ${formatMoney(understand.what_changed.metrics?.net_cash_flow?.current, understand.what_changed.primary_currency)}`
+                        : 'Múltiples monedas'}
+                    </div>
+                    <div className="text-gray-400 mt-1">
+                      {hasCurrencySafeOverview ? `Ahorro ${understand.what_changed.metrics?.savings_rate?.current}%` : 'Ver detalle por moneda en Understand'}
+                    </div>
+                  </div>
+                  <div className="bg-gray-900/60 rounded-lg p-3">
+                    <div className="text-gray-500">Qué cambió</div>
+                    <div className={`font-bold mt-1 ${(understand.what_changed.metrics?.net_cash_flow?.delta || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                      {hasCurrencySafeOverview
+                        ? formatMoney(understand.what_changed.metrics?.net_cash_flow?.delta, understand.what_changed.primary_currency)
+                        : `${Object.keys(understand.what_changed.by_currency || {}).length} monedas`}
+                    </div>
+                    <div className="text-gray-400 mt-1">vs periodo anterior</div>
+                  </div>
+                  <details className="bg-gray-900/60 rounded-lg p-3">
+                    <summary className="text-gray-300 font-bold cursor-pointer">Por qué cambió</summary>
+                    <div className="mt-2 space-y-1 text-gray-400">
+                      {(understand.what_changed.explain?.reasons || understand.what_changed.interpretation).slice(0, 3).map((reason, index) => (
+                        <div key={`${reason}-${index}`}>{reason}</div>
+                      ))}
+                      {understand.what_changed.category_contributors?.slice(0, 3).map((item) => (
+                        <div key={item.category} className="flex justify-between border-t border-gray-800 pt-1">
+                          <span>{item.category}</span>
+                          <span className={item.delta > 0 ? 'text-red-300' : 'text-emerald-300'}>{formatMoney(item.delta, item.currency)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                </div>
+              </section>
+            )}
 
             {/* TIER 2: CENTRAL VISUAL SECTION (Asset Allocation & Temporal Evolution) */}
             <CentralVisualSection

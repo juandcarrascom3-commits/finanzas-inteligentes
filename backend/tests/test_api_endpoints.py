@@ -5,10 +5,23 @@ Verifies that all FastAPI endpoints return 200 OK and conform to expected schema
 
 import pytest
 import uuid
+import json
 from fastapi.testclient import TestClient
 from backend.app import app
 
 client = TestClient(app)
+
+
+def _collect_keys(value):
+    keys = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            keys.append(str(key).lower().replace("-", "_"))
+            keys.extend(_collect_keys(child))
+    elif isinstance(value, list):
+        for child in value:
+            keys.extend(_collect_keys(child))
+    return keys
 
 def test_api_health():
     response = client.get("/api/health")
@@ -162,6 +175,19 @@ def test_understand_and_reconciliation_endpoints():
     assert "what_changed" in data
     assert "cashflow_forecast" in data
     assert "action_items" in data
+
+
+def test_analysis_export_endpoint_returns_structured_json_without_sensitive_keys():
+    response = client.get("/api/analysis-export?period=current_month")
+    assert response.status_code == 200
+    data = response.json()
+    json.dumps(data)
+    assert "period" in data
+    assert "what_changed" in data
+    assert "cash_flow" in data
+    assert "data_confidence" in data
+    sensitive = {"token", "api_key", "apikey", "authorization", "password", "secret", "client_secret", "access_token"}
+    assert sensitive.isdisjoint(set(_collect_keys(data)))
 
 
 def test_phase4_budget_recurring_monthly_review_endpoints():

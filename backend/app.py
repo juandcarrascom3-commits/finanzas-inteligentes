@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import uuid
+import calendar
 import datetime
 from typing import Dict, Any, List, Optional
 from fastapi import FastAPI, HTTPException, Query
@@ -45,6 +46,8 @@ from backend.integrations.etoro_adapter import (
     EtoroRateLimitError,
 )
 from backend.analytics.understand import (
+    build_analysis_export,
+    get_data_confidence as get_understand_data_confidence,
     get_action_items,
     get_budget_risks,
     get_cashflow_forecast,
@@ -80,6 +83,14 @@ app = FastAPI(
     description="Backend for Wealth Management, Risk Analytics & Ingestion",
     version="1.0.0"
 )
+
+
+def _understand_period_context(period: Optional[str]) -> tuple[str, Optional[datetime.date]]:
+    if period and len(period) == 7 and period[4] == "-":
+        year, month = [int(part) for part in period.split("-")]
+        last_day = calendar.monthrange(year, month)[1]
+        return "current_month", datetime.date(year, month, last_day)
+    return period or "current_month", None
 
 cors_origins = [
     origin.strip()
@@ -1647,25 +1658,70 @@ def get_understand(period: str = Query("current_month", pattern="^(current_month
     recurring = get_recurring_transactions(transactions)
     budget_risks = get_budget_risks(transactions, budgets)
     sync_state = db.get_sync_state("BUDGETBAKERS")
+    what_changed = get_financial_changes(transactions, period)
+    data_confidence = get_understand_data_confidence(transactions, budgets, recurring, reconciliation, sync_state)
+    what_changed["data_confidence"] = data_confidence
+    what_changed["explain"] = what_changed["explain"] | {"data_quality": data_confidence}
     return {
-        "what_changed": get_financial_changes(transactions, period),
+        "what_changed": what_changed,
         "recurring": recurring,
         "budget_burn": budget_risks,
         "cashflow_forecast": get_cashflow_forecast(accounts, transactions, recurring),
         "action_items": get_action_items(reconciliation, budget_risks, recurring, sync_state),
         "reconciliation": reconciliation,
+        "data_confidence": data_confidence,
         "action_events": db.get_action_events(limit=20),
     }
 
 @app.get("/api/monthly-review")
 def monthly_review(period: Optional[str] = None):
-    return get_monthly_review(
-        transactions=db.get_transactions(limit=5000),
+    transactions = db.get_transactions(limit=5000)
+    budgets = db.get_budgets()
+    reconciliation = db.get_reconciliation_summary("BUDGETBAKERS")
+    review = get_monthly_review(
+        transactions=transactions,
         accounts=db.get_accounts(),
-        budgets=db.get_budgets(),
+        budgets=budgets,
         stored_recurring=db.get_recurring_rules(include_rejected=True),
-        reconciliation=db.get_reconciliation_summary("BUDGETBAKERS"),
+        reconciliation=reconciliation,
         period=period,
+    )
+    recurring = review.get("recurring", {}).get("confirmed", []) + review.get("recurring", {}).get("detected", [])
+    understand_period, understand_today = _understand_period_context(period)
+    what_changed = get_financial_changes(transactions, understand_period, today=understand_today)
+    data_confidence = get_understand_data_confidence(transactions, budgets, recurring, reconciliation, db.get_sync_state("BUDGETBAKERS"))
+    review["what_changed"] = what_changed
+    review["data_confidence"] = data_confidence
+    return review
+
+@app.get("/api/analysis-export")
+def analysis_export(period: str = Query("current_month", pattern="^(current_month|previous_month|last_30_days)$")):
+    transactions = db.get_transactions(limit=5000)
+    accounts = db.get_accounts()
+    budgets = db.get_budgets()
+    reconciliation = db.get_reconciliation_summary("BUDGETBAKERS")
+    recurring = get_recurring_transactions(transactions)
+    budget_risks = get_budget_risks(transactions, budgets)
+    sync_state = db.get_sync_state("BUDGETBAKERS")
+    what_changed = get_financial_changes(transactions, period)
+    data_confidence = get_understand_data_confidence(transactions, budgets, recurring, reconciliation, sync_state)
+    monthly_period = period if len(period) == 7 and period[4] == "-" else None
+    monthly = get_monthly_review(
+        transactions=db.get_transactions(limit=5000),
+        accounts=accounts,
+        budgets=budgets,
+        stored_recurring=db.get_recurring_rules(include_rejected=True),
+        reconciliation=reconciliation,
+        period=monthly_period,
+    )
+    return build_analysis_export(
+        period=period,
+        what_changed=what_changed,
+        recurring=recurring,
+        budget_burn=budget_risks,
+        monthly_review=monthly,
+        wealth_summary={"available": True},
+        data_confidence=data_confidence,
     )
 
 @app.post("/api/monthly-review/snapshot")
