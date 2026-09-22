@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Budget, CalculatorKind, CalculatorResult, Category, FinancialEvent, MonthlyReview, RecurringRule } from '../../types';
+import { Budget, CalculatorKind, CalculatorResult, CashProjectionResult, Category, FinancialEvent, MonthlyReview, RecurringRule, SafeToSpendResult } from '../../types';
 
 interface PlanningTabProps {
   budgets: Budget[];
@@ -13,6 +13,9 @@ interface PlanningTabProps {
   onUpdateRecurring: (id: string, status: RecurringRule['status']) => Promise<void>;
   onSaveSnapshot: () => Promise<void>;
   onRunCalculator: (kind: string, payload: Record<string, unknown>) => Promise<CalculatorResult>;
+  onRunCashProjection: (payload: Record<string, unknown>) => Promise<CashProjectionResult>;
+  onRunSafeToSpend: (payload: Record<string, unknown>) => Promise<SafeToSpendResult>;
+  onRunRunway: (payload: Record<string, unknown>) => Promise<CalculatorResult>;
 }
 
 const inputClass = "bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500";
@@ -39,7 +42,10 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
   onDeleteBudget,
   onUpdateRecurring,
   onSaveSnapshot,
-  onRunCalculator
+  onRunCalculator,
+  onRunCashProjection,
+  onRunSafeToSpend,
+  onRunRunway
 }) => {
   const [budgetForm, setBudgetForm] = useState<Partial<Budget>>({ category: 'General', monthly_limit: 0, currency: 'USD', period: 'MONTHLY', is_active: true, source: 'MANUAL' });
   const [calculatorKind, setCalculatorKind] = useState<CalculatorKind>('savings-goal');
@@ -61,6 +67,11 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
   });
   const [calcResult, setCalcResult] = useState<CalculatorResult | null>(null);
   const [calcError, setCalcError] = useState<string | null>(null);
+  const [cashForm, setCashForm] = useState<Record<string, number | string>>({ currency: 'COP', starting_balance: 5000000, reserve_floor: 2000000, essential_monthly_expenses: 3000000, horizon_days: 30 });
+  const [cashProjection, setCashProjection] = useState<CashProjectionResult | null>(null);
+  const [safeResult, setSafeResult] = useState<SafeToSpendResult | null>(null);
+  const [runwayResult, setRunwayResult] = useState<CalculatorResult | null>(null);
+  const [cashError, setCashError] = useState<string | null>(null);
   const money = (value: number) => privacyMode ? '••••' : value.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const todayIso = new Date().toISOString().slice(0, 10);
   const sevenDaysOut = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -97,6 +108,23 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
     if (calculatorKind === 'emergency-fund') return <div className="text-xs text-gray-300">Cobertura: <span className="text-white font-bold">{calcResult.coverage_months == null ? 'No evaluable' : `${calcResult.coverage_months.toFixed(2)} meses`}</span><div className="text-gray-500">{calcResult.reason || calcResult.evaluability}</div></div>;
     if (calculatorKind === 'debt-payoff') return <div className="text-xs text-gray-300">Estado: <span className="text-white font-bold">{calcResult.payoff_status}</span><div className="text-gray-500">Periodos: {calcResult.periods ?? 'N/A'} · Interés: {calcResult.total_interest == null ? 'N/A' : money(calcResult.total_interest)}</div></div>;
     return <div className="text-xs text-gray-300">Costo de oportunidad: <span className="text-white font-bold">{money(calcResult.opportunity_cost || 0)} {calcResult.currency}</span><div className="text-gray-500">Valor supuesto: {money(calcResult.assumed_future_value || 0)}</div></div>;
+  };
+  const setCashValue = (key: string, value: number | string) => setCashForm((current) => ({ ...current, [key]: value }));
+  const runCashIntelligence = async () => {
+    setCashError(null);
+    const payload = { currency: cashForm.currency, horizon_days: Number(cashForm.horizon_days || 30), starting_balance: Number(cashForm.starting_balance || 0), reserve_floor: Number(cashForm.reserve_floor || 0) };
+    try {
+      const [projection, safe, runway] = await Promise.all([
+        onRunCashProjection(payload),
+        onRunSafeToSpend(payload),
+        onRunRunway({ currency: cashForm.currency, liquid_resources: Number(cashForm.starting_balance || 0), essential_monthly_expenses: Number(cashForm.essential_monthly_expenses || 0) })
+      ]);
+      setCashProjection(projection);
+      setSafeResult(safe);
+      setRunwayResult(runway);
+    } catch (err: any) {
+      setCashError(err.message || 'No se pudo calcular caja.');
+    }
   };
   const eventGroups = {
     TODAY: financialEvents.filter((event) => event.date === todayIso),
@@ -165,6 +193,24 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
       </section>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
+          <h3 className="text-sm font-bold text-white">Caja corto plazo</h3>
+          <div className="grid grid-cols-2 gap-2">
+            <input className={inputClass} placeholder="Moneda" value={cashForm.currency} onChange={(e) => setCashValue('currency', e.target.value.toUpperCase())} />
+            <input className={inputClass} type="number" placeholder="Horizonte días" value={cashForm.horizon_days} onChange={(e) => setCashValue('horizon_days', Number(e.target.value))} />
+            <input className={inputClass} type="number" placeholder="Balance inicial" value={cashForm.starting_balance} onChange={(e) => setCashValue('starting_balance', Number(e.target.value))} />
+            <input className={inputClass} type="number" placeholder="Reserva mínima" value={cashForm.reserve_floor} onChange={(e) => setCashValue('reserve_floor', Number(e.target.value))} />
+            <input className={inputClass} type="number" placeholder="Gasto esencial mensual" value={cashForm.essential_monthly_expenses} onChange={(e) => setCashValue('essential_monthly_expenses', Number(e.target.value))} />
+          </div>
+          <button onClick={runCashIntelligence} className="w-full px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Calcular caja</button>
+          {cashError && <div className="text-xs text-red-300">{cashError}</div>}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
+            <div className="bg-gray-900/60 rounded-lg p-3"><div className="text-gray-500">Balance con eventos</div><div className="text-white font-bold">{cashProjection?.balance_after_known_events == null ? 'N/A' : `${money(cashProjection.balance_after_known_events)} ${cashProjection.currency}`}</div><div className="text-gray-500">{cashProjection?.status || 'Sin cálculo'}</div></div>
+            <div className="bg-gray-900/60 rounded-lg p-3"><div className="text-gray-500">Proyectado</div><div className="text-white font-bold">{cashProjection?.projected_balance == null ? 'No disponible' : `${money(cashProjection.projected_balance)} ${cashProjection.currency}`}</div><div className="text-gray-500">Confianza {cashProjection?.confidence || 'N/A'}</div></div>
+            <div className="bg-gray-900/60 rounded-lg p-3"><div className="text-gray-500">Safe-to-Spend</div><div className="text-white font-bold">{safeResult?.safe_to_spend == null ? 'No evaluable' : `${money(safeResult.safe_to_spend)} ${safeResult.currency}`}</div><div className="text-gray-500">Runway {runwayResult?.coverage_months == null ? 'N/A' : `${runwayResult.coverage_months.toFixed(1)} meses`}</div></div>
+          </div>
+        </section>
+
         <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-bold text-white">Agenda financiera</h3>
           {(['TODAY', 'NEXT_7_DAYS', 'LATER'] as const).map((group) => (

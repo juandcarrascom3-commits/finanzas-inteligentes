@@ -239,6 +239,29 @@ def test_financial_events_endpoint_returns_expected_recurring_events():
     assert all(event["certainty"] == "EXPECTED" for event in events)
 
 
+def test_cash_projection_safe_to_spend_and_runway_endpoints():
+    projection = client.post("/api/cash-projection", json={"currency": "USD", "horizon_days": 7, "as_of": "2026-09-21", "starting_balance": 5000})
+    assert projection.status_code == 200
+    assert projection.json()["starting_balance_source"] == "MANUAL"
+    assert "balance_after_known_events" in projection.json()
+
+    no_balance = client.post("/api/cash-projection", json={"currency": "XXX", "horizon_days": 7, "as_of": "2026-09-21"})
+    assert no_balance.status_code == 200
+    assert no_balance.json()["reason"] == "STARTING_BALANCE_REQUIRED"
+
+    safe_missing = client.post("/api/safe-to-spend", json={"currency": "USD", "horizon_days": 7, "as_of": "2026-09-21", "starting_balance": 5000})
+    assert safe_missing.status_code == 200
+    assert safe_missing.json()["reason"] == "RESERVE_FLOOR_REQUIRED"
+
+    runway = client.post("/api/runway", json={"currency": "COP", "liquid_resources": 12000000, "essential_monthly_expenses": 3000000})
+    assert runway.status_code == 200
+    assert runway.json()["coverage_months"] == 4
+
+    invalid_runway = client.post("/api/runway", json={"currency": "COP", "liquid_resources": 12000000, "essential_monthly_expenses": 0})
+    assert invalid_runway.status_code == 200
+    assert invalid_runway.json()["reason"] == "NO_ESSENTIAL_EXPENSE_BASE"
+
+
 def test_phase4_budget_recurring_monthly_review_endpoints():
     wallet_plan = client.post("/api/budgetbakers/import-plan", json={
         "budgets": [{"category": "Wallet Food", "monthly_limit": 250, "currency": "USD", "external_id": "bb-budget-1"}],

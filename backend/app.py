@@ -39,6 +39,11 @@ from backend.analytics.goal_math import (
     required_payment_for_target,
     solve_periods_to_target,
 )
+from backend.analytics.cash_projection import (
+    calculate_runway,
+    calculate_safe_to_spend,
+    project_cash,
+)
 from backend.analytics.projections import calculate_budget_projections
 from backend.integrations.budgetbakers_adapter import (
     BudgetBakersAdapter,
@@ -376,6 +381,23 @@ class OpportunityCostCalculatorInput(BaseModel):
     currency: str = "USD"
 
 
+class CashProjectionInput(BaseModel):
+    currency: str = "USD"
+    horizon_days: int = Field(default=30, ge=1, le=90)
+    as_of: Optional[str] = None
+    starting_balance: Optional[float] = None
+
+
+class SafeToSpendInput(CashProjectionInput):
+    reserve_floor: Optional[float] = None
+
+
+class RunwayInput(BaseModel):
+    currency: str = "USD"
+    liquid_resources: Optional[float] = None
+    essential_monthly_expenses: float = 0.0
+
+
 def get_budgetbakers_adapter() -> BudgetBakersAdapter:
     return BudgetBakersAdapter()
 
@@ -433,6 +455,50 @@ def _calculator_result(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+def _parse_optional_day(value: Optional[str]) -> datetime.date:
+    if not value:
+        return datetime.date.today()
+    try:
+        return datetime.date.fromisoformat(value[:10])
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid date")
+
+
+def _liquid_balance(currency: str) -> tuple[Optional[float], str, Optional[str], str]:
+    liquid_types = {"cash", "checking", "savings", "wallet"}
+    accounts = [
+        account for account in db.get_accounts()
+        if account.get("is_active", 1)
+        and (account.get("currency") or "").upper() == currency.upper()
+        and (account.get("account_type") or "").lower() in liquid_types
+    ]
+    if not accounts:
+        return None, "MISSING", None, "UNKNOWN"
+    balance = sum(float(account.get("current_balance", 0) or 0) for account in accounts)
+    dates = [account.get("last_synced_at") or account.get("updated_at") for account in accounts if account.get("last_synced_at") or account.get("updated_at")]
+    return balance, "ACCOUNTS", max(dates) if dates else None, "UNKNOWN"
+
+
+def _projection_from_payload(payload: CashProjectionInput) -> Dict[str, Any]:
+    as_of = _parse_optional_day(payload.as_of)
+    if payload.starting_balance is None:
+        starting, source, balance_as_of, freshness = _liquid_balance(payload.currency)
+    else:
+        starting, source, balance_as_of, freshness = payload.starting_balance, "MANUAL", as_of.isoformat(), "MANUAL"
+    events = get_financial_events(from_date=as_of.isoformat(), to=(as_of + datetime.timedelta(days=payload.horizon_days)).isoformat())["events"]
+    return project_cash(
+        currency=payload.currency.upper(),
+        as_of=as_of,
+        horizon_days=payload.horizon_days,
+        starting_balance=starting,
+        events=events,
+        transactions=db.get_transactions(limit=5000),
+        starting_balance_source=source,
+        balance_as_of=balance_as_of,
+        balance_freshness=freshness,
+    )
 
 
 @app.post("/api/calculators/compound")
@@ -494,6 +560,27 @@ def calculator_debt_payoff(data: DebtPayoffCalculatorInput):
 @app.post("/api/calculators/opportunity-cost")
 def calculator_opportunity_cost(data: OpportunityCostCalculatorInput):
     return _calculator_result(opportunity_cost, data.amount, data.annual_effective_rate_pct, data.periods, data.currency)
+
+
+@app.post("/api/cash-projection")
+def cash_projection(payload: CashProjectionInput):
+    return _projection_from_payload(payload)
+
+
+@app.post("/api/safe-to-spend")
+def safe_to_spend(payload: SafeToSpendInput):
+    projection = _projection_from_payload(payload)
+    return {**calculate_safe_to_spend(projection, payload.reserve_floor), "projection": projection}
+
+
+@app.post("/api/runway")
+def runway(payload: RunwayInput):
+    liquid = payload.liquid_resources
+    if liquid is None:
+        liquid, _, _, _ = _liquid_balance(payload.currency)
+    if liquid is None:
+        return {"status": "UNEVALUABLE", "reason": "STARTING_BALANCE_REQUIRED", "coverage_months": None, "currency": payload.currency.upper()}
+    return calculate_runway(liquid, payload.essential_monthly_expenses, payload.currency.upper())
 
 @app.get("/api/data-source")
 def get_data_source():

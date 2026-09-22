@@ -8,6 +8,7 @@ import type {
   BudgetBakersPreview,
   BudgetBakersStatus,
   CalculatorResult,
+  CashProjectionResult,
   Category,
   CsvImportResult,
   DashboardSummary,
@@ -24,6 +25,7 @@ import type {
   RecurringRule,
   ReconciliationSummary,
   SourceMapping,
+  SafeToSpendResult,
   Transaction,
   UnderstandSummary,
   WealthData
@@ -543,4 +545,31 @@ export async function runCalculator(kind: string, payload: Record<string, unknow
     body: JSON.stringify(payload)
   });
   return readJson<CalculatorResult>(res, 'Error al calcular.');
+}
+
+export async function runCashProjection(payload: Record<string, unknown>): Promise<CashProjectionResult> {
+  const res = await fetch(`${API_BASE}/cash-projection`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return readJson<CashProjectionResult>(res, 'Error al proyectar caja.');
+}
+
+export async function runSafeToSpend(payload: Record<string, unknown>): Promise<SafeToSpendResult> {
+  const res = await fetch(`${API_BASE}/safe-to-spend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return readJson<SafeToSpendResult>(res, 'Error al calcular safe-to-spend.');
+}
+
+export async function runRunway(payload: Record<string, unknown>): Promise<CalculatorResult> {
+  const res = await fetch(`${API_BASE}/runway`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return readJson<CalculatorResult>(res, 'Error al calcular runway.');
 }

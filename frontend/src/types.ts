@@ -765,6 +765,38 @@ export interface CalculatorResult {
   note?: string;
 }
 
+export interface CashProjectionResult {
+  currency?: string;
+  as_of?: string;
+  horizon_days?: number;
+  starting_liquid_balance?: number;
+  starting_balance_source?: string;
+  balance_as_of?: string | null;
+  balance_freshness?: string;
+  committed_inflows?: number;
+  expected_inflows?: number;
+  committed_outflows?: number;
+  expected_outflows?: number;
+  balance_after_known_events?: number;
+  variable_spend_baseline?: Record<string, unknown>;
+  estimated_variable_outflows?: number | null;
+  projected_balance?: number | null;
+  status?: string;
+  reason?: string | null;
+  confidence?: string;
+  confidence_reasons?: string[];
+}
+
+export interface SafeToSpendResult {
+  status?: string;
+  reason?: string | null;
+  currency?: string;
+  safe_to_spend?: number | null;
+  expected_inflow_upside?: number;
+  reserve_floor?: number;
+  projection?: CashProjectionResult;
+}
+
 export interface InvestmentOperation {
   id: string;
   occurred_at: string;
