@@ -1,13 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Header } from './components/Header';
-import { TopKpiRow } from './components/TopKpiRow';
-import { CentralVisualSection } from './components/CentralVisualSection';
 import { AssetListTab } from './components/tabs/AssetListTab';
 import { InvestmentThesisTab } from './components/tabs/InvestmentThesisTab';
 import { WealthTab } from './components/tabs/WealthTab';
 import { PersonalDataTab } from './components/tabs/PersonalDataTab';
-import { UnderstandTab } from './components/tabs/UnderstandTab';
 import { PlanningTab } from './components/tabs/PlanningTab';
+import { AetherisShell, AetherisTab } from './aetheris/AetherisShell';
+import { AetherisOverview } from './aetheris/AetherisOverview';
 import {
   deleteBudget,
   deleteInvestmentOperation,
@@ -79,11 +78,11 @@ import {
   validateBackup
 } from './services/api';
 import { Account, Category, DashboardSummary, DataSourceInfo, Asset, InvestmentThesis, Transaction, UnderstandSummary, Budget, RecurringRule, MonthlyReview, WealthData, FinancialEvent, FinancialInboxResult, PortfolioExposureResult } from './types';
-import { Compass, AlertTriangle, WalletCards, LineChart, Target } from 'lucide-react';
+import { AlertTriangle } from 'lucide-react';
 
 export const App: React.FC = () => {
   const [currency, setCurrency] = useState<'USD' | 'COP'>('USD');
-  const [activeTab, setActiveTab] = useState<'overview' | 'plan' | 'invest' | 'datos'>('overview');
+  const [activeTab, setActiveTab] = useState<AetherisTab>('overview');
   const [privacyMode, setPrivacyModeState] = useState<boolean>(() => localStorage.getItem('finance_privacy_mode') === '1');
   const [understandPeriod, setUnderstandPeriod] = useState<string>('current_month');
   const [selectedTickerForSim, setSelectedTickerForSim] = useState<string | undefined>(undefined);
@@ -108,12 +107,6 @@ export const App: React.FC = () => {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const exchangeRate = dashboard?.kpis?.net_worth?.exchange_rate || 4050;
-  const formatMoney = (value: number | undefined, currencyCode?: string | null) => {
-    if (privacyMode) return '••••';
-    return `${currencyCode || currency} ${(value || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-  };
-  const hasCurrencySafeOverview = !!understand?.what_changed.primary_currency;
-
   const loadAllData = useCallback(async () => {
     setIsLoading(true);
     setErrorMsg(null);
@@ -195,30 +188,35 @@ export const App: React.FC = () => {
     localStorage.setItem('finance_privacy_mode', value ? '1' : '0');
   };
 
-  return (
-    <div className="min-h-screen bg-[#080C15] text-gray-100 flex flex-col font-sans selection:bg-emerald-500/30 selection:text-emerald-200">
-      {/* HEADER SECTION */}
-      <Header
-        currency={currency}
-        setCurrency={setCurrency}
-        exchangeRate={exchangeRate}
-        onRefresh={loadAllData}
-        isLoading={isLoading}
-        privacyMode={privacyMode}
-        setPrivacyMode={setPrivacyMode}
-      />
+  const header = (
+    <Header
+      currency={currency}
+      setCurrency={setCurrency}
+      exchangeRate={exchangeRate}
+      onRefresh={loadAllData}
+      isLoading={isLoading}
+      privacyMode={privacyMode}
+      setPrivacyMode={setPrivacyMode}
+    />
+  );
 
-      {/* ERROR BANNER */}
+  return (
+    <AetherisShell
+      activeTab={activeTab}
+      onSelectTab={setActiveTab}
+      header={header}
+      sourceLabel={`${dataSource?.profile || dataSource?.mode || 'DEMO'} · MANUAL / CSV / BUDGETBAKERS / ETORO`}
+    >
       {errorMsg && (
-        <div className="max-w-7xl mx-auto px-4 lg:px-8 mt-4 w-full">
-          <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-xl text-red-300 text-xs flex items-center justify-between">
+        <div className="mb-5 w-full">
+          <div className="a-surface flex items-center justify-between gap-3 p-3 text-xs text-[var(--a-negative)]">
             <div className="flex items-center space-x-2">
-              <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0" />
+              <AlertTriangle className="w-4 h-4 flex-shrink-0" />
               <span>{errorMsg}</span>
             </div>
             <button
               onClick={loadAllData}
-              className="px-2.5 py-1 bg-red-500/20 hover:bg-red-500/30 text-red-200 font-mono text-[11px] rounded"
+              className="a-motion rounded-full border border-[var(--a-line)] px-3 py-1 text-[11px] text-[var(--a-secondary)]"
             >
               Reintentar
             </button>
@@ -226,313 +224,127 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      <div className="max-w-7xl mx-auto px-4 lg:px-8 mt-4 w-full">
-        <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-200 text-xs">
-          Fuente activa: <strong>{dataSource?.profile || dataSource?.mode || 'DEMO'}</strong>. MANUAL y CSV son datos personales locales; DEMO son datos semilla/simulados.
-        </div>
-      </div>
-
-      {/* MAIN THREE-TIER CONTAINER */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 lg:px-8 py-6 space-y-7">
-        {activeTab === 'overview' && dashboard && (
-          <>
-            {/* TIER 1: TOP KPI ROW (High-Level Summary) */}
-            <TopKpiRow
-              netWorth={dashboard.kpis.net_worth}
-              savingsRate={dashboard.kpis.savings_rate}
-              twrPct={dashboard.kpis.twr_pct}
-              mwrPct={dashboard.kpis.mwr_pct}
-              riskMetrics={dashboard.kpis.risk_metrics}
-              currency={currency}
-              privacyMode={privacyMode}
-            />
-
-            {understand && (
-              <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
-                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-                  <div>
-                    <h2 className="text-sm font-bold text-white">Overview inteligente</h2>
-                    <p className="text-xs text-gray-400">Calculado desde datos locales persistidos. Sin IA.</p>
-                  </div>
-                  <div className={`text-[11px] font-bold px-2 py-1 rounded border w-fit ${
-                    understand.data_confidence?.level === 'HIGH'
-                      ? 'text-emerald-200 border-emerald-500/40 bg-emerald-500/10'
-                      : understand.data_confidence?.level === 'LOW'
-                        ? 'text-red-200 border-red-500/40 bg-red-500/10'
-                        : 'text-amber-200 border-amber-500/40 bg-amber-500/10'
-                  }`}>
-                    Confianza: {understand.data_confidence?.level || 'MEDIUM'}
-                  </div>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-                  <div className="bg-gray-900/60 rounded-lg p-3">
-                    <div className="text-gray-500">Cómo estoy</div>
-                    <div className="text-white font-bold mt-1">
-                      {hasCurrencySafeOverview
-                        ? `Cashflow ${formatMoney(understand.what_changed.metrics?.net_cash_flow?.current, understand.what_changed.primary_currency)}`
-                        : 'Múltiples monedas'}
-                    </div>
-                    <div className="text-gray-400 mt-1">
-                      {hasCurrencySafeOverview ? `Ahorro ${understand.what_changed.metrics?.savings_rate?.current}%` : 'Ver detalle por moneda en Understand'}
-                    </div>
-                  </div>
-                  <div className="bg-gray-900/60 rounded-lg p-3">
-                    <div className="text-gray-500">Qué cambió</div>
-                    <div className={`font-bold mt-1 ${(understand.what_changed.metrics?.net_cash_flow?.delta || 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
-                      {hasCurrencySafeOverview
-                        ? formatMoney(understand.what_changed.metrics?.net_cash_flow?.delta, understand.what_changed.primary_currency)
-                        : `${Object.keys(understand.what_changed.by_currency || {}).length} monedas`}
-                    </div>
-                    <div className="text-gray-400 mt-1">vs periodo anterior</div>
-                  </div>
-                  <details className="bg-gray-900/60 rounded-lg p-3">
-                    <summary className="text-gray-300 font-bold cursor-pointer">Por qué cambió</summary>
-                    <div className="mt-2 space-y-1 text-gray-400">
-                      {(understand.what_changed.explain?.reasons || understand.what_changed.interpretation).slice(0, 3).map((reason, index) => (
-                        <div key={`${reason}-${index}`}>{reason}</div>
-                      ))}
-                      {understand.what_changed.category_contributors?.slice(0, 3).map((item) => (
-                        <div key={item.category} className="flex justify-between border-t border-gray-800 pt-1">
-                          <span>{item.category}</span>
-                          <span className={item.delta > 0 ? 'text-red-300' : 'text-emerald-300'}>{formatMoney(item.delta, item.currency)}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </details>
-                </div>
-              </section>
-            )}
-
-            {financialInbox && (
-              <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
-                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-                  <div>
-                    <h2 className="text-sm font-bold text-white">Financial Inbox</h2>
-                    <p className="text-xs text-gray-400">Qué requiere atención ahora y qué viene después.</p>
-                  </div>
-                  <div className="text-[11px] text-gray-400">{financialInbox.status} · {financialInbox.currency} · {financialInbox.horizon_days} días</div>
-                </div>
-                {financialInbox.attention_items.length === 0 && (
-                  <div className="text-xs text-gray-400 bg-gray-900/60 rounded-lg p-3">No priority issues detected.</div>
-                )}
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 text-xs">
-                  <div className="space-y-2">
-                    <div className="font-bold text-gray-300">Needs Attention</div>
-                    {financialInbox.attention_items.filter((item) => item.severity === 'URGENT' || item.severity === 'ATTENTION').slice(0, 4).map((item) => (
-                      <div key={item.id} className="bg-gray-900/60 rounded-lg p-3 border border-gray-800">
-                        <div className={item.severity === 'URGENT' ? 'text-red-300 font-bold' : 'text-amber-300 font-bold'}>{item.title}</div>
-                        <div className="text-gray-400 mt-1">{item.summary}</div>
-                      </div>
-                    ))}
-                    {financialInbox.attention_items.filter((item) => item.severity === 'URGENT' || item.severity === 'ATTENTION').length === 0 && <div className="text-gray-500">Sin asuntos prioritarios.</div>}
-                  </div>
-                  <div className="space-y-2">
-                    <div className="font-bold text-gray-300">To Review</div>
-                    {financialInbox.attention_items.filter((item) => item.severity === 'WATCH').slice(0, 4).map((item) => (
-                      <div key={item.id} className="bg-gray-900/60 rounded-lg p-3 border border-gray-800">
-                        <div className="text-blue-300 font-bold">{item.title}</div>
-                        <div className="text-gray-400 mt-1">{item.summary}</div>
-                      </div>
-                    ))}
-                    {financialInbox.attention_items.filter((item) => item.severity === 'WATCH').length === 0 && <div className="text-gray-500">Sin revisiones pendientes.</div>}
-                  </div>
-                  <div className="space-y-2">
-                    <div className="font-bold text-gray-300">Coming Up</div>
-                    {financialInbox.timeline.filter((item) => item.temporal_relation === 'FUTURE').slice(0, 5).map((item) => (
-                      <div key={item.id} className="flex justify-between gap-2 bg-gray-900/60 rounded-lg p-3 border border-gray-800">
-                        <div>
-                          <div className="text-white font-bold">{item.title}</div>
-                          <div className="text-gray-500">{item.date} · {item.certainty || item.confidence || item.source}</div>
-                        </div>
-                        {item.amount != null && <div className="text-gray-300">{formatMoney(item.amount, item.currency)}</div>}
-                      </div>
-                    ))}
-                    {financialInbox.timeline.filter((item) => item.temporal_relation === 'FUTURE').length === 0 && <div className="text-gray-500">Sin eventos próximos.</div>}
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {/* TIER 2: CENTRAL VISUAL SECTION (Asset Allocation & Temporal Evolution) */}
-            <CentralVisualSection
-              treemapData={dashboard.allocation_treemap}
-              evolutionData={dashboard.temporal_evolution}
-              currency={currency}
-              exchangeRate={exchangeRate}
-              privacyMode={privacyMode}
-            />
-            <UnderstandTab
-              data={understand}
-              period={understandPeriod}
-              setPeriod={setUnderstandPeriod}
-              privacyMode={privacyMode}
-            />
-          </>
-        )}
-
-        {/* TIER 3: BOTTOM TAB SECTION & GRANULAR CONTROLS */}
-        <section className="space-y-4">
-          {/* Tabs Navigation Bar */}
-          <div className="flex items-center space-x-2 border-b border-gray-800 pb-2 overflow-x-auto">
-            <button
-              onClick={() => setActiveTab('overview')}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'overview'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/60'
-              }`}
-            >
-              <Compass className="w-4 h-4" />
-              <span>Overview</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('plan')}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'plan'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/60'
-              }`}
-            >
-              <Target className="w-4 h-4" />
-              <span>Plan</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('invest')}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'invest'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/60'
-              }`}
-            >
-              <LineChart className="w-4 h-4" />
-              <span>Invest</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('datos')}
-              className={`flex items-center space-x-2 px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${
-                activeTab === 'datos'
-                  ? 'bg-emerald-600 text-white shadow-md'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800/60'
-              }`}
-            >
-              <WalletCards className="w-4 h-4" />
-              <span>Datos</span>
-            </button>
-
-          </div>
-
-          {/* Active Tab Content Container */}
-          <div className="pt-2">
-            {activeTab === 'datos' && (
-              <PersonalDataTab
-                accounts={accounts}
-                assets={assets}
-                transactions={transactions}
-                categories={categories}
-                dataSource={dataSource}
-                onSaveAccount={async (account) => { await saveAccount(account); await refreshAfterMutation(); }}
-                onDeleteAccount={async (id) => { await deleteAccount(id); await refreshAfterMutation(); }}
-                onSaveAsset={async (asset) => { await saveAsset(asset); await refreshAfterMutation(); }}
-                onDeleteAsset={async (ticker) => { await deleteAsset(ticker); await refreshAfterMutation(); }}
-                onSaveTransaction={async (transaction) => { await saveTransaction(transaction); await refreshAfterMutation(); }}
-                onDeleteTransaction={async (id) => { await deleteTransaction(id); await refreshAfterMutation(); }}
-                onPreviewCsv={previewTransactionsCsv}
-                onImportCsv={async (content) => { const result = await importTransactionsCsv(content); await refreshAfterMutation(); return result; }}
-                onBackup={exportBackup}
-                onValidateBackup={validateBackup}
-                onRestoreBackup={async (path) => { const result = await restoreBackup(path); await refreshAfterMutation(); return result; }}
-                onFetchWalletStatus={fetchBudgetBakersStatus}
-                onTestWallet={testBudgetBakersConnection}
-                onPreviewWallet={previewBudgetBakersImport}
-                onImportWallet={async (preview) => { const result = await importBudgetBakersPreview(preview); await importBudgetBakersPlan(preview); await refreshAfterMutation(); return result; }}
-                onFetchEtoroStatus={fetchEtoroStatus}
-                onTestEtoro={testEtoroConnection}
-                onPreviewEtoro={previewEtoroImport}
-                onImportEtoro={async (preview) => { const result = await importEtoroPreview(preview); await refreshAfterMutation(); return result; }}
-                onFetchEtoroMappings={fetchEtoroMappings}
-                onConfirmEtoroMappings={confirmEtoroMappings}
-                onMarkEtoroUnsupported={markEtoroUnsupported}
-                onExportMappingConfig={exportMappingConfig}
-                onValidateMappingConfig={validateMappingConfig}
-                onImportMappingConfig={async (config) => { const result = await importMappingConfig(config); await refreshAfterMutation(); return result; }}
-                onFetchReconciliation={fetchReconciliation}
-                onSaveSourceMapping={saveSourceMapping}
-                onSaveOpeningPosition={async (position) => { await saveOpeningPosition(position); await refreshAfterMutation(); }}
-                privacyMode={privacyMode}
-              />
-            )}
-
-            {activeTab === 'plan' && (
-              <PlanningTab
-                budgets={budgets}
-                categories={categories}
-                recurring={recurring}
-                financialEvents={financialEvents}
-                review={monthlyReview}
-                privacyMode={privacyMode}
-                onSaveBudget={async (budget) => { await saveBudget(budget); await refreshAfterMutation(); }}
-                onDeleteBudget={async (id) => { await deleteBudget(id); await refreshAfterMutation(); }}
-                onUpdateRecurring={async (id, status) => { await updateRecurringStatus(id, status); await refreshAfterMutation(); }}
-                onSaveSnapshot={async () => { await saveMonthlyReviewSnapshot(monthlyReview?.period); await refreshAfterMutation(); }}
-                onRunCalculator={runCalculator}
-                onRunCashProjection={runCashProjection}
-                onRunSafeToSpend={runSafeToSpend}
-                onRunRunway={runRunway}
-                onEvaluateScenario={evaluateScenario}
-              />
-            )}
-
-            {activeTab === 'invest' && (
-              <div className="space-y-5">
-                <WealthTab
-                  data={wealth}
-                  exposure={portfolioExposure}
-                  privacyMode={privacyMode}
-                  onRefresh={refreshWealth}
-                  onImportValuations={importValuationsCsv}
-                  onImportBenchmark={importBenchmarkCsv}
-                  onSaveInvestmentOperation={async (operation) => { await saveInvestmentOperation(operation); await refreshWealth(); }}
-                  onDeleteInvestmentOperation={async (id) => { await deleteInvestmentOperation(id); await refreshWealth(); }}
-                  onPreviewInvestmentCsv={previewInvestmentLedgerCsv}
-                  onImportInvestmentCsv={async (content) => { const result = await importInvestmentLedgerCsv(content); await refreshWealth(); return result; }}
-                  onSaveOpeningPosition={async (position) => { await saveOpeningPosition(position); await refreshWealth(); }}
-                  onSetPositionAuthority={async (ticker, state, notes) => { await setPositionAuthority(ticker, state, notes); await refreshWealth(); }}
-                  onSyncMarketData={async (benchmarkSymbol, mode) => { const result = await syncMarketData(benchmarkSymbol, mode); await refreshWealth(undefined, benchmarkSymbol); return result; }}
-                  onRefreshFundCompositions={async (symbols) => { const result = await refreshFundCompositions(symbols); await refreshWealth(); return result; }}
-                  onSaveSymbolMapping={async (mapping) => { await saveSymbolMapping(mapping); await refreshWealth(); }}
-                  onSavePriceAuthority={async (authority) => { await savePriceAuthority(authority); await refreshWealth(); }}
-                  onSaveMarketDataConfig={async (config) => { await saveMarketDataConfig(config); await refreshWealth(); }}
-                  onSaveFxRate={async (rate) => { await saveFxRate(rate); await refreshWealth(); }}
-                />
-                <AssetListTab
-                  assets={assets}
-                  currency={currency}
-                  exchangeRate={exchangeRate}
-                  onSelectForSimulation={handleSelectAssetForSimulation}
-                  privacyMode={privacyMode}
-                />
-                <InvestmentThesisTab
-                  theses={theses}
-                  assets={assets}
-                  onSaveThesis={handleSaveThesis}
-                  onSimulatePurchase={handleSimulatePurchase}
-                  selectedTickerForSim={selectedTickerForSim}
-                />
-              </div>
-            )}
-
-          </div>
+      {activeTab === 'overview' && dashboard && (
+        <AetherisOverview
+          dashboard={dashboard}
+          understand={understand}
+          financialInbox={financialInbox}
+          monthlyReview={monthlyReview}
+          dataSource={dataSource}
+          currency={currency}
+          privacyMode={privacyMode}
+        />
+      )}
+      {activeTab === 'overview' && !dashboard && (
+        <section className="a-canvas">
+          <div className="a-page-kicker">Overview</div>
+          <h1 className="a-page-title">Cargando estado financiero</h1>
+          <p className="a-page-subtitle">Se mantiene la interfaz disponible mientras el backend local responde.</p>
         </section>
-      </main>
+      )}
 
-      {/* FOOTER */}
-      <footer className="border-t border-gray-800/80 bg-[#0B0F19] py-4 px-4 text-center text-xs text-gray-500 font-mono">
-        Finanzas Inteligentes &bull; SQLite local &bull; Fuentes: DEMO / MANUAL / CSV / BUDGETBAKERS / ETORO
-      </footer>
-    </div>
+      <section className="space-y-4">
+        <div className="pt-2">
+          {activeTab === 'datos' && (
+            <PersonalDataTab
+              accounts={accounts}
+              assets={assets}
+              transactions={transactions}
+              categories={categories}
+              dataSource={dataSource}
+              onSaveAccount={async (account) => { await saveAccount(account); await refreshAfterMutation(); }}
+              onDeleteAccount={async (id) => { await deleteAccount(id); await refreshAfterMutation(); }}
+              onSaveAsset={async (asset) => { await saveAsset(asset); await refreshAfterMutation(); }}
+              onDeleteAsset={async (ticker) => { await deleteAsset(ticker); await refreshAfterMutation(); }}
+              onSaveTransaction={async (transaction) => { await saveTransaction(transaction); await refreshAfterMutation(); }}
+              onDeleteTransaction={async (id) => { await deleteTransaction(id); await refreshAfterMutation(); }}
+              onPreviewCsv={previewTransactionsCsv}
+              onImportCsv={async (content) => { const result = await importTransactionsCsv(content); await refreshAfterMutation(); return result; }}
+              onBackup={exportBackup}
+              onValidateBackup={validateBackup}
+              onRestoreBackup={async (path) => { const result = await restoreBackup(path); await refreshAfterMutation(); return result; }}
+              onFetchWalletStatus={fetchBudgetBakersStatus}
+              onTestWallet={testBudgetBakersConnection}
+              onPreviewWallet={previewBudgetBakersImport}
+              onImportWallet={async (preview) => { const result = await importBudgetBakersPreview(preview); await importBudgetBakersPlan(preview); await refreshAfterMutation(); return result; }}
+              onFetchEtoroStatus={fetchEtoroStatus}
+              onTestEtoro={testEtoroConnection}
+              onPreviewEtoro={previewEtoroImport}
+              onImportEtoro={async (preview) => { const result = await importEtoroPreview(preview); await refreshAfterMutation(); return result; }}
+              onFetchEtoroMappings={fetchEtoroMappings}
+              onConfirmEtoroMappings={confirmEtoroMappings}
+              onMarkEtoroUnsupported={markEtoroUnsupported}
+              onExportMappingConfig={exportMappingConfig}
+              onValidateMappingConfig={validateMappingConfig}
+              onImportMappingConfig={async (config) => { const result = await importMappingConfig(config); await refreshAfterMutation(); return result; }}
+              onFetchReconciliation={fetchReconciliation}
+              onSaveSourceMapping={saveSourceMapping}
+              onSaveOpeningPosition={async (position) => { await saveOpeningPosition(position); await refreshAfterMutation(); }}
+              privacyMode={privacyMode}
+            />
+          )}
+
+          {activeTab === 'plan' && (
+            <PlanningTab
+              budgets={budgets}
+              categories={categories}
+              recurring={recurring}
+              financialEvents={financialEvents}
+              review={monthlyReview}
+              privacyMode={privacyMode}
+              onSaveBudget={async (budget) => { await saveBudget(budget); await refreshAfterMutation(); }}
+              onDeleteBudget={async (id) => { await deleteBudget(id); await refreshAfterMutation(); }}
+              onUpdateRecurring={async (id, status) => { await updateRecurringStatus(id, status); await refreshAfterMutation(); }}
+              onSaveSnapshot={async () => { await saveMonthlyReviewSnapshot(monthlyReview?.period); await refreshAfterMutation(); }}
+              onRunCalculator={runCalculator}
+              onRunCashProjection={runCashProjection}
+              onRunSafeToSpend={runSafeToSpend}
+              onRunRunway={runRunway}
+              onEvaluateScenario={evaluateScenario}
+            />
+          )}
+
+          {activeTab === 'invest' && (
+            <div className="space-y-5">
+              <WealthTab
+                data={wealth}
+                exposure={portfolioExposure}
+                privacyMode={privacyMode}
+                onRefresh={refreshWealth}
+                onImportValuations={importValuationsCsv}
+                onImportBenchmark={importBenchmarkCsv}
+                onSaveInvestmentOperation={async (operation) => { await saveInvestmentOperation(operation); await refreshWealth(); }}
+                onDeleteInvestmentOperation={async (id) => { await deleteInvestmentOperation(id); await refreshWealth(); }}
+                onPreviewInvestmentCsv={previewInvestmentLedgerCsv}
+                onImportInvestmentCsv={async (content) => { const result = await importInvestmentLedgerCsv(content); await refreshWealth(); return result; }}
+                onSaveOpeningPosition={async (position) => { await saveOpeningPosition(position); await refreshWealth(); }}
+                onSetPositionAuthority={async (ticker, state, notes) => { await setPositionAuthority(ticker, state, notes); await refreshWealth(); }}
+                onSyncMarketData={async (benchmarkSymbol, mode) => { const result = await syncMarketData(benchmarkSymbol, mode); await refreshWealth(undefined, benchmarkSymbol); return result; }}
+                onRefreshFundCompositions={async (symbols) => { const result = await refreshFundCompositions(symbols); await refreshWealth(); return result; }}
+                onSaveSymbolMapping={async (mapping) => { await saveSymbolMapping(mapping); await refreshWealth(); }}
+                onSavePriceAuthority={async (authority) => { await savePriceAuthority(authority); await refreshWealth(); }}
+                onSaveMarketDataConfig={async (config) => { await saveMarketDataConfig(config); await refreshWealth(); }}
+                onSaveFxRate={async (rate) => { await saveFxRate(rate); await refreshWealth(); }}
+              />
+              <AssetListTab
+                assets={assets}
+                currency={currency}
+                exchangeRate={exchangeRate}
+                onSelectForSimulation={handleSelectAssetForSimulation}
+                privacyMode={privacyMode}
+              />
+              <InvestmentThesisTab
+                theses={theses}
+                assets={assets}
+                onSaveThesis={handleSaveThesis}
+                onSimulatePurchase={handleSimulatePurchase}
+                selectedTickerForSim={selectedTickerForSim}
+              />
+            </div>
+          )}
+        </div>
+      </section>
+    </AetherisShell>
   );
 };
 export default App;
