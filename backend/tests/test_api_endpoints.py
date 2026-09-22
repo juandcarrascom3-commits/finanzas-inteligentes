@@ -306,6 +306,25 @@ def test_portfolio_exposure_endpoint_contract():
     assert "provenance" in payload
 
 
+def test_financial_snapshot_and_summary_report_contract():
+    snapshot = client.post("/api/financial-snapshot", json={"currency": "USD", "period": "current_month", "horizon_days": 7, "as_of": "2026-09-22"})
+    assert snapshot.status_code == 200
+    payload = snapshot.json()
+    assert payload["schema_version"] == "financial_snapshot.v1"
+    assert payload["as_of"] == "2026-09-22"
+    assert payload["scope"]["currency"] == "USD"
+    assert "cash_flow" in payload["sections"]
+    assert "xray" in payload["sections"]
+    assert payload["sections"]["goals"]["status"] == "UNAVAILABLE"
+
+    report = client.post("/api/reports/financial-summary", json={"currency": "USD", "period": "current_month", "horizon_days": 7, "as_of": "2026-09-22"})
+    assert report.status_code == 200
+    data = report.json()
+    assert data["schema_version"] == "financial_summary_report.v1"
+    assert data["source"] == "FinancialSnapshot"
+    assert isinstance(data["sections"], list)
+
+
 def test_phase4_budget_recurring_monthly_review_endpoints():
     wallet_plan = client.post("/api/budgetbakers/import-plan", json={
         "budgets": [{"category": "Wallet Food", "monthly_limit": 250, "currency": "USD", "external_id": "bb-budget-1"}],

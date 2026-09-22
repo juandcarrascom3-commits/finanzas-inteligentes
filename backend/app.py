@@ -46,6 +46,7 @@ from backend.analytics.cash_projection import (
 )
 from backend.analytics.scenarios import evaluate_scenario
 from backend.analytics.financial_inbox import compose_financial_inbox
+from backend.analytics.financial_snapshot import build_financial_summary_report, compose_financial_snapshot, section_envelope, unavailable_section
 from backend.analytics.projections import calculate_budget_projections
 from backend.integrations.budgetbakers_adapter import (
     BudgetBakersAdapter,
@@ -418,6 +419,15 @@ class FinancialInboxInput(BaseModel):
     reserve_floor: Optional[float] = None
 
 
+class FinancialSnapshotInput(BaseModel):
+    currency: Optional[str] = None
+    period: str = "current_month"
+    horizon_days: int = Field(default=30, ge=1, le=90)
+    as_of: Optional[str] = None
+    starting_balance: Optional[float] = None
+    reserve_floor: Optional[float] = None
+
+
 def get_budgetbakers_adapter() -> BudgetBakersAdapter:
     return BudgetBakersAdapter()
 
@@ -673,6 +683,64 @@ def financial_inbox_evaluate(payload: FinancialInboxInput):
         data_confidence=data_confidence,
         financial_events=events,
     )
+
+
+def _compose_snapshot_from_payload(payload: FinancialSnapshotInput) -> Dict[str, Any]:
+    as_of_day = _parse_optional_day(payload.as_of)
+    currency = payload.currency.upper() if payload.currency else None
+    scope = {"currency": currency, "period": payload.period, "horizon_days": payload.horizon_days}
+    sections: Dict[str, Dict[str, Any]] = {}
+
+    understand_data = get_understand(payload.period)
+    sections["cash_flow"] = section_envelope(source="understand.what_changed.facts", data=understand_data.get("what_changed", {}).get("facts"), as_of=as_of_day.isoformat())
+    sections["changes"] = section_envelope(source="understand.what_changed", data=understand_data.get("what_changed"), as_of=as_of_day.isoformat())
+    sections["budgets"] = section_envelope(source="understand.plan_vs_actual+budget_burn", data={"plan_vs_actual": understand_data.get("plan_vs_actual", []), "budget_burn": understand_data.get("budget_burn", [])}, as_of=as_of_day.isoformat())
+    sections["recurring"] = section_envelope(source="understand.recurring", data=understand_data.get("recurring", []), as_of=as_of_day.isoformat())
+    sections["confidence"] = section_envelope(source="understand.data_confidence", data=understand_data.get("data_confidence"), status="READY" if understand_data.get("data_confidence") else "EMPTY", as_of=as_of_day.isoformat())
+
+    review = monthly_review(None if payload.period in {"current_month", "previous_month", "last_30_days"} else payload.period)
+    sections["monthly_review"] = section_envelope(source="monthly_review", data=review, status="READY" if review else "EMPTY", as_of=review.get("range", {}).get("to") if isinstance(review, dict) else as_of_day.isoformat())
+
+    inbox_currency = currency or "USD"
+    inbox = financial_inbox_evaluate(FinancialInboxInput(currency=inbox_currency, horizon_days=payload.horizon_days, as_of=as_of_day.isoformat(), starting_balance=payload.starting_balance, reserve_floor=payload.reserve_floor))
+    sections["inbox"] = section_envelope(source="financial_inbox", data=inbox, status=inbox.get("status", "READY"), reasons=inbox.get("reasons", []), as_of=inbox.get("as_of"), provenance=inbox.get("provenance"))
+    sections["timeline"] = section_envelope(source="financial_inbox.timeline", data=inbox.get("timeline", []), status="READY" if inbox.get("timeline") else "EMPTY", as_of=inbox.get("as_of"))
+
+    wealth = get_wealth(0.0)
+    sections["wealth"] = section_envelope(source="wealth", data=wealth, status="READY" if wealth else "EMPTY", as_of=as_of_day.isoformat())
+    sections["performance"] = section_envelope(source="wealth.performance", data=wealth.get("performance"), status="READY" if wealth.get("performance") else "EMPTY", as_of=as_of_day.isoformat())
+    sections["portfolio"] = section_envelope(source="wealth.summary+allocation+concentration", data={"summary": wealth.get("summary"), "allocation": wealth.get("allocation"), "concentration": wealth.get("concentration")}, status="READY" if wealth.get("summary") else "EMPTY", as_of=as_of_day.isoformat())
+
+    xray = get_portfolio_exposure()
+    xray_status = xray.get("status", "READY")
+    sections["xray"] = section_envelope(source="portfolio_xray", data=xray, status="PARTIAL" if xray_status == "PARTIAL" else "UNEVALUABLE" if xray_status == "UNEVALUABLE" else "READY", reasons=xray.get("reasons", [xray.get("reason")] if xray.get("reason") else []), as_of=xray.get("as_of"), provenance=xray.get("provenance"))
+
+    sections["goals"] = unavailable_section("goal_summary", "DEFERRED_NO_CLEAN_CANONICAL_SUMMARY_OWNER")
+    return compose_financial_snapshot(as_of=as_of_day.isoformat(), scope=scope, sections=sections)
+
+
+@app.post("/api/financial-snapshot")
+def financial_snapshot(payload: FinancialSnapshotInput = FinancialSnapshotInput()):
+    try:
+        return _compose_snapshot_from_payload(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.get("/api/financial-snapshot")
+def financial_snapshot_get(currency: Optional[str] = None, period: str = "current_month", horizon_days: int = 30, as_of: Optional[str] = None):
+    return financial_snapshot(FinancialSnapshotInput(currency=currency, period=period, horizon_days=horizon_days, as_of=as_of))
+
+
+@app.post("/api/reports/financial-summary")
+def financial_summary_report(payload: FinancialSnapshotInput = FinancialSnapshotInput()):
+    snapshot = _compose_snapshot_from_payload(payload)
+    return build_financial_summary_report(snapshot)
+
+
+@app.get("/api/reports/financial-summary")
+def financial_summary_report_get(currency: Optional[str] = None, period: str = "current_month", horizon_days: int = 30, as_of: Optional[str] = None):
+    return financial_summary_report(FinancialSnapshotInput(currency=currency, period=period, horizon_days=horizon_days, as_of=as_of))
 
 @app.get("/api/data-source")
 def get_data_source():
