@@ -262,6 +262,25 @@ def test_cash_projection_safe_to_spend_and_runway_endpoints():
     assert invalid_runway.json()["reason"] == "NO_ESSENTIAL_EXPENSE_BASE"
 
 
+def test_scenario_evaluate_endpoint_validation():
+    response = client.post("/api/scenarios/evaluate", json={
+        "scenario_type": "DEBT",
+        "context": {"balance": 12000000, "annual_effective_rate_pct": 24, "monthly_payment": 1000000, "currency": "COP"},
+        "overrides": {"extra_payment": 300000},
+    })
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["scenario_type"] == "DEBT"
+    assert payload["deltas"]["periods"] == payload["scenario"]["periods"] - payload["baseline"]["periods"]
+
+    invalid = client.post("/api/scenarios/evaluate", json={
+        "scenario_type": "GOAL",
+        "context": {"current_amount": 0, "target_amount": 1000, "periods": 12, "monthly_contribution": 100, "currency": "COP"},
+        "overrides": {},
+    })
+    assert invalid.status_code == 422
+
+
 def test_phase4_budget_recurring_monthly_review_endpoints():
     wallet_plan = client.post("/api/budgetbakers/import-plan", json={
         "budgets": [{"category": "Wallet Food", "monthly_limit": 250, "currency": "USD", "external_id": "bb-budget-1"}],

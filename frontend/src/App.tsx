@@ -43,6 +43,7 @@ import {
   runCalculator,
   runRunway,
   runSafeToSpend,
+  evaluateScenario,
   simulatePurchase,
   fetchBudgetBakersStatus,
   fetchBudgets,
@@ -420,6 +421,7 @@ export const App: React.FC = () => {
                 onRunCashProjection={runCashProjection}
                 onRunSafeToSpend={runSafeToSpend}
                 onRunRunway={runRunway}
+                onEvaluateScenario={evaluateScenario}
               />
             )}
 

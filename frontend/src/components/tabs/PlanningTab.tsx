@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Budget, CalculatorKind, CalculatorResult, CashProjectionResult, Category, FinancialEvent, MonthlyReview, RecurringRule, SafeToSpendResult } from '../../types';
+import { Budget, CalculatorKind, CalculatorResult, CashProjectionResult, Category, FinancialEvent, MonthlyReview, RecurringRule, SafeToSpendResult, ScenarioEvaluationResult, ScenarioType } from '../../types';
 
 interface PlanningTabProps {
   budgets: Budget[];
@@ -16,6 +16,7 @@ interface PlanningTabProps {
   onRunCashProjection: (payload: Record<string, unknown>) => Promise<CashProjectionResult>;
   onRunSafeToSpend: (payload: Record<string, unknown>) => Promise<SafeToSpendResult>;
   onRunRunway: (payload: Record<string, unknown>) => Promise<CalculatorResult>;
+  onEvaluateScenario: (payload: Record<string, unknown>) => Promise<ScenarioEvaluationResult>;
 }
 
 const inputClass = "bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500";
@@ -45,7 +46,8 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
   onRunCalculator,
   onRunCashProjection,
   onRunSafeToSpend,
-  onRunRunway
+  onRunRunway,
+  onEvaluateScenario
 }) => {
   const [budgetForm, setBudgetForm] = useState<Partial<Budget>>({ category: 'General', monthly_limit: 0, currency: 'USD', period: 'MONTHLY', is_active: true, source: 'MANUAL' });
   const [calculatorKind, setCalculatorKind] = useState<CalculatorKind>('savings-goal');
@@ -72,6 +74,26 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
   const [safeResult, setSafeResult] = useState<SafeToSpendResult | null>(null);
   const [runwayResult, setRunwayResult] = useState<CalculatorResult | null>(null);
   const [cashError, setCashError] = useState<string | null>(null);
+  const [scenarioType, setScenarioType] = useState<ScenarioType>('CASH');
+  const [scenarioForm, setScenarioForm] = useState<Record<string, number | string>>({
+    currency: 'COP',
+    starting_balance: 5000000,
+    reserve_floor: 2000000,
+    horizon_days: 30,
+    weekly_variable_spend_delta: -100000,
+    balance: 12000000,
+    monthly_payment: 1000000,
+    extra_payment: 300000,
+    annual_effective_rate_pct: 0,
+    current_amount: 3000000,
+    target_amount: 12000000,
+    periods: 12,
+    monthly_contribution: 500000,
+    monthly_contribution_override: 800000,
+    contribution_timing: 'END'
+  });
+  const [scenarioResult, setScenarioResult] = useState<ScenarioEvaluationResult | null>(null);
+  const [scenarioError, setScenarioError] = useState<string | null>(null);
   const money = (value: number) => privacyMode ? '••••' : value.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const todayIso = new Date().toISOString().slice(0, 10);
   const sevenDaysOut = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -110,6 +132,59 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
     return <div className="text-xs text-gray-300">Costo de oportunidad: <span className="text-white font-bold">{money(calcResult.opportunity_cost || 0)} {calcResult.currency}</span><div className="text-gray-500">Valor supuesto: {money(calcResult.assumed_future_value || 0)}</div></div>;
   };
   const setCashValue = (key: string, value: number | string) => setCashForm((current) => ({ ...current, [key]: value }));
+  const setScenarioValue = (key: string, value: number | string) => setScenarioForm((current) => ({ ...current, [key]: value }));
+  const scenarioPayload = () => {
+    const currency = String(scenarioForm.currency || 'COP').toUpperCase();
+    if (scenarioType === 'DEBT') {
+      return {
+        scenario_type: 'DEBT',
+        context: { currency, balance: Number(scenarioForm.balance || 0), annual_effective_rate_pct: Number(scenarioForm.annual_effective_rate_pct || 0), monthly_payment: Number(scenarioForm.monthly_payment || 0) },
+        overrides: { extra_payment: Number(scenarioForm.extra_payment || 0) }
+      };
+    }
+    if (scenarioType === 'GOAL') {
+      return {
+        scenario_type: 'GOAL',
+        context: { currency, current_amount: Number(scenarioForm.current_amount || 0), target_amount: Number(scenarioForm.target_amount || 0), annual_effective_rate_pct: Number(scenarioForm.annual_effective_rate_pct || 0), periods: Number(scenarioForm.periods || 0), monthly_contribution: Number(scenarioForm.monthly_contribution || 0), contribution_timing: scenarioForm.contribution_timing || 'END' },
+        overrides: { monthly_contribution_override: Number(scenarioForm.monthly_contribution_override || 0) }
+      };
+    }
+    return {
+      scenario_type: 'CASH',
+      context: { currency, horizon_days: Number(scenarioForm.horizon_days || 30), starting_balance: Number(scenarioForm.starting_balance || 0), reserve_floor: Number(scenarioForm.reserve_floor || 0) },
+      overrides: { weekly_variable_spend_delta: Number(scenarioForm.weekly_variable_spend_delta || 0) }
+    };
+  };
+  const runScenario = async () => {
+    setScenarioError(null);
+    try {
+      setScenarioResult(await onEvaluateScenario(scenarioPayload()));
+    } catch (err: any) {
+      setScenarioError(err.message || 'No se pudo evaluar el escenario.');
+    }
+  };
+  const scenarioMainMetric = () => {
+    if (!scenarioResult) return null;
+    if (scenarioResult.scenario_type === 'CASH') {
+      return {
+        label: 'Safe-to-Spend',
+        baseline: scenarioResult.baseline?.safe_to_spend?.safe_to_spend,
+        scenario: scenarioResult.scenario?.safe_to_spend?.safe_to_spend,
+        delta: scenarioResult.deltas?.safe_to_spend,
+        currency: scenarioResult.baseline?.safe_to_spend?.currency
+      };
+    }
+    if (scenarioResult.scenario_type === 'DEBT') {
+      return { label: 'Periodos', baseline: scenarioResult.baseline?.periods, scenario: scenarioResult.scenario?.periods, delta: scenarioResult.deltas?.periods, currency: '' };
+    }
+    return {
+      label: 'ETA meta',
+      baseline: scenarioResult.baseline?.goal_eta?.periods_required,
+      scenario: scenarioResult.scenario?.goal_eta?.periods_required,
+      delta: scenarioResult.deltas?.goal_eta_periods,
+      currency: ''
+    };
+  };
   const runCashIntelligence = async () => {
     setCashError(null);
     const payload = { currency: cashForm.currency, horizon_days: Number(cashForm.horizon_days || 30), starting_balance: Number(cashForm.starting_balance || 0), reserve_floor: Number(cashForm.reserve_floor || 0) };
@@ -209,6 +284,52 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
             <div className="bg-gray-900/60 rounded-lg p-3"><div className="text-gray-500">Proyectado</div><div className="text-white font-bold">{cashProjection?.projected_balance == null ? 'No disponible' : `${money(cashProjection.projected_balance)} ${cashProjection.currency}`}</div><div className="text-gray-500">Confianza {cashProjection?.confidence || 'N/A'}</div></div>
             <div className="bg-gray-900/60 rounded-lg p-3"><div className="text-gray-500">Safe-to-Spend</div><div className="text-white font-bold">{safeResult?.safe_to_spend == null ? 'No evaluable' : `${money(safeResult.safe_to_spend)} ${safeResult.currency}`}</div><div className="text-gray-500">Runway {runwayResult?.coverage_months == null ? 'N/A' : `${runwayResult.coverage_months.toFixed(1)} meses`}</div></div>
           </div>
+        </section>
+
+        <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
+          <h3 className="text-sm font-bold text-white">Scenario Lab</h3>
+          <div className="grid grid-cols-2 gap-2">
+            <select className={inputClass} value={scenarioType} onChange={(e) => { setScenarioType(e.target.value as ScenarioType); setScenarioResult(null); }}>
+              <option value="CASH">Caja</option>
+              <option value="DEBT">Deuda</option>
+              <option value="GOAL">Meta</option>
+            </select>
+            <input className={inputClass} placeholder="Moneda" value={scenarioForm.currency} onChange={(e) => setScenarioValue('currency', e.target.value.toUpperCase())} />
+            {scenarioType === 'CASH' && <>
+              <input className={inputClass} type="number" placeholder="Balance inicial" value={scenarioForm.starting_balance} onChange={(e) => setScenarioValue('starting_balance', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Reserva" value={scenarioForm.reserve_floor} onChange={(e) => setScenarioValue('reserve_floor', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Horizonte días" value={scenarioForm.horizon_days} onChange={(e) => setScenarioValue('horizon_days', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Cambio gasto semanal" value={scenarioForm.weekly_variable_spend_delta} onChange={(e) => setScenarioValue('weekly_variable_spend_delta', Number(e.target.value))} />
+            </>}
+            {scenarioType === 'DEBT' && <>
+              <input className={inputClass} type="number" placeholder="Saldo deuda" value={scenarioForm.balance} onChange={(e) => setScenarioValue('balance', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Pago mensual" value={scenarioForm.monthly_payment} onChange={(e) => setScenarioValue('monthly_payment', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Pago extra" value={scenarioForm.extra_payment} onChange={(e) => setScenarioValue('extra_payment', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Tasa % E.A." value={scenarioForm.annual_effective_rate_pct} onChange={(e) => setScenarioValue('annual_effective_rate_pct', Number(e.target.value))} />
+            </>}
+            {scenarioType === 'GOAL' && <>
+              <input className={inputClass} type="number" placeholder="Actual" value={scenarioForm.current_amount} onChange={(e) => setScenarioValue('current_amount', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Meta" value={scenarioForm.target_amount} onChange={(e) => setScenarioValue('target_amount', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Aporte actual" value={scenarioForm.monthly_contribution} onChange={(e) => setScenarioValue('monthly_contribution', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Aporte escenario" value={scenarioForm.monthly_contribution_override} onChange={(e) => setScenarioValue('monthly_contribution_override', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Periodos" value={scenarioForm.periods} onChange={(e) => setScenarioValue('periods', Number(e.target.value))} />
+              <input className={inputClass} type="number" placeholder="Tasa % E.A." value={scenarioForm.annual_effective_rate_pct} onChange={(e) => setScenarioValue('annual_effective_rate_pct', Number(e.target.value))} />
+            </>}
+          </div>
+          <button onClick={runScenario} className="w-full px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Evaluar escenario</button>
+          {scenarioError && <div className="text-xs text-red-300">{scenarioError}</div>}
+          {(() => {
+            const metric = scenarioMainMetric();
+            if (!metric) return <div className="text-xs text-gray-500 bg-gray-900/60 rounded-lg p-3">Sin escenario todavía.</div>;
+            return (
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div className="bg-gray-900/60 rounded-lg p-3"><div className="text-gray-500">Referencia</div><div className="text-white font-bold">{metric.baseline == null ? 'N/A' : `${money(Number(metric.baseline))} ${metric.currency}`}</div></div>
+                <div className="bg-gray-900/60 rounded-lg p-3"><div className="text-gray-500">Escenario</div><div className="text-white font-bold">{metric.scenario == null ? 'N/A' : `${money(Number(metric.scenario))} ${metric.currency}`}</div></div>
+                <div className="bg-gray-900/60 rounded-lg p-3"><div className="text-gray-500">Delta</div><div className="text-white font-bold">{metric.delta == null ? 'N/A' : `${money(Number(metric.delta))} ${metric.currency}`}</div></div>
+                <div className="col-span-3 text-[11px] text-gray-500">Estado {scenarioResult?.status} · métricas: {(scenarioResult?.affected_metrics || []).join(', ') || 'N/A'}</div>
+              </div>
+            );
+          })()}
         </section>
 
         <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">

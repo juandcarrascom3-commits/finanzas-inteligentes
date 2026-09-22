@@ -44,6 +44,7 @@ from backend.analytics.cash_projection import (
     calculate_safe_to_spend,
     project_cash,
 )
+from backend.analytics.scenarios import evaluate_scenario
 from backend.analytics.projections import calculate_budget_projections
 from backend.integrations.budgetbakers_adapter import (
     BudgetBakersAdapter,
@@ -398,6 +399,12 @@ class RunwayInput(BaseModel):
     essential_monthly_expenses: float = 0.0
 
 
+class ScenarioEvaluateInput(BaseModel):
+    scenario_type: str
+    context: Dict[str, Any] = Field(default_factory=dict)
+    overrides: Dict[str, Any] = Field(default_factory=dict)
+
+
 def get_budgetbakers_adapter() -> BudgetBakersAdapter:
     return BudgetBakersAdapter()
 
@@ -501,6 +508,26 @@ def _projection_from_payload(payload: CashProjectionInput) -> Dict[str, Any]:
     )
 
 
+def _cash_scenario_engine_inputs(context: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    currency = str(context.get("currency") or "USD").upper()
+    as_of = _parse_optional_day(context.get("as_of"))
+    horizon_days = int(context.get("horizon_days", 30))
+    if context.get("starting_balance") is None:
+        starting, source, balance_as_of, freshness = _liquid_balance(currency)
+    else:
+        starting, source, balance_as_of, freshness = float(context.get("starting_balance")), "MANUAL", as_of.isoformat(), "MANUAL"
+    normalized_context = {**context, "currency": currency, "as_of": as_of, "horizon_days": horizon_days}
+    events = get_financial_events(from_date=as_of.isoformat(), to=(as_of + datetime.timedelta(days=horizon_days)).isoformat())["events"]
+    return normalized_context, {
+        "starting_balance": starting,
+        "starting_balance_source": source,
+        "balance_as_of": balance_as_of,
+        "balance_freshness": freshness,
+        "events": events,
+        "transactions": db.get_transactions(limit=5000),
+    }
+
+
 @app.post("/api/calculators/compound")
 def calculator_compound(data: CompoundCalculatorInput):
     return _calculator_result(
@@ -581,6 +608,19 @@ def runway(payload: RunwayInput):
     if liquid is None:
         return {"status": "UNEVALUABLE", "reason": "STARTING_BALANCE_REQUIRED", "coverage_months": None, "currency": payload.currency.upper()}
     return calculate_runway(liquid, payload.essential_monthly_expenses, payload.currency.upper())
+
+
+@app.post("/api/scenarios/evaluate")
+def scenario_evaluate(payload: ScenarioEvaluateInput):
+    try:
+        scenario_type = payload.scenario_type.upper()
+        context = dict(payload.context)
+        engine_inputs = None
+        if scenario_type == "CASH":
+            context, engine_inputs = _cash_scenario_engine_inputs(context)
+        return evaluate_scenario(scenario_type, context, dict(payload.overrides), engine_inputs)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 @app.get("/api/data-source")
 def get_data_source():

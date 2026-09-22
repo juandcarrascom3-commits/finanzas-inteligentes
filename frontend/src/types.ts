@@ -797,6 +797,18 @@ export interface SafeToSpendResult {
   projection?: CashProjectionResult;
 }
 
+export type ScenarioType = 'CASH' | 'DEBT' | 'GOAL';
+
+export interface ScenarioEvaluationResult {
+  scenario_type: ScenarioType;
+  baseline: Record<string, any>;
+  scenario: Record<string, any>;
+  deltas: Record<string, number>;
+  affected_metrics: string[];
+  assumptions: Record<string, unknown>;
+  status: string;
+}
+
 export interface InvestmentOperation {
   id: string;
   occurred_at: string;

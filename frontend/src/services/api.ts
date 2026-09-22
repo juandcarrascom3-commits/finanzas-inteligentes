@@ -26,6 +26,7 @@ import type {
   ReconciliationSummary,
   SourceMapping,
   SafeToSpendResult,
+  ScenarioEvaluationResult,
   Transaction,
   UnderstandSummary,
   WealthData
@@ -572,4 +573,13 @@ export async function runRunway(payload: Record<string, unknown>): Promise<Calcu
     body: JSON.stringify(payload)
   });
   return readJson<CalculatorResult>(res, 'Error al calcular runway.');
+}
+
+export async function evaluateScenario(payload: Record<string, unknown>): Promise<ScenarioEvaluationResult> {
+  const res = await fetch(`${API_BASE}/scenarios/evaluate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return readJson<ScenarioEvaluationResult>(res, 'Error al evaluar escenario.');
 }
