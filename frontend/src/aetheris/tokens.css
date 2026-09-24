@@ -20,6 +20,23 @@
   --a-radius-sm: 12px;
   --a-fast: 180ms;
 
+  /* F0 · spacing básico */
+  --a-gutter: 28px;
+  --a-gutter-compact: 16px;
+  --a-stack: 22px;
+
+  /* F0 · sidebar */
+  --a-sidebar-width: 260px;
+  --a-sidebar-width-collapsed: 84px;
+
+  /* F0 · chrome / header */
+  --a-chrome-bg: rgba(7, 10, 15, 0.78);
+
+  /* F0 · focus / hover / estado activo */
+  --a-hover: rgba(255, 255, 255, 0.035);
+  --a-active: rgba(255, 255, 255, 0.075);
+  --a-focus-ring: 0 0 0 3px rgba(138, 180, 255, 0.45);
+
   min-height: 100vh;
   background:
     radial-gradient(circle at 18% 8%, rgba(138, 180, 255, 0.12), transparent 32rem),
@@ -40,13 +57,24 @@
 
 .aetheris-lab button:focus-visible,
 .aetheris-lab [tabindex]:focus-visible {
-  box-shadow: 0 0 0 3px rgba(138, 180, 255, 0.45);
+  box-shadow: var(--a-focus-ring);
 }
 
 .a-shell {
   width: min(1440px, 100%);
   margin: 0 auto;
-  padding: 28px;
+  padding: var(--a-gutter);
+}
+
+/* F0 · layout del shell: sidebar + columna de contenido */
+.a-shell-grid {
+  display: grid;
+  min-height: 100vh;
+  grid-template-columns: var(--a-sidebar-width) minmax(0, 1fr);
+}
+
+.a-shell-grid[data-collapsed='true'] {
+  grid-template-columns: var(--a-sidebar-width-collapsed) minmax(0, 1fr);
 }
 
 .a-page-kicker {
@@ -76,7 +104,7 @@
 .a-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
-  gap: 22px;
+  gap: var(--a-stack);
   margin-top: 28px;
 }
 
@@ -170,6 +198,13 @@
   }
 }
 
+@media (max-width: 920px) {
+  .a-shell-grid,
+  .a-shell-grid[data-collapsed='true'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 1040px) {
   .a-workspace {
     grid-template-columns: 1fr;
@@ -178,7 +213,7 @@
 
 @media (max-width: 680px) {
   .a-shell {
-    padding: 16px;
+    padding: var(--a-gutter-compact);
   }
 
   .a-canvas {
