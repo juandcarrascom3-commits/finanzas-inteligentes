@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Account, Asset, BackupResult, BackupValidation, BudgetBakersPreview, BudgetBakersStatus, Category, CsvImportResult, DataSourceInfo, EtoroMappingSuggestion, EtoroPreview, EtoroStatus, MappingConfig, ReconciliationSummary, SourceMapping, Transaction } from '../../types';
-import { Button, Field } from '../../aetheris/controls';
+import { Button, Field, MetricInput, MoneyField } from '../../aetheris/controls';
+import { DataState } from '../../aetheris/primitives';
 
 interface PersonalDataTabProps {
   accounts: Account[];
@@ -40,6 +41,10 @@ interface PersonalDataTabProps {
 }
 
 const inputClass = "bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500";
+
+// Select y date nativos estilizados con tokens (mismo contrato que controlClass).
+const dataControlClass =
+  'min-h-10 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] placeholder:text-[var(--a-muted)] transition-colors focus:border-[var(--a-brand)] focus:outline-none';
 
 export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   accounts,
@@ -404,67 +409,88 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
         <div role="status" className="a-surface p-3 text-xs text-[var(--a-secondary)]">{feedback}</div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
-          <h3 className="text-sm font-bold text-white">Cuentas</h3>
-          <input className={inputClass} placeholder="Nombre" value={accountForm.name || ''} onChange={(e) => setAccountForm({ ...accountForm, name: e.target.value })} />
-          <div className="grid grid-cols-2 gap-2">
-            <input className={inputClass} placeholder="Tipo" value={accountForm.account_type || ''} onChange={(e) => setAccountForm({ ...accountForm, account_type: e.target.value })} />
-            <input className={inputClass} placeholder="Moneda" value={accountForm.currency || ''} onChange={(e) => setAccountForm({ ...accountForm, currency: e.target.value.toUpperCase() })} />
-            <input className={inputClass} type="number" placeholder="Balance inicial" value={accountForm.opening_balance ?? 0} onChange={(e) => setAccountForm({ ...accountForm, opening_balance: Number(e.target.value) })} />
-            <input className={inputClass} type="number" placeholder="Balance actual" value={accountForm.current_balance ?? 0} onChange={(e) => setAccountForm({ ...accountForm, current_balance: Number(e.target.value) })} />
-          </div>
-          <button onClick={submitAccount} className="w-full px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Guardar cuenta</button>
-          <div className="space-y-2 max-h-56 overflow-auto">
-            {accounts.map((a) => (
-              <div key={a.id} className="flex items-center justify-between bg-gray-900/60 rounded-lg p-2 text-xs">
-                <button className="text-left" onClick={() => setAccountForm(a)}>{a.name}<span className="text-gray-500"> · {a.currency} · {a.source}</span></button>
-                <button onClick={() => onDeleteAccount(a.id)} className="text-red-300">Eliminar</button>
+      <section className="a-surface p-5" aria-labelledby="data-manual-title">
+        <h2 id="data-manual-title" className="a-page-kicker">Alta manual</h2>
+        <div className="mt-4 grid grid-cols-1 gap-6 lg:grid-cols-3">
+          <div className="space-y-3">
+            <h3 className="text-xs font-bold uppercase tracking-wide text-[var(--a-secondary)]">Cuenta</h3>
+            <Field id="data-account-name" label="Nombre" value={accountForm.name || ''} onChange={(raw) => setAccountForm({ ...accountForm, name: raw })} />
+            <div className="grid grid-cols-2 gap-3">
+              <Field id="data-account-type" label="Tipo" value={accountForm.account_type || ''} onChange={(raw) => setAccountForm({ ...accountForm, account_type: raw })} />
+              <Field id="data-account-currency" label="Moneda" value={accountForm.currency || ''} onChange={(raw) => setAccountForm({ ...accountForm, currency: raw.toUpperCase() })} />
+              <MoneyField id="data-account-opening" label="Balance inicial" value={accountForm.opening_balance ?? 0} onChange={(v) => setAccountForm({ ...accountForm, opening_balance: v })} currency={accountForm.currency || 'USD'} allowNegative />
+              <MoneyField id="data-account-current" label="Balance actual" value={accountForm.current_balance ?? 0} onChange={(v) => setAccountForm({ ...accountForm, current_balance: v })} currency={accountForm.currency || 'USD'} allowNegative />
+            </div>
+            <Button variant="primary" onClick={submitAccount} className="w-full">Guardar cuenta</Button>
+            {accounts.length === 0 ? (
+              <DataState state="EMPTY" title="Sin cuentas" detail="Las cuentas que registres aparecerán aquí." />
+            ) : (
+              <div className="max-h-56 space-y-2 overflow-auto">
+                {accounts.map((a) => (
+                  <div key={a.id} className="flex items-center justify-between gap-2 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2 text-xs">
+                    <button className="min-w-0 flex-1 text-left text-[var(--a-secondary)] transition-colors hover:text-[var(--a-text)]" onClick={() => setAccountForm(a)}>
+                      {a.name}<span className="text-[var(--a-muted)]"> · {a.currency} · {a.source}</span>
+                    </button>
+                    <Button variant="negative" onClick={() => onDeleteAccount(a.id)} className="shrink-0">Eliminar</Button>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
-        </section>
 
-        <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
-          <h3 className="text-sm font-bold text-white">Activos</h3>
-          <div className="grid grid-cols-2 gap-2">
-            <input className={inputClass} placeholder="Ticker" value={assetForm.ticker || ''} onChange={(e) => setAssetForm({ ...assetForm, ticker: e.target.value.toUpperCase() })} />
-            <input className={inputClass} placeholder="Nombre" value={assetForm.name || ''} onChange={(e) => setAssetForm({ ...assetForm, name: e.target.value })} />
-            <input className={inputClass} placeholder="Tipo" value={assetForm.asset_type || ''} onChange={(e) => setAssetForm({ ...assetForm, asset_type: e.target.value })} />
-            <input className={inputClass} placeholder="Sector" value={assetForm.sector || ''} onChange={(e) => setAssetForm({ ...assetForm, sector: e.target.value })} />
-            <input className={inputClass} type="number" placeholder="Cantidad" value={assetForm.quantity ?? 0} onChange={(e) => setAssetForm({ ...assetForm, quantity: Number(e.target.value) })} />
-            <input className={inputClass} type="number" placeholder="Precio actual" value={assetForm.current_price ?? 0} onChange={(e) => setAssetForm({ ...assetForm, current_price: Number(e.target.value) })} />
-            <input className={inputClass} type="number" placeholder="Costo promedio" value={assetForm.avg_price ?? 0} onChange={(e) => setAssetForm({ ...assetForm, avg_price: Number(e.target.value) })} />
-            <input className={inputClass} placeholder="Moneda" value={assetForm.currency || ''} onChange={(e) => setAssetForm({ ...assetForm, currency: e.target.value.toUpperCase() })} />
-          </div>
-          <button onClick={submitAsset} className="w-full px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Guardar activo</button>
-          <div className="space-y-2 max-h-56 overflow-auto">
-            {assets.map((a) => (
-              <div key={a.ticker} className="flex items-center justify-between bg-gray-900/60 rounded-lg p-2 text-xs">
-                <button className="text-left" onClick={() => setAssetForm(a)}>{a.ticker}<span className="text-gray-500"> · {a.name} · {a.source}</span></button>
-                <button onClick={() => onDeleteAsset(a.ticker)} className="text-red-300">Eliminar</button>
+          <div className="space-y-3 border-t border-[var(--a-line)] pt-6 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
+            <h3 className="text-xs font-bold uppercase tracking-wide text-[var(--a-secondary)]">Activos</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <Field id="data-asset-ticker" label="Ticker" value={assetForm.ticker || ''} onChange={(raw) => setAssetForm({ ...assetForm, ticker: raw.toUpperCase() })} />
+              <Field id="data-asset-name" label="Nombre" value={assetForm.name || ''} onChange={(raw) => setAssetForm({ ...assetForm, name: raw })} />
+              <Field id="data-asset-type" label="Tipo" value={assetForm.asset_type || ''} onChange={(raw) => setAssetForm({ ...assetForm, asset_type: raw })} />
+              <Field id="data-asset-sector" label="Sector" value={assetForm.sector || ''} onChange={(raw) => setAssetForm({ ...assetForm, sector: raw })} />
+              <MetricInput id="data-asset-quantity" label="Cantidad" value={assetForm.quantity ?? 0} onChange={(raw) => setAssetForm({ ...assetForm, quantity: Number(raw || 0) })} unit="uds" allowNegative />
+              <MetricInput id="data-asset-current-price" label="Precio actual" value={assetForm.current_price ?? 0} onChange={(raw) => setAssetForm({ ...assetForm, current_price: Number(raw || 0) })} unit={assetForm.currency || 'USD'} allowNegative />
+              <MetricInput id="data-asset-avg-price" label="Costo promedio" value={assetForm.avg_price ?? 0} onChange={(raw) => setAssetForm({ ...assetForm, avg_price: Number(raw || 0) })} unit={assetForm.currency || 'USD'} allowNegative />
+              <Field id="data-asset-currency" label="Moneda" value={assetForm.currency || ''} onChange={(raw) => setAssetForm({ ...assetForm, currency: raw.toUpperCase() })} />
+            </div>
+            <Button variant="primary" onClick={submitAsset} className="w-full">Guardar activo</Button>
+            {assets.length === 0 ? (
+              <DataState state="EMPTY" title="Sin activos" detail="Los activos que registres aparecerán aquí." />
+            ) : (
+              <div className="max-h-56 space-y-2 overflow-auto">
+                {assets.map((a) => (
+                  <div key={a.ticker} className="flex items-center justify-between gap-2 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2 text-xs">
+                    <button className="min-w-0 flex-1 text-left text-[var(--a-secondary)] transition-colors hover:text-[var(--a-text)]" onClick={() => setAssetForm(a)}>
+                      {a.ticker}<span className="text-[var(--a-muted)]"> · {a.name} · {a.source}</span>
+                    </button>
+                    <Button variant="negative" onClick={() => onDeleteAsset(a.ticker)} className="shrink-0">Eliminar</Button>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
-        </section>
 
-        <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
-          <h3 className="text-sm font-bold text-white">Transacción</h3>
-          <select className={inputClass} value={txForm.account_id || ''} onChange={(e) => setTxForm({ ...txForm, account_id: e.target.value || undefined })}>
-            <option value="">Sin cuenta</option>
-            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
-          </select>
-          <div className="grid grid-cols-2 gap-2">
-            <input className={inputClass} type="date" value={txForm.date || ''} onChange={(e) => setTxForm({ ...txForm, date: e.target.value })} />
-            <input className={inputClass} type="number" value={txForm.amount ?? 0} onChange={(e) => setTxForm({ ...txForm, amount: Number(e.target.value) })} />
-            <input className={inputClass} placeholder="Categoria" list="categories" value={txForm.category || ''} onChange={(e) => setTxForm({ ...txForm, category: e.target.value })} />
-            <input className={inputClass} placeholder="Moneda" value={txForm.currency || ''} onChange={(e) => setTxForm({ ...txForm, currency: e.target.value.toUpperCase() })} />
+          <div className="space-y-3 border-t border-[var(--a-line)] pt-6 lg:border-l lg:border-t-0 lg:pl-6 lg:pt-0">
+            <h3 className="text-xs font-bold uppercase tracking-wide text-[var(--a-secondary)]">Transacción</h3>
+            <div>
+              <label htmlFor="data-tx-account" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Cuenta</label>
+              <select id="data-tx-account" className={dataControlClass} value={txForm.account_id || ''} onChange={(e) => setTxForm({ ...txForm, account_id: e.target.value || undefined })}>
+                <option value="">Sin cuenta</option>
+                {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="data-tx-date" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Fecha</label>
+                <input id="data-tx-date" type="date" className={dataControlClass} value={txForm.date || ''} onChange={(e) => setTxForm({ ...txForm, date: e.target.value })} />
+              </div>
+              <MoneyField id="data-tx-amount" label="Monto" value={txForm.amount ?? 0} onChange={(v) => setTxForm({ ...txForm, amount: v })} currency={txForm.currency || 'USD'} allowNegative />
+              <Field id="data-tx-category" label="Categoria" list="categories" value={txForm.category || ''} onChange={(raw) => setTxForm({ ...txForm, category: raw })} />
+              <Field id="data-tx-currency" label="Moneda" value={txForm.currency || ''} onChange={(raw) => setTxForm({ ...txForm, currency: raw.toUpperCase() })} />
+            </div>
+            <datalist id="categories">{categories.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+            <Field id="data-tx-description" label="Descripción" value={txForm.description || ''} onChange={(raw) => setTxForm({ ...txForm, description: raw })} />
+            <Button variant="primary" onClick={submitTransaction} className="w-full">Guardar transacción</Button>
           </div>
-          <datalist id="categories">{categories.map((c) => <option key={c.id} value={c.name} />)}</datalist>
-          <input className={inputClass} placeholder="Descripción" value={txForm.description || ''} onChange={(e) => setTxForm({ ...txForm, description: e.target.value })} />
-          <button onClick={submitTransaction} className="w-full px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Guardar transacción</button>
-        </section>
-      </div>
+        </div>
+      </section>
 
       <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
         <h3 className="text-sm font-bold text-white">Importar CSV</h3>
@@ -698,26 +724,30 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
         </div>
       </section>
 
-      <section className="bg-[#111827] border border-gray-800 rounded-xl p-4">
-        <h3 className="text-sm font-bold text-white mb-3">Transacciones recientes</h3>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="text-gray-400 uppercase text-[10px]">
-              <tr><th className="py-2">Fecha</th><th>Monto</th><th>Categoría</th><th>Cuenta</th><th>Fuente</th><th></th></tr>
-            </thead>
-            <tbody className="divide-y divide-gray-800">
-              {transactions.map((t) => (
-                <tr key={t.id}>
-                  <td className="py-2">{t.date}</td>
-                  <td className={t.amount >= 0 ? 'text-emerald-400' : 'text-red-300'}>{money(t.amount)} {t.currency}</td>
-                  <td>{t.category}<div className="text-gray-500">{t.description}</div></td>
-                  <td>{t.account_name || '-'}</td>
-                  <td>{t.source}</td>
-                  <td className="text-right"><button onClick={() => onDeleteTransaction(t.id)} className="text-red-300">Eliminar</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <section className="a-surface p-5" aria-labelledby="data-recent-title">
+        <h2 id="data-recent-title" className="a-page-kicker">Transacciones recientes</h2>
+        <div className="mt-4 max-h-[28rem] overflow-auto">
+          {transactions.length === 0 ? (
+            <DataState state="EMPTY" title="Sin transacciones" detail="Las transacciones registradas aparecerán aquí." />
+          ) : (
+            <table className="w-full text-left text-xs">
+              <thead className="text-[var(--a-muted)] uppercase text-[10px]">
+                <tr><th className="py-2">Fecha</th><th>Monto</th><th>Categoría</th><th>Cuenta</th><th>Fuente</th><th></th></tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--a-line)]">
+                {transactions.map((t) => (
+                  <tr key={t.id}>
+                    <td className="py-2">{t.date}</td>
+                    <td className={t.amount >= 0 ? 'text-[var(--a-positive)]' : 'text-[var(--a-negative)]'}>{money(t.amount)} {t.currency}</td>
+                    <td>{t.category}<div className="text-[var(--a-muted)]">{t.description}</div></td>
+                    <td>{t.account_name || '-'}</td>
+                    <td>{t.source}</td>
+                    <td className="text-right"><Button variant="negative" onClick={() => onDeleteTransaction(t.id)}>Eliminar</Button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
       </section>
 
