@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Account, Asset, BackupResult, BackupValidation, BudgetBakersPreview, BudgetBakersStatus, Category, CsvImportResult, DataSourceInfo, EtoroMappingSuggestion, EtoroPreview, EtoroStatus, MappingConfig, ReconciliationSummary, SourceMapping, Transaction } from '../../types';
 import { Button, Field, MetricInput, MoneyField } from '../../aetheris/controls';
-import { DataState } from '../../aetheris/primitives';
+import { DataState, InlineMetric } from '../../aetheris/primitives';
+import { ToolSurfaceDock } from '../../aetheris/ToolSurfaceDock';
 
 interface PersonalDataTabProps {
   accounts: Account[];
@@ -45,6 +46,17 @@ const inputClass = "bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text
 // Select y date nativos estilizados con tokens (mismo contrato que controlClass).
 const dataControlClass =
   'min-h-10 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] placeholder:text-[var(--a-muted)] transition-colors focus:border-[var(--a-brand)] focus:outline-none';
+
+// Textarea estilizado con tokens (dock CSV / JSON).
+const dataAreaClass =
+  'min-h-24 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] placeholder:text-[var(--a-muted)] transition-colors focus:border-[var(--a-brand)] focus:outline-none';
+
+// Select inline estilizado con tokens (reconciliación): mismo contrato sin ancho forzado.
+const dataSelectClass =
+  'min-h-10 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] transition-colors focus:border-[var(--a-brand)] focus:outline-none';
+
+// Herramienta activa en ToolSurfaceDock (una a la vez; estado local del tab).
+type DataTool = 'csv' | 'wallet' | null;
 
 export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   accounts,
@@ -100,6 +112,9 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   const [walletBusy, setWalletBusy] = useState(false);
   const [etoroBusy, setEtoroBusy] = useState(false);
   const [feedback, setFeedback] = useState<string>('');
+  const [openTool, setOpenTool] = useState<DataTool>(null);
+  const csvLauncherRef = useRef<HTMLButtonElement>(null);
+  const walletLauncherRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     onFetchWalletStatus().then(setWalletStatus).catch((err) => setFeedback(err.message));
@@ -372,6 +387,7 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   };
 
   return (
+    <div className={openTool ? 'grid gap-[var(--a-stack)] min-[1041px]:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]' : ''}>
     <section className="a-canvas a-enter space-y-5">
       <header>
         <div className="a-page-kicker">Datos</div>
@@ -492,53 +508,30 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
         </div>
       </section>
 
-      <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
-        <h3 className="text-sm font-bold text-white">Importar CSV</h3>
-        <p className="text-xs text-gray-400">Columnas soportadas: date, amount, category, description, currency, account_id, external_id.</p>
-        <input type="file" accept=".csv,text/csv" onChange={(e) => handleFile(e.target.files?.[0])} className="text-xs text-gray-300" />
-        <textarea className={`${inputClass} w-full min-h-24`} placeholder="O pegue CSV aquí" value={csvText} onChange={(e) => setCsvText(e.target.value)} />
-        <div className="flex gap-2">
-          <button onClick={async () => setCsvResult(await onPreviewCsv(csvText))} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs">Preview</button>
-          <button onClick={async () => setCsvResult(await onImportCsv(csvText))} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Importar aceptadas</button>
+      <section className="a-surface p-5" aria-labelledby="data-tool-launcher-title">
+        <h2 id="data-tool-launcher-title" className="a-page-kicker">Herramientas bajo demanda</h2>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <Button
+            ref={csvLauncherRef}
+            variant={openTool === 'csv' ? 'operational' : 'quiet'}
+            aria-pressed={openTool === 'csv'}
+            aria-controls="data-csv-dock"
+            onClick={() => setOpenTool((current) => current === 'csv' ? null : 'csv')}
+            className="h-auto min-h-11 justify-start text-left"
+          >
+            Importar CSV
+          </Button>
+          <Button
+            ref={walletLauncherRef}
+            variant={openTool === 'wallet' ? 'operational' : 'quiet'}
+            aria-pressed={openTool === 'wallet'}
+            aria-controls="data-wallet-dock"
+            onClick={() => setOpenTool((current) => current === 'wallet' ? null : 'wallet')}
+            className="h-auto min-h-11 justify-start text-left"
+          >
+            Wallet
+          </Button>
         </div>
-        {csvResult && (
-          <div className="text-xs text-gray-300">
-            Aceptadas: {csvResult.accepted_count} · Rechazadas: {csvResult.rejected_count} · Importadas: {csvResult.imported_count ?? '-'} · Duplicadas: {csvResult.duplicate_count ?? '-'}
-          </div>
-        )}
-      </section>
-
-      <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-          <div>
-            <h3 className="text-sm font-bold text-white">Wallet by BudgetBakers</h3>
-            <p className="text-xs text-gray-400">
-              Fuente REAL solo lectura. Token en backend: <span className={walletStatus?.configured ? 'text-emerald-300' : 'text-amber-300'}>{walletStatus?.configured ? 'configurado' : 'no configurado'}</span>
-              {walletStatus?.last_success_at ? ` · ultimo import: ${walletStatus.last_success_at}` : ''}
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <button disabled={walletBusy} onClick={runWalletTest} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Probar</button>
-            <button disabled={walletBusy || !walletStatus?.configured} onClick={previewWallet} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Preview</button>
-            <button disabled={walletBusy || !walletPreview} onClick={importWallet} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
-          </div>
-        </div>
-        <div className="text-xs text-gray-400">
-          Estado: <span className="text-gray-200">{walletStatus?.status || 'sin leer'}</span>
-          {walletStatus?.last_error ? <span className="text-red-300"> · {walletStatus.last_error}</span> : null}
-        </div>
-        {walletPreview && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-            <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Cuentas</div><div className="text-white font-bold">{walletPreview.accounts_detected}</div></div>
-            <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Registros</div><div className="text-white font-bold">{walletPreview.records_found}</div></div>
-            <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Nuevos</div><div className="text-emerald-300 font-bold">{walletPreview.new_transaction_count}</div></div>
-            <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Duplicados</div><div className="text-amber-300 font-bold">{walletPreview.duplicate_count}</div></div>
-            <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rechazados</div><div className="text-red-300 font-bold">{walletPreview.rejected_count}</div></div>
-            <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rango</div><div className="text-white">{walletPreview.date_range?.from || '-'} / {walletPreview.date_range?.to || '-'}</div></div>
-            <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Cuentas nuevas</div><div className="text-white font-bold">{walletPreview.new_accounts}</div></div>
-            <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Fuente</div><div className="text-white font-bold">BUDGETBAKERS</div></div>
-          </div>
-        )}
       </section>
 
       <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
@@ -751,38 +744,109 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
         </div>
       </section>
 
-      <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
-        <h3 className="text-sm font-bold text-white">Reconciliación Wallet</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <section className="a-surface p-4" aria-labelledby="data-reconciliation-title">
+        <h2 id="data-reconciliation-title" className="a-page-kicker">Reconciliación Wallet</h2>
+        <div className="mt-3 grid grid-cols-1 gap-4 md:grid-cols-2">
           <div>
-            <div className="text-xs font-bold text-gray-300 mb-2">Cuentas sin mapping</div>
+            <div className="mb-2 text-xs font-bold text-[var(--a-secondary)]">Cuentas sin mapping</div>
             {reconciliation?.unmapped_accounts.slice(0, 6).map((account) => (
-              <div key={account.external_id} className="flex flex-col sm:flex-row sm:items-center gap-2 bg-gray-900/60 rounded-lg p-2 mb-2 text-xs">
-                <span className="flex-1 text-gray-200">{account.external_name || account.external_id}</span>
-                <select className={inputClass} onChange={(e) => e.target.value && saveAccountMapping(account.external_id, account.external_name, e.target.value)} defaultValue="">
+              <div key={account.external_id} className="mb-2 flex flex-col gap-2 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2 text-xs sm:flex-row sm:items-center">
+                <span className="flex-1 text-[var(--a-text)]">{account.external_name || account.external_id}</span>
+                <select className={dataSelectClass} aria-label={`Asignar cuenta ${account.external_name || account.external_id}`} onChange={(e) => e.target.value && saveAccountMapping(account.external_id, account.external_name, e.target.value)} defaultValue="">
                   <option value="">Asignar...</option>
                   {accounts.filter((a) => a.source !== 'BUDGETBAKERS').map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
                   <option value={account.local_id || ''}>Usar cuenta importada</option>
                 </select>
               </div>
             ))}
-            {(!reconciliation || reconciliation.unmapped_accounts.length === 0) && <div className="text-xs text-gray-400">Sin cuentas pendientes.</div>}
+            {(!reconciliation || reconciliation.unmapped_accounts.length === 0) && <div className="a-meta">Sin cuentas pendientes.</div>}
           </div>
           <div>
-            <div className="text-xs font-bold text-gray-300 mb-2">Categorías frecuentes sin mapping</div>
+            <div className="mb-2 text-xs font-bold text-[var(--a-secondary)]">Categorías frecuentes sin mapping</div>
             {reconciliation?.unmapped_categories.slice(0, 8).map((category) => (
-              <div key={category.external_name} className="flex flex-col sm:flex-row sm:items-center gap-2 bg-gray-900/60 rounded-lg p-2 mb-2 text-xs">
-                <span className="flex-1 text-gray-200">{category.external_name}<span className="text-gray-500"> · {category.count}</span></span>
-                <select className={inputClass} onChange={(e) => e.target.value && saveCategoryMapping(category.external_name, e.target.value)} defaultValue="">
+              <div key={category.external_name} className="mb-2 flex flex-col gap-2 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2 text-xs sm:flex-row sm:items-center">
+                <span className="flex-1 text-[var(--a-text)]">{category.external_name}<span className="text-[var(--a-muted)]"> · {category.count}</span></span>
+                <select className={dataSelectClass} aria-label={`Asignar categoría ${category.external_name}`} onChange={(e) => e.target.value && saveCategoryMapping(category.external_name, e.target.value)} defaultValue="">
                   <option value="">Asignar...</option>
                   {categories.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
                 </select>
               </div>
             ))}
-            {(!reconciliation || reconciliation.unmapped_categories.length === 0) && <div className="text-xs text-gray-400">Sin categorías pendientes.</div>}
+            {(!reconciliation || reconciliation.unmapped_categories.length === 0) && <div className="a-meta">Sin categorías pendientes.</div>}
           </div>
         </div>
       </section>
     </section>
+      {openTool === 'csv' && (
+        <ToolSurfaceDock
+          id="data-csv-dock"
+          title="Importar CSV"
+          description="Columnas soportadas: date, amount, category, description, currency, account_id, external_id."
+          triggerRef={csvLauncherRef}
+          onClose={() => setOpenTool(null)}
+        >
+          <div className="space-y-4">
+            <div>
+              <label htmlFor="data-csv-file" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Archivo CSV</label>
+              <input id="data-csv-file" type="file" accept=".csv,text/csv" onChange={(e) => handleFile(e.target.files?.[0])} className="text-xs text-[var(--a-secondary)]" />
+            </div>
+            <div>
+              <label htmlFor="data-csv-text" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Contenido CSV</label>
+              <textarea id="data-csv-text" className={dataAreaClass} placeholder="O pegue CSV aquí" value={csvText} onChange={(e) => setCsvText(e.target.value)} />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="quiet" onClick={async () => setCsvResult(await onPreviewCsv(csvText))}>Preview</Button>
+              <Button variant="primary" onClick={async () => setCsvResult(await onImportCsv(csvText))}>Importar aceptadas</Button>
+            </div>
+            {csvResult && (
+              <div className="grid grid-cols-2 gap-3">
+                <InlineMetric label="Aceptadas" value={String(csvResult.accepted_count)} />
+                <InlineMetric label="Rechazadas" value={String(csvResult.rejected_count)} />
+                <InlineMetric label="Importadas" value={String(csvResult.imported_count ?? '-')} />
+                <InlineMetric label="Duplicadas" value={String(csvResult.duplicate_count ?? '-')} />
+              </div>
+            )}
+          </div>
+        </ToolSurfaceDock>
+      )}
+      {openTool === 'wallet' && (
+        <ToolSurfaceDock
+          id="data-wallet-dock"
+          title="Wallet by BudgetBakers"
+          description="Estado, preview e importación de la fuente BudgetBakers."
+          triggerRef={walletLauncherRef}
+          onClose={() => setOpenTool(null)}
+        >
+          <div className="space-y-4">
+            <p className="a-meta">
+              Fuente REAL solo lectura. Token en backend:{' '}
+              <span className={walletStatus?.configured ? 'text-[var(--a-positive)]' : 'text-[var(--a-warning)]'}>{walletStatus?.configured ? 'configurado' : 'no configurado'}</span>
+              {walletStatus?.last_success_at ? ` · ultimo import: ${walletStatus.last_success_at}` : ''}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="operational" disabled={walletBusy} onClick={runWalletTest}>Probar</Button>
+              <Button variant="quiet" disabled={walletBusy || !walletStatus?.configured} onClick={previewWallet}>Preview</Button>
+              <Button variant="primary" disabled={walletBusy || !walletPreview} onClick={importWallet}>Confirmar importación</Button>
+            </div>
+            <div className="a-meta">
+              Estado: <span className="text-[var(--a-text)]">{walletStatus?.status || 'sin leer'}</span>
+              {walletStatus?.last_error ? <span className="text-[var(--a-negative)]"> · {walletStatus.last_error}</span> : null}
+            </div>
+            {walletPreview && (
+              <div className="grid grid-cols-2 gap-3">
+                <InlineMetric label="Cuentas" value={String(walletPreview.accounts_detected)} />
+                <InlineMetric label="Registros" value={String(walletPreview.records_found)} />
+                <InlineMetric label="Nuevos" value={String(walletPreview.new_transaction_count)} />
+                <InlineMetric label="Duplicados" value={String(walletPreview.duplicate_count)} />
+                <InlineMetric label="Rechazados" value={String(walletPreview.rejected_count)} />
+                <InlineMetric label="Rango" value={`${walletPreview.date_range?.from || '-'} / ${walletPreview.date_range?.to || '-'}`} />
+                <InlineMetric label="Cuentas nuevas" value={String(walletPreview.new_accounts)} />
+                <InlineMetric label="Fuente" value="BUDGETBAKERS" />
+              </div>
+            )}
+          </div>
+        </ToolSurfaceDock>
+      )}
+    </div>
   );
 };
