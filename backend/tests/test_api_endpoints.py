@@ -6,10 +6,27 @@ Verifies that all FastAPI endpoints return 200 OK and conform to expected schema
 import pytest
 import uuid
 import json
+import os
+import tempfile
 from fastapi.testclient import TestClient
-from backend.app import app
+from backend.app import app, db
+from database.db_manager import DEFAULT_DB_FILE
 
 client = TestClient(app)
+
+
+def test_app_uses_isolated_temp_database():
+    effective_path = os.path.abspath(db.db_path)
+    configured_path = os.path.abspath(os.environ["FINANCE_DB_PATH"])
+    temp_root = os.path.abspath(tempfile.gettempdir())
+
+    assert effective_path != os.path.abspath(DEFAULT_DB_FILE)
+    assert os.path.commonpath([effective_path, temp_root]) == temp_root
+    assert effective_path == configured_path
+
+    response = client.get("/api/data-source")
+    assert response.status_code == 200
+    assert os.path.abspath(response.json()["db_path"]) == effective_path
 
 
 def _collect_keys(value):
