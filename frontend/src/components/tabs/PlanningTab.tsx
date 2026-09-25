@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import { Budget, CalculatorKind, CalculatorResult, CashProjectionResult, Category, FinancialEvent, MonthlyReview, RecurringRule, SafeToSpendResult, ScenarioEvaluationResult, ScenarioType } from '../../types';
 import { DataState, DeltaDirection, InlineMetric } from '../../aetheris/primitives';
+import { Button, Field, MetricInput, MoneyField, SegmentedControl } from '../../aetheris/controls';
+import { ToolSurfaceDock } from '../../aetheris/ToolSurfaceDock';
 
 interface PlanningTabProps {
   budgets: Budget[];
@@ -27,30 +29,11 @@ interface PlanningTabProps {
    Sin matemáticas nuevas, sin contratos nuevos: solo presentación.
 --------------------------------------------------------------------------- */
 
-const inputClass =
-  'w-full rounded-[12px] border border-[var(--a-line)] bg-black/10 px-3 py-2 text-xs text-[var(--a-text)] placeholder:text-[var(--a-muted)] focus:outline-none focus:border-[var(--a-brand)] focus:ring-1 focus:ring-[var(--a-brand)]';
+const selectClass =
+  'min-h-10 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] focus:border-[var(--a-brand)] focus:outline-none';
 
-/** Acción primaria de página: sólo "Guardar cierre mensual". */
-const btnPrimary =
-  'rounded-[12px] border border-[var(--a-brand)] bg-[var(--a-brand)] px-3.5 py-2 text-xs font-bold text-[var(--a-bg)] transition-colors hover:opacity-90';
-
-/** Ejecutar una herramienta: identidad Aetheris, no verde. */
-const btnRun =
-  'w-full rounded-[12px] border border-[var(--a-brand)] bg-[var(--a-active)] px-3.5 py-2 text-xs font-bold text-[var(--a-brand)] transition-colors hover:bg-white/[0.11]';
-
-/** Acción secundaria neutra. */
-const btnQuiet =
-  'rounded-[12px] border border-[var(--a-line)] bg-[var(--a-surface)] px-3 py-1.5 text-xs font-semibold text-[var(--a-secondary)] transition-colors hover:bg-[var(--a-elevated)]';
-
-/** Semántica: verde = confirmar/positivo, rojo = rechazar/negativo. */
-const btnPositive =
-  'rounded-[12px] border border-[var(--a-line)] bg-[var(--a-active)] px-3 py-1.5 text-xs font-semibold text-[var(--a-positive)] transition-colors hover:border-[var(--a-positive)]';
-
-const btnNegative =
-  'rounded-[12px] border border-[var(--a-line)] bg-[var(--a-active)] px-3 py-1.5 text-xs font-semibold text-[var(--a-negative)] transition-colors hover:border-[var(--a-negative)]';
-
-const tileClass = 'rounded-[12px] border border-[var(--a-line)] bg-black/10 p-3';
-const errorClass = 'rounded-[12px] border border-[var(--a-line)] bg-black/10 p-3 text-xs text-[var(--a-negative)]';
+const tileClass = 'rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3';
+const errorClass = 'rounded-[var(--a-radius-sm)] border border-[var(--a-line-strong)] bg-[var(--a-canvas)] p-3 text-xs text-[var(--a-negative)]';
 const rowClass = 'flex items-baseline justify-between gap-3 border-b border-[var(--a-line)] py-1.5 last:border-b-0';
 const listLabel = 'text-xs font-bold text-[var(--a-secondary)]';
 const colDivider = 'min-w-0 lg:border-l lg:border-[var(--a-line)] lg:pl-6';
@@ -134,6 +117,9 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
   });
   const [scenarioResult, setScenarioResult] = useState<ScenarioEvaluationResult | null>(null);
   const [scenarioError, setScenarioError] = useState<string | null>(null);
+  const [openTool, setOpenTool] = useState<'scenario' | 'calculator' | null>(null);
+  const scenarioLauncherRef = useRef<HTMLButtonElement>(null);
+  const calculatorLauncherRef = useRef<HTMLButtonElement>(null);
   const money = (value: number) => privacyMode ? '••••' : value.toLocaleString(undefined, { maximumFractionDigits: 0 });
   const todayIso = new Date().toISOString().slice(0, 10);
   const sevenDaysOut = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -249,7 +235,7 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
 
   return (
     <div className="a-enter">
-      <div className="a-workspace mt-0">
+      <div className={openTool ? 'grid gap-[var(--a-stack)] min-[1041px]:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]' : 'a-workspace mt-0'}>
         {/* ================================================================= */}
         {/* CANVAS: periodo → workspace → herramientas                         */}
         {/* ================================================================= */}
@@ -273,7 +259,7 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <h2 id="plan-review-title" className="text-lg font-bold text-[var(--a-text)]">Monthly Review</h2>
-                <p className="a-meta mt-1">Resumen → desviaciones → recurrentes → próximo mes → acciones</p>
+                <p className="a-meta mt-1">Hechos del periodo, desviaciones, obligaciones próximas y acciones sugeridas.</p>
               </div>
               <div className="flex shrink-0 items-center gap-3">
                 {review && (
@@ -281,7 +267,7 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
                     {review.period}
                   </span>
                 )}
-                <button type="button" onClick={onSaveSnapshot} className={btnPrimary}>Guardar cierre mensual</button>
+                <Button variant="primary" onClick={onSaveSnapshot}>Guardar cierre mensual</Button>
               </div>
             </div>
 
@@ -300,7 +286,7 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
                 {/* 1b · desviaciones | próximos pagos | acciones */}
                 <div className="grid gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)]">
                   <div className="min-w-0">
-                    <div className="a-page-kicker">Desviaciones</div>
+                    <h3 className="a-page-kicker">Desviaciones</h3>
 
                     <div className={`${listLabel} mt-4`}>Plan vs actual</div>
                     <div className="mt-2">
@@ -336,10 +322,10 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
                   </div>
 
                   <div className={colDivider}>
-                    <div className="a-page-kicker">Próximos pagos</div>
+                    <h3 className="a-page-kicker">Próximos pagos</h3>
                     <div className="mt-4">
-                      {review.upcoming_obligations.slice(0, 6).map((item) => (
-                        <div key={`${item.merchant}-${item.date}`} className={rowClass}>
+                      {review.upcoming_obligations.slice(0, 6).map((item, index) => (
+                        <div key={`${item.merchant}-${item.date}-${index}`} className={rowClass}>
                           <span className="min-w-0 truncate text-xs text-[var(--a-secondary)]">{item.merchant}</span>
                           <span className="shrink-0 text-xs tabular-nums text-[var(--a-text)]">{item.date} · {money(item.amount)}</span>
                         </div>
@@ -349,7 +335,7 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
                   </div>
 
                   <div className={colDivider}>
-                    <div className="a-page-kicker">Acciones</div>
+                    <h3 className="a-page-kicker">Acciones</h3>
                     <div className="mt-4">
                       {review.action_items.slice(0, 6).map((item, index) => (
                         <div key={`${item.type}-${index}`} className="border-b border-[var(--a-line)] py-2 last:border-b-0">
@@ -373,11 +359,38 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
             )}
           </section>
 
+          <section className="a-surface mt-5 p-4" aria-labelledby="plan-tool-launcher-title">
+            <h2 id="plan-tool-launcher-title" className="a-module-title">Herramientas bajo demanda</h2>
+            <p className="a-meta mt-1">Abre un instrumento sin perder el contexto de presupuesto, caja y atención.</p>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Button
+                ref={scenarioLauncherRef}
+                variant={openTool === 'scenario' ? 'operational' : 'quiet'}
+                aria-pressed={openTool === 'scenario'}
+                aria-controls="plan-scenario-dock"
+                onClick={() => setOpenTool((current) => current === 'scenario' ? null : 'scenario')}
+                className="h-auto min-h-11 justify-start text-left"
+              >
+                Scenario Lab · comparar decisiones
+              </Button>
+              <Button
+                ref={calculatorLauncherRef}
+                variant={openTool === 'calculator' ? 'operational' : 'quiet'}
+                aria-pressed={openTool === 'calculator'}
+                aria-controls="plan-calculator-dock"
+                onClick={() => setOpenTool((current) => current === 'calculator' ? null : 'calculator')}
+                className="h-auto min-h-11 justify-start text-left"
+              >
+                Calculadoras · resolver una pregunta
+              </Button>
+            </div>
+          </section>
+
           {/* --------------------------------------------------------------
               3 · Workspace operativo — presupuesto y caja
           -------------------------------------------------------------- */}
           <section className="a-surface mt-5 p-5" aria-labelledby="plan-workspace-title">
-            <div className="a-page-kicker" id="plan-workspace-title">Workspace operativo</div>
+            <h2 className="a-page-kicker" id="plan-workspace-title">Workspace operativo</h2>
             <p className="a-meta mt-1">Presupuesto del periodo y caja de corto plazo.</p>
 
             <div className="mt-5 grid gap-6 lg:grid-cols-2">
@@ -385,15 +398,20 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
               <div className="min-w-0">
                 <h3 className="a-module-title">Presupuestos</h3>
 
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                  <input className={inputClass} list="budget-categories" placeholder="Categoría" aria-label="Categoría del presupuesto" value={budgetForm.category || ''} onChange={(e) => setBudgetForm({ ...budgetForm, category: e.target.value })} />
-                  <input className={inputClass} type="number" placeholder="Importe" aria-label="Límite mensual del presupuesto" value={budgetForm.monthly_limit ?? 0} onChange={(e) => setBudgetForm({ ...budgetForm, monthly_limit: Number(e.target.value) })} />
-                  <input className={inputClass} placeholder="Moneda" aria-label="Moneda del presupuesto" value={budgetForm.currency || 'USD'} onChange={(e) => setBudgetForm({ ...budgetForm, currency: e.target.value.toUpperCase() })} />
-                  <select className={inputClass} aria-label="Periodo del presupuesto" value={budgetForm.period || 'MONTHLY'} onChange={(e) => setBudgetForm({ ...budgetForm, period: e.target.value })}>
-                    <option value="MONTHLY">Mensual</option>
-                    <option value="WEEKLY">Semanal</option>
-                    <option value="YEARLY">Anual</option>
-                  </select>
+                <div className="mt-4 grid gap-4">
+                  <Field id="budget-category" label="Rubro" list="budget-categories" placeholder="Alimentación" value={budgetForm.category || ''} onChange={(value) => setBudgetForm({ ...budgetForm, category: value })} />
+                  <MoneyField id="budget-limit" label="Límite" currency={budgetForm.currency || 'USD'} value={Number(budgetForm.monthly_limit ?? 0)} onChange={(value) => setBudgetForm({ ...budgetForm, monthly_limit: value })} />
+                  <Field id="budget-currency" label="Moneda" placeholder="USD" value={budgetForm.currency || 'USD'} onChange={(value) => setBudgetForm({ ...budgetForm, currency: value.toUpperCase() })} />
+                  <SegmentedControl
+                    label="Periodo"
+                    value={(budgetForm.period || 'MONTHLY') as 'MONTHLY' | 'WEEKLY' | 'YEARLY'}
+                    options={[
+                      { value: 'MONTHLY', label: 'Mensual' },
+                      { value: 'WEEKLY', label: 'Semanal' },
+                      { value: 'YEARLY', label: 'Anual' },
+                    ]}
+                    onChange={(value) => setBudgetForm({ ...budgetForm, period: value })}
+                  />
                 </div>
                 <datalist id="budget-categories">{categories.map((c) => <option key={c.id} value={c.name} />)}</datalist>
 
@@ -402,18 +420,16 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
                   Activo
                 </label>
 
-                <button type="button" onClick={submitBudget} className={`${btnRun} mt-3`}>Guardar presupuesto</button>
+                <Button variant="operational" onClick={submitBudget} className="mt-4 w-full">Guardar presupuesto</Button>
 
                 <div className="mt-4 max-h-72 space-y-2 overflow-auto">
                   {budgets.map((budget) => (
-                    <div key={budget.id} className={`${tileClass} flex items-center justify-between gap-2`}>
+                    <div key={budget.id} className={`${tileClass} flex items-center justify-between gap-3`}>
                       <button type="button" className="min-w-0 flex-1 text-left text-xs" onClick={() => setBudgetForm(budget)}>
-                        <span className="font-semibold text-[var(--a-text)]">{budget.category}</span>
-                        <span className="a-meta"> · {money(budget.monthly_limit)} {budget.currency} · {budget.source}</span>
+                        <span className="block font-semibold text-[var(--a-text)]">{budget.category}</span>
+                        <span className="a-meta mt-1 block">{money(budget.monthly_limit)} {budget.currency} · {budget.period} · {budget.is_active ? 'Activo' : 'Inactivo'} · {budget.source}</span>
                       </button>
-                      <button type="button" onClick={() => onDeleteBudget(budget.id)} aria-label={`Eliminar presupuesto ${budget.category}`} className="shrink-0 text-xs font-semibold text-[var(--a-negative)] transition-colors hover:text-[var(--a-negative)]">
-                        Eliminar
-                      </button>
+                      <Button variant="negative" onClick={() => onDeleteBudget(budget.id)} aria-label={`Eliminar presupuesto ${budget.category}`} className="shrink-0">Eliminar</Button>
                     </div>
                   ))}
                   {budgets.length === 0 && <DataState state="EMPTY" title="Sin presupuestos guardados" detail="Crea el primer presupuesto con el formulario anterior." />}
@@ -424,164 +440,146 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
               <div className="min-w-0 lg:border-l lg:border-[var(--a-line)] lg:pl-6">
                 <h3 className="a-module-title">Caja corto plazo</h3>
 
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                  <input className={inputClass} placeholder="Moneda" aria-label="Moneda de la proyección de caja" value={cashForm.currency} onChange={(e) => setCashValue('currency', e.target.value.toUpperCase())} />
-                  <input className={inputClass} type="number" placeholder="Horizonte días" aria-label="Horizonte en días" value={cashForm.horizon_days} onChange={(e) => setCashValue('horizon_days', Number(e.target.value))} />
-                  <input className={inputClass} type="number" placeholder="Balance inicial" aria-label="Balance inicial" value={cashForm.starting_balance} onChange={(e) => setCashValue('starting_balance', Number(e.target.value))} />
-                  <input className={inputClass} type="number" placeholder="Reserva mínima" aria-label="Reserva mínima" value={cashForm.reserve_floor} onChange={(e) => setCashValue('reserve_floor', Number(e.target.value))} />
-                  <input className={inputClass} type="number" placeholder="Gasto esencial mensual" aria-label="Gasto esencial mensual" value={cashForm.essential_monthly_expenses} onChange={(e) => setCashValue('essential_monthly_expenses', Number(e.target.value))} />
+                <div className="mt-4 grid gap-4">
+                  <Field id="cash-currency" label="Moneda" value={String(cashForm.currency)} onChange={(value) => setCashValue('currency', value.toUpperCase())} />
+                  <MetricInput id="cash-horizon" label="Horizonte" unit="días" value={Number(cashForm.horizon_days)} min={1} step={1} onChange={(value) => setCashValue('horizon_days', value)} />
+                  <MoneyField id="cash-starting-balance" label="Disponible hoy" currency={String(cashForm.currency)} value={Number(cashForm.starting_balance)} onChange={(value) => setCashValue('starting_balance', value)} />
+                  <MoneyField id="cash-reserve" label="Reserva protegida" currency={String(cashForm.currency)} value={Number(cashForm.reserve_floor)} hint="Cantidad que no se considera disponible para gasto." onChange={(value) => setCashValue('reserve_floor', value)} />
+                  <MoneyField id="cash-essential-expenses" label="Costo de vida base" currency={String(cashForm.currency)} value={Number(cashForm.essential_monthly_expenses)} onChange={(value) => setCashValue('essential_monthly_expenses', value)} />
                 </div>
 
-                <button type="button" onClick={runCashIntelligence} className={`${btnRun} mt-3`}>Calcular caja</button>
+                <Button variant="operational" onClick={runCashIntelligence} className="mt-4 w-full">Calcular proyección</Button>
                 {cashError && <div role="alert" className={`${errorClass} mt-3`}>{cashError}</div>}
 
-                <div className="mt-4 grid grid-cols-1 gap-2 text-xs sm:grid-cols-3" role="status" aria-live="polite">
-                  <div className={tileClass}>
-                    <div className="a-meta">Balance con eventos</div>
-                    <div className="mt-1 font-bold tabular-nums text-[var(--a-text)]">{cashProjection?.balance_after_known_events == null ? 'N/A' : `${money(cashProjection.balance_after_known_events)} ${cashProjection.currency}`}</div>
-                    <div className="a-meta mt-0.5">{cashProjection?.status || 'Sin cálculo'}</div>
-                  </div>
-                  <div className={tileClass}>
-                    <div className="a-meta">Proyectado</div>
-                    <div className="mt-1 font-bold tabular-nums text-[var(--a-text)]">{cashProjection?.projected_balance == null ? 'No disponible' : `${money(cashProjection.projected_balance)} ${cashProjection.currency}`}</div>
-                    <div className="a-meta mt-0.5">Confianza {cashProjection?.confidence || 'N/A'}</div>
-                  </div>
-                  <div className={tileClass}>
-                    <div className="a-meta">Safe-to-Spend</div>
-                    <div className="mt-1 font-bold tabular-nums text-[var(--a-text)]">{safeResult?.safe_to_spend == null ? 'No evaluable' : `${money(safeResult.safe_to_spend)} ${safeResult.currency}`}</div>
-                    <div className="a-meta mt-0.5">Runway {runwayResult?.coverage_months == null ? 'N/A' : `${runwayResult.coverage_months.toFixed(1)} meses`}</div>
-                  </div>
+                <div className="mt-4" role="status" aria-live="polite">
+                  {!cashProjection && !safeResult && !runwayResult ? (
+                    <DataState state="EMPTY" title="Sin cálculo de caja" detail="Configura el horizonte y la reserva para calcular cierre, gasto seguro y runway." />
+                  ) : (
+                    <div className="a-elevated p-4">
+                      <div className="grid gap-4 sm:grid-cols-3">
+                        <InlineMetric label="Cierre proyectado" value={cashProjection?.projected_balance == null ? 'No disponible' : `${money(cashProjection.projected_balance)} ${cashProjection.currency}`} direction="analytical" />
+                        <InlineMetric label="Safe-to-Spend" value={safeResult?.safe_to_spend == null ? 'No evaluable' : `${money(safeResult.safe_to_spend)} ${safeResult.currency}`} direction={safeResult?.safe_to_spend == null ? 'neutral' : signDirection(safeResult.safe_to_spend)} />
+                        <InlineMetric label="Runway" value={runwayResult?.coverage_months == null ? 'N/A' : `${runwayResult.coverage_months.toFixed(1)} meses`} direction="neutral" />
+                      </div>
+                      <p className="a-meta mt-3">Balance con eventos: {cashProjection?.balance_after_known_events == null ? 'N/A' : `${money(cashProjection.balance_after_known_events)} ${cashProjection.currency}`} · Estado {cashProjection?.status || 'No disponible'} · Confianza {cashProjection?.confidence || 'N/A'}</p>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           </section>
 
-          {/* --------------------------------------------------------------
-              4 · Herramientas secundarias — huidas deliberadamente
-          -------------------------------------------------------------- */}
-          <section className="mt-5 rounded-[var(--a-radius)] border border-[var(--a-line)] bg-black/10 p-5" aria-labelledby="plan-tools-title">
-            <div className="a-page-kicker" id="plan-tools-title">Herramientas secundarias</div>
-            <p className="a-meta mt-1">Escenarios comparados y calculadoras puntuales.</p>
+        </section>
 
-            <div className="mt-5 grid gap-6 lg:grid-cols-2">
-              {/* Scenario Lab */}
-              <div className="min-w-0">
-                <h3 className="a-module-title">Scenario Lab</h3>
-
-                <div className="mt-4 grid grid-cols-2 gap-2">
-                  <select className={inputClass} aria-label="Tipo de escenario" value={scenarioType} onChange={(e) => { setScenarioType(e.target.value as ScenarioType); setScenarioResult(null); }}>
-                    <option value="CASH">Caja</option>
-                    <option value="DEBT">Deuda</option>
-                    <option value="GOAL">Meta</option>
-                  </select>
-                  <input className={inputClass} placeholder="Moneda" aria-label="Moneda del escenario" value={scenarioForm.currency} onChange={(e) => setScenarioValue('currency', e.target.value.toUpperCase())} />
+        {openTool === 'scenario' && (
+          <ToolSurfaceDock id="plan-scenario-dock" title="Scenario Lab" description="Compara una referencia real contra un supuesto controlado." triggerRef={scenarioLauncherRef} onClose={() => setOpenTool(null)}>
+            <div className="space-y-5">
+              <section aria-labelledby="scenario-assumptions-title">
+                <h3 id="scenario-assumptions-title" className="a-module-title">Supuestos</h3>
+                <div className="mt-3 space-y-4">
+                  <SegmentedControl label="Tipo" value={scenarioType} options={[{ value: 'CASH', label: 'Caja' }, { value: 'DEBT', label: 'Deuda' }, { value: 'GOAL', label: 'Meta' }]} onChange={(value) => { setScenarioType(value); setScenarioResult(null); }} />
+                  <Field id="scenario-currency" label="Moneda" value={String(scenarioForm.currency)} onChange={(value) => setScenarioValue('currency', value.toUpperCase())} />
                   {scenarioType === 'CASH' && <>
-                    <input className={inputClass} type="number" placeholder="Balance inicial" aria-label="Balance inicial del escenario" value={scenarioForm.starting_balance} onChange={(e) => setScenarioValue('starting_balance', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Reserva" aria-label="Reserva del escenario" value={scenarioForm.reserve_floor} onChange={(e) => setScenarioValue('reserve_floor', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Horizonte días" aria-label="Horizonte del escenario en días" value={scenarioForm.horizon_days} onChange={(e) => setScenarioValue('horizon_days', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Cambio gasto semanal" aria-label="Cambio de gasto semanal en el escenario" value={scenarioForm.weekly_variable_spend_delta} onChange={(e) => setScenarioValue('weekly_variable_spend_delta', Number(e.target.value))} />
+                    <MoneyField id="scenario-starting-balance" label="Balance inicial" currency={String(scenarioForm.currency)} value={Number(scenarioForm.starting_balance)} onChange={(value) => setScenarioValue('starting_balance', value)} />
+                    <MoneyField id="scenario-reserve" label="Reserva" currency={String(scenarioForm.currency)} value={Number(scenarioForm.reserve_floor)} onChange={(value) => setScenarioValue('reserve_floor', value)} />
+                    <MetricInput id="scenario-horizon" label="Horizonte" unit="días" value={Number(scenarioForm.horizon_days)} min={1} step={1} onChange={(value) => setScenarioValue('horizon_days', value)} />
+                    <MoneyField id="scenario-weekly-delta" label="Cambio de gasto semanal" currency={String(scenarioForm.currency)} value={Number(scenarioForm.weekly_variable_spend_delta)} allowNegative onChange={(value) => setScenarioValue('weekly_variable_spend_delta', value)} />
                   </>}
                   {scenarioType === 'DEBT' && <>
-                    <input className={inputClass} type="number" placeholder="Saldo deuda" aria-label="Saldo de la deuda" value={scenarioForm.balance} onChange={(e) => setScenarioValue('balance', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Pago mensual" aria-label="Pago mensual" value={scenarioForm.monthly_payment} onChange={(e) => setScenarioValue('monthly_payment', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Pago extra" aria-label="Pago extra" value={scenarioForm.extra_payment} onChange={(e) => setScenarioValue('extra_payment', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Tasa % E.A." aria-label="Tasa efectiva anual porcentual" value={scenarioForm.annual_effective_rate_pct} onChange={(e) => setScenarioValue('annual_effective_rate_pct', Number(e.target.value))} />
+                    <MoneyField id="scenario-debt-balance" label="Saldo de deuda" currency={String(scenarioForm.currency)} value={Number(scenarioForm.balance)} onChange={(value) => setScenarioValue('balance', value)} />
+                    <MoneyField id="scenario-monthly-payment" label="Pago mensual" currency={String(scenarioForm.currency)} value={Number(scenarioForm.monthly_payment)} onChange={(value) => setScenarioValue('monthly_payment', value)} />
+                    <MoneyField id="scenario-extra-payment" label="Pago extra" currency={String(scenarioForm.currency)} value={Number(scenarioForm.extra_payment)} onChange={(value) => setScenarioValue('extra_payment', value)} />
+                    <MetricInput id="scenario-debt-rate" label="Tasa efectiva anual" unit="% E.A." value={Number(scenarioForm.annual_effective_rate_pct)} min={0} step={0.01} onChange={(value) => setScenarioValue('annual_effective_rate_pct', value)} />
                   </>}
                   {scenarioType === 'GOAL' && <>
-                    <input className={inputClass} type="number" placeholder="Actual" aria-label="Monto actual de la meta" value={scenarioForm.current_amount} onChange={(e) => setScenarioValue('current_amount', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Meta" aria-label="Monto objetivo de la meta" value={scenarioForm.target_amount} onChange={(e) => setScenarioValue('target_amount', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Aporte actual" aria-label="Aporte mensual actual" value={scenarioForm.monthly_contribution} onChange={(e) => setScenarioValue('monthly_contribution', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Aporte escenario" aria-label="Aporte mensual del escenario" value={scenarioForm.monthly_contribution_override} onChange={(e) => setScenarioValue('monthly_contribution_override', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Periodos" aria-label="Periodos de la meta" value={scenarioForm.periods} onChange={(e) => setScenarioValue('periods', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Tasa % E.A." aria-label="Tasa efectiva anual porcentual" value={scenarioForm.annual_effective_rate_pct} onChange={(e) => setScenarioValue('annual_effective_rate_pct', Number(e.target.value))} />
+                    <MoneyField id="scenario-goal-current" label="Monto actual" currency={String(scenarioForm.currency)} value={Number(scenarioForm.current_amount)} onChange={(value) => setScenarioValue('current_amount', value)} />
+                    <MoneyField id="scenario-goal-target" label="Meta" currency={String(scenarioForm.currency)} value={Number(scenarioForm.target_amount)} onChange={(value) => setScenarioValue('target_amount', value)} />
+                    <MoneyField id="scenario-goal-contribution" label="Aporte actual" currency={String(scenarioForm.currency)} value={Number(scenarioForm.monthly_contribution)} onChange={(value) => setScenarioValue('monthly_contribution', value)} />
+                    <MoneyField id="scenario-goal-override" label="Aporte del escenario" currency={String(scenarioForm.currency)} value={Number(scenarioForm.monthly_contribution_override)} onChange={(value) => setScenarioValue('monthly_contribution_override', value)} />
+                    <MetricInput id="scenario-goal-periods" label="Periodos" unit="meses" value={Number(scenarioForm.periods)} min={1} step={1} onChange={(value) => setScenarioValue('periods', value)} />
+                    <MetricInput id="scenario-goal-rate" label="Tasa efectiva anual" unit="% E.A." value={Number(scenarioForm.annual_effective_rate_pct)} min={0} step={0.01} onChange={(value) => setScenarioValue('annual_effective_rate_pct', value)} />
                   </>}
                 </div>
-
-                <button type="button" onClick={runScenario} className={`${btnRun} mt-3`}>Evaluar escenario</button>
+                <Button variant="operational" onClick={runScenario} className="mt-5 w-full">Evaluar escenario</Button>
                 {scenarioError && <div role="alert" className={`${errorClass} mt-3`}>{scenarioError}</div>}
-
-                <div className="mt-4" role="status" aria-live="polite">
+              </section>
+              <section aria-labelledby="scenario-result-title" role="status" aria-live="polite">
+                <h3 id="scenario-result-title" className="a-module-title">Resultado</h3>
+                <div className="mt-3">
                   {(() => {
                     const metric = scenarioMainMetric();
-                    if (!metric) return <DataState state="EMPTY" title="Sin escenario todavía" detail="Evalúa un escenario para comparar la referencia contra el resultado." />;
+                    if (!metric) return <DataState state="EMPTY" title="Sin escenario todavía" detail="Evalúa los supuestos para comparar referencia, escenario y delta." />;
                     return (
-                      <>
-                        <div className="grid grid-cols-3 gap-2 text-xs">
-                          <div className={tileClass}>
-                            <div className="a-meta">Referencia</div>
-                            <div className="mt-1 font-bold tabular-nums text-[var(--a-text)]">{metric.baseline == null ? 'N/A' : `${money(Number(metric.baseline))} ${metric.currency}`}</div>
-                          </div>
-                          <div className={tileClass}>
-                            <div className="a-meta">Escenario</div>
-                            <div className="mt-1 font-bold tabular-nums text-[var(--a-text)]">{metric.scenario == null ? 'N/A' : `${money(Number(metric.scenario))} ${metric.currency}`}</div>
-                          </div>
-                          <div className={tileClass}>
-                            <div className="a-meta">Delta</div>
-                            <div className="mt-1 font-bold tabular-nums text-[var(--a-analytical)]">{metric.delta == null ? 'N/A' : `${money(Number(metric.delta))} ${metric.currency}`}</div>
-                          </div>
-                        </div>
-                        <p className="a-meta mt-2">Estado {scenarioResult?.status} · métricas: {(scenarioResult?.affected_metrics || []).join(', ') || 'N/A'}</p>
-                      </>
+                      <div className="a-elevated space-y-4 p-4">
+                        <InlineMetric label={`Referencia · ${metric.label}`} value={metric.baseline == null ? 'N/A' : `${money(Number(metric.baseline))} ${metric.currency}`} direction="neutral" />
+                        <InlineMetric label={`Escenario · ${metric.label}`} value={metric.scenario == null ? 'N/A' : `${money(Number(metric.scenario))} ${metric.currency}`} direction="analytical" />
+                        <InlineMetric label="Delta" value={metric.delta == null ? 'N/A' : `${money(Number(metric.delta))} ${metric.currency}`} direction={signDirection(metric.delta)} />
+                        <p className="a-meta">Estado {scenarioResult?.status} · métricas: {(scenarioResult?.affected_metrics || []).join(', ') || 'N/A'}</p>
+                      </div>
                     );
                   })()}
                 </div>
-              </div>
-
-              {/* Calculadoras */}
-              <div className="min-w-0 lg:border-l lg:border-[var(--a-line)] lg:pl-6">
-                <h3 className="a-module-title">Calculadoras</h3>
-
-                <select className={`${inputClass} mt-4`} aria-label="Calculadora seleccionada" value={calculatorKind} onChange={(e) => { setCalculatorKind(e.target.value as CalculatorKind); setCalcResult(null); }}>
-                  <option value="savings-goal">Meta de ahorro</option>
-                  <option value="compound">Interés compuesto / DCA</option>
-                  <option value="emergency-fund">Fondo de emergencia</option>
-                  <option value="debt-payoff">Pago de deuda</option>
-                  <option value="opportunity-cost">Costo de oportunidad</option>
-                </select>
-
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  <input className={inputClass} placeholder="Moneda" aria-label="Moneda del cálculo" value={calcForm.currency} onChange={(e) => setCalcValue('currency', e.target.value.toUpperCase())} />
+              </section>
+            </div>
+          </ToolSurfaceDock>
+        )}
+        {openTool === 'calculator' && (
+          <ToolSurfaceDock id="plan-calculator-dock" title="Calculadoras" description="Configura una herramienta puntual y revisa su resultado." triggerRef={calculatorLauncherRef} onClose={() => setOpenTool(null)}>
+            <div className="space-y-5">
+              <section aria-labelledby="calculator-config-title">
+                <h3 id="calculator-config-title" className="a-module-title">Elegir y configurar</h3>
+                <div className="mt-3 space-y-4">
+                  <div>
+                    <label htmlFor="calculator-kind" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Herramienta</label>
+                    <select id="calculator-kind" className={selectClass} value={calculatorKind} onChange={(event) => { setCalculatorKind(event.target.value as CalculatorKind); setCalcResult(null); }}>
+                      <option value="savings-goal">Meta de ahorro</option>
+                      <option value="compound">Interés compuesto / DCA</option>
+                      <option value="emergency-fund">Fondo de emergencia</option>
+                      <option value="debt-payoff">Pago de deuda</option>
+                      <option value="opportunity-cost">Costo de oportunidad</option>
+                    </select>
+                  </div>
+                  <Field id="calculator-currency" label="Moneda" value={String(calcForm.currency)} onChange={(value) => setCalcValue('currency', value.toUpperCase())} />
                   {calculatorKind === 'savings-goal' && <>
-                    <input className={inputClass} type="number" placeholder="Meta" aria-label="Meta de ahorro" value={calcForm.target} onChange={(e) => setCalcValue('target', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Actual" aria-label="Ahorro actual" value={calcForm.current_amount} onChange={(e) => setCalcValue('current_amount', Number(e.target.value))} />
+                    <MoneyField id="calculator-goal" label="Meta" currency={String(calcForm.currency)} value={Number(calcForm.target)} onChange={(value) => setCalcValue('target', value)} />
+                    <MoneyField id="calculator-current" label="Ahorro actual" currency={String(calcForm.currency)} value={Number(calcForm.current_amount)} onChange={(value) => setCalcValue('current_amount', value)} />
                   </>}
                   {calculatorKind === 'compound' && <>
-                    <input className={inputClass} type="number" placeholder="Principal" aria-label="Principal del interés compuesto" value={calcForm.principal} onChange={(e) => setCalcValue('principal', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Aporte periódico" aria-label="Aporte periódico" value={calcForm.periodic_contribution} onChange={(e) => setCalcValue('periodic_contribution', Number(e.target.value))} />
+                    <MoneyField id="calculator-principal" label="Principal" currency={String(calcForm.currency)} value={Number(calcForm.principal)} onChange={(value) => setCalcValue('principal', value)} />
+                    <MoneyField id="calculator-periodic-contribution" label="Aporte periódico" currency={String(calcForm.currency)} value={Number(calcForm.periodic_contribution)} onChange={(value) => setCalcValue('periodic_contribution', value)} />
                   </>}
                   {calculatorKind === 'emergency-fund' && <>
-                    <input className={inputClass} type="number" placeholder="Recursos líquidos" aria-label="Recursos líquidos" value={calcForm.liquid_resources} onChange={(e) => setCalcValue('liquid_resources', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Gastos esenciales/mes" aria-label="Gastos esenciales por mes" value={calcForm.essential_monthly_expenses} onChange={(e) => setCalcValue('essential_monthly_expenses', Number(e.target.value))} />
+                    <MoneyField id="calculator-liquid-resources" label="Recursos líquidos" currency={String(calcForm.currency)} value={Number(calcForm.liquid_resources)} onChange={(value) => setCalcValue('liquid_resources', value)} />
+                    <MoneyField id="calculator-essential-expenses" label="Gastos esenciales por mes" currency={String(calcForm.currency)} value={Number(calcForm.essential_monthly_expenses)} onChange={(value) => setCalcValue('essential_monthly_expenses', value)} />
                   </>}
                   {calculatorKind === 'debt-payoff' && <>
-                    <input className={inputClass} type="number" placeholder="Saldo deuda" aria-label="Saldo de la deuda" value={calcForm.balance} onChange={(e) => setCalcValue('balance', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Pago mensual" aria-label="Pago mensual de la deuda" value={calcForm.monthly_payment} onChange={(e) => setCalcValue('monthly_payment', Number(e.target.value))} />
-                    <input className={inputClass} type="number" placeholder="Pago extra" aria-label="Pago extra de la deuda" value={calcForm.extra_payment} onChange={(e) => setCalcValue('extra_payment', Number(e.target.value))} />
+                    <MoneyField id="calculator-debt-balance" label="Saldo de deuda" currency={String(calcForm.currency)} value={Number(calcForm.balance)} onChange={(value) => setCalcValue('balance', value)} />
+                    <MoneyField id="calculator-debt-payment" label="Pago mensual" currency={String(calcForm.currency)} value={Number(calcForm.monthly_payment)} onChange={(value) => setCalcValue('monthly_payment', value)} />
+                    <MoneyField id="calculator-extra-payment" label="Pago extra" currency={String(calcForm.currency)} value={Number(calcForm.extra_payment)} onChange={(value) => setCalcValue('extra_payment', value)} />
                   </>}
-                  {calculatorKind === 'opportunity-cost' && <input className={inputClass} type="number" placeholder="Monto" aria-label="Monto para costo de oportunidad" value={calcForm.amount} onChange={(e) => setCalcValue('amount', Number(e.target.value))} />}
+                  {calculatorKind === 'opportunity-cost' && <MoneyField id="calculator-amount" label="Monto" currency={String(calcForm.currency)} value={Number(calcForm.amount)} onChange={(value) => setCalcValue('amount', value)} />}
                   {calculatorKind !== 'emergency-fund' && <>
-                    <input className={inputClass} type="number" placeholder="Tasa % E.A." aria-label="Tasa efectiva anual porcentual" value={calcForm.annual_effective_rate_pct} onChange={(e) => setCalcValue('annual_effective_rate_pct', Number(e.target.value))} />
-                    {calculatorKind !== 'debt-payoff' && <input className={inputClass} type="number" placeholder="Periodos" aria-label="Periodos del cálculo" value={calcForm.periods} onChange={(e) => setCalcValue('periods', Number(e.target.value))} />}
+                    <MetricInput id="calculator-rate" label="Tasa efectiva anual" unit="% E.A." value={Number(calcForm.annual_effective_rate_pct)} min={0} step={0.01} onChange={(value) => setCalcValue('annual_effective_rate_pct', value)} />
+                    {calculatorKind !== 'debt-payoff' && <MetricInput id="calculator-periods" label="Periodos" unit="meses" value={Number(calcForm.periods)} min={1} step={1} onChange={(value) => setCalcValue('periods', value)} />}
                   </>}
                 </div>
-
-                <button type="button" onClick={runSelectedCalculator} className={`${btnRun} mt-3`}>Calcular</button>
+                <Button variant="operational" onClick={runSelectedCalculator} className="mt-5 w-full">Calcular</Button>
                 {calcError && <div role="alert" className={`${errorClass} mt-3`}>{calcError}</div>}
-
-                <div className={`${tileClass} mt-4`} role="status" aria-live="polite">
-                  {renderCalculatorResult()}
-                </div>
-                {calcResult?.assumptions && <div className="a-meta mt-2">Supuestos: tasa efectiva anual, sin FX, moneda única del cálculo.</div>}
-              </div>
+              </section>
+              <section aria-labelledby="calculator-result-title" role="status" aria-live="polite">
+                <h3 id="calculator-result-title" className="a-module-title">Resultado</h3>
+                <div className="a-elevated mt-3 p-4">{renderCalculatorResult()}</div>
+                {calcResult?.assumptions && <p className="a-meta mt-2">Supuestos: tasa efectiva anual, sin FX, moneda única del cálculo.</p>}
+              </section>
             </div>
-          </section>
-        </section>
+          </ToolSurfaceDock>
+        )}
 
         {/* ================================================================= */}
         {/* RAIL: atención / próximo                                           */}
         {/* ================================================================= */}
-        <aside className="a-surface h-fit p-5" aria-labelledby="plan-attention-title">
-          <div className="a-page-kicker" id="plan-attention-title">Atención / próximo</div>
+        <aside className={`a-surface h-fit p-5 ${openTool ? 'min-[1041px]:col-span-2' : ''}`} aria-labelledby="plan-attention-title">
+          <h2 className="a-page-kicker" id="plan-attention-title">Atención / próximo</h2>
           <p className="a-meta mt-1">Agenda financiera y candidatos recurrentes detectados.</p>
 
           {/* Agenda financiera */}
@@ -636,9 +634,9 @@ export const PlanningTab: React.FC<PlanningTabProps> = ({
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => onUpdateRecurring(item.id, 'confirmed')} className={btnPositive}>Confirmar</button>
-                    <button type="button" onClick={() => onUpdateRecurring(item.id, 'rejected')} className={btnNegative}>Rechazar</button>
-                    <button type="button" onClick={() => onUpdateRecurring(item.id, 'ignored')} className={btnQuiet}>Ignorar</button>
+                    <Button variant="positive" onClick={() => onUpdateRecurring(item.id, 'confirmed')}>Confirmar</Button>
+                    <Button variant="negative" onClick={() => onUpdateRecurring(item.id, 'rejected')}>Rechazar</Button>
+                    <Button variant="quiet" onClick={() => onUpdateRecurring(item.id, 'ignored')}>Ignorar</Button>
                   </div>
                 </div>
               ))}

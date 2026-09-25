@@ -1,15 +1,15 @@
 .aetheris-lab {
-  --a-bg: #070a0f;
-  --a-canvas: #0d121a;
-  --a-surface: #121923;
-  --a-elevated: #17202b;
-  --a-floating: rgba(20, 28, 38, 0.88);
-  --a-inspector: rgba(11, 16, 23, 0.94);
-  --a-line: rgba(196, 212, 229, 0.12);
-  --a-line-strong: rgba(196, 212, 229, 0.22);
+  --a-bg: #0a1322;
+  --a-canvas: #0e1a2b;
+  --a-surface: #152438;
+  --a-elevated: #1c2f49;
+  --a-floating: rgba(24, 40, 64, 0.9);
+  --a-inspector: rgba(26, 44, 70, 0.96);
+  --a-line: rgba(200, 218, 240, 0.14);
+  --a-line-strong: rgba(200, 218, 240, 0.26);
   --a-text: #eef4f8;
   --a-secondary: #aab8c5;
-  --a-muted: #72808e;
+  --a-muted: #7f8fa2;
   --a-brand: #8ab4ff;
   --a-positive: #69d59d;
   --a-negative: #ff7f8f;
@@ -30,7 +30,7 @@
   --a-sidebar-width-collapsed: 84px;
 
   /* F0 · chrome / header */
-  --a-chrome-bg: rgba(7, 10, 15, 0.78);
+  --a-chrome-bg: rgba(10, 19, 34, 0.82);
 
   /* F0 · focus / hover / estado activo */
   --a-hover: rgba(255, 255, 255, 0.035);
@@ -40,7 +40,7 @@
   min-height: 100vh;
   background:
     radial-gradient(circle at 18% 8%, rgba(138, 180, 255, 0.12), transparent 32rem),
-    linear-gradient(180deg, var(--a-bg), #090d13 55%, var(--a-bg));
+    linear-gradient(180deg, var(--a-bg), #0c1527 55%, var(--a-bg));
   color: var(--a-text);
   font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-feature-settings: "tnum";
@@ -56,8 +56,15 @@
 }
 
 .aetheris-lab button:focus-visible,
-.aetheris-lab [tabindex]:focus-visible {
+.aetheris-lab [tabindex]:focus-visible,
+.aetheris-lab input:focus-visible,
+.aetheris-lab select:focus-visible,
+.aetheris-lab textarea:focus-visible {
   box-shadow: var(--a-focus-ring);
+}
+
+.aetheris-lab .a-tool-heading:focus-visible {
+  box-shadow: none;
 }
 
 .a-shell {

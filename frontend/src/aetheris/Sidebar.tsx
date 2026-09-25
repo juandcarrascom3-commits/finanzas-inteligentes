@@ -37,7 +37,7 @@ export function Sidebar({
   sourceLabel,
 }: SidebarProps) {
   return (
-    <aside className="border-r border-[var(--a-line)] bg-black/10 px-4 py-5 max-[920px]:border-b max-[920px]:border-r-0">
+    <aside className="border-r border-[var(--a-line)] bg-[var(--a-bg)] px-4 py-5 max-[920px]:border-b max-[920px]:border-r-0">
       <div className={`flex items-center gap-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
         {!collapsed && (
           <div className="min-w-0">

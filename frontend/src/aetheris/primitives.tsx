@@ -114,7 +114,7 @@ export function DataState({ state, title, detail }: { state: DataStateKind; titl
   const copy = stateCopy[state];
   const Icon = copy.icon;
   return (
-    <div className="flex gap-3 rounded-[14px] border border-[var(--a-line)] bg-black/10 p-3">
+    <div className="flex gap-3 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3">
       <Icon className="mt-0.5 h-4 w-4 shrink-0" style={{ color: toneColor[copy.tone] }} aria-hidden="true" />
       <div>
         <div className="text-xs font-bold text-[var(--a-text)]">{title || copy.label}</div>
@@ -143,7 +143,7 @@ export function AttentionSignal({
     <button
       type="button"
       onClick={onSelect}
-      className={`a-motion w-full rounded-[15px] border p-3 text-left ${selected ? 'bg-white/[0.075]' : 'bg-black/10'}`}
+      className={`a-motion w-full rounded-[var(--a-radius-sm)] border p-3 text-left ${selected ? 'bg-[var(--a-active)]' : 'bg-[var(--a-canvas)]'}`}
       style={{ borderColor: selected ? 'var(--a-brand)' : 'var(--a-line)' }}
     >
       <div className="flex items-start gap-3">
@@ -183,7 +183,7 @@ export function Inspector({
   if (!item) return null;
 
   return (
-    <aside className="a-inspector a-enter fixed bottom-5 right-5 z-50 w-[min(420px,calc(100vw-32px))] rounded-[22px] border border-[var(--a-line-strong)] p-5" role="dialog" aria-modal="false" aria-label="Detalle de señal">
+    <aside className="a-inspector a-enter fixed bottom-5 right-5 z-50 w-[min(420px,calc(100vw-32px))] rounded-[var(--a-radius)] border border-[var(--a-line-strong)] p-5" role="dialog" aria-modal="false" aria-label="Detalle de señal">
       <div className="flex items-start justify-between gap-4">
         <div>
           <div className="a-page-kicker">Explicación y evidencia</div>
@@ -196,7 +196,7 @@ export function Inspector({
       </div>
       <ul className="mt-4 space-y-2">
         {item.evidence.map((line) => (
-          <li key={line} className="rounded-[12px] bg-white/[0.045] px-3 py-2 text-xs text-[var(--a-secondary)]">
+          <li key={line} className="rounded-[var(--a-radius-sm)] bg-[var(--a-active)] px-3 py-2 text-xs text-[var(--a-secondary)]">
             <Info className="mr-2 inline h-3.5 w-3.5 text-[var(--a-info)]" aria-hidden="true" />
             {line}
           </li>
