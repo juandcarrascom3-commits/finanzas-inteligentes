@@ -24,10 +24,119 @@ Cuando una skill upstream prescriba una dirección estética que contradiga esta
 ## Spatial Model
 
 ```
-canvas → surface → elevated → floating → inspector
+background → canvas → surface → elevated → floating → inspector
 ```
 
-Cada nivel necesita una función. Evitar elevación/glass/floating puramente decorativos.
+Cada nivel necesita una función y debe distinguirse perceptiblemente del anterior mediante luminosidad, borde, sombra y profundidad atmosférica.
+
+**Dark calm ≠ near-black monotony.** Si dos niveles espaciales colapsan visualmente a casi negro, existe drift.
+
+Evitar elevación/glass/floating puramente decorativos.
+
+## Design DNA · V1 Amendment
+
+### Dark calm ≠ near-black monotony
+
+La base oscura Aetheris favorece navy / graphite / blue-gray / storm / slate.
+
+La profundidad debe seguir:
+
+```
+background → canvas → surface → elevated → floating → inspector
+```
+
+No basta con que dos capas tengan bordes distintos: deben poseer separación perceptible.
+
+### Financial control ≠ HTML form
+
+Un control financiero debe comunicar **SIGNIFICADO + UNIDAD + VALOR**.
+
+Los grids de inputs genéricos sin labels visibles son interacción legacy.
+
+### Financial inputs
+
+Preferir:
+
+- label visible;
+- unidad integrada visualmente;
+- `tabular-nums`;
+- helper contextual solo cuando aporte;
+- foco perceptible sin glow.
+
+REGLA CRÍTICA: el formato visual nunca modifica el valor canónico usado por cálculos o payloads.
+
+Ejemplo:
+
+```
+valor canónico: 12000000
+presentación:   12.000.000
+payload:        12000000
+```
+
+La unidad puede aparecer como affix visual del control, pero nunca formar parte del valor emitido.
+
+### Selection patterns
+
+- Conjuntos pequeños y estables → `SegmentedControl`.
+- Listas mayores → selector apropiado, preferiblemente nativo/adaptado antes de construir un combobox propio.
+
+### Color semantics
+
+- Azul → interacción / navegación / selección.
+- Verde → positivo / éxito.
+- Rojo → negativo / destructivo.
+- Amarillo → warning / atención.
+
+Los colores semánticos no se usan como decoración general.
+
+### Persistent vs contextual UI
+
+El espacio persistente es costoso.
+
+Mantener visible cuando:
+
+- es estado central;
+- se consulta frecuentemente;
+- requiere atención continua;
+- forma parte natural del flujo principal.
+
+Preferir invocación contextual cuando:
+
+- se usa ocasionalmente;
+- requiere varios campos;
+- es simulación, configuración o mantenimiento;
+- ocupa mucho espacio estando inactiva.
+
+El patrón inicial preferido en workspaces compatibles es una **DOCKED CONTEXTUAL TOOL SURFACE**:
+
+- columna contextual del workspace;
+- no overlay, no modal, no backdrop, no portal, no focus trap;
+- stacked/inline en mobile.
+
+Esto es un patrón preferido, **NO** una obligación universal ni un sistema de ventanas.
+
+### Inspector vs ToolSurface
+
+- **Inspector** → explica, evidencia, fuente, confianza, detalle.
+- **ToolSurface** → permite actuar, configurar, simular, calcular o importar.
+
+No mezclar ambos roles.
+
+### Motion
+
+Discreto, corto y funcional. Respetar `prefers-reduced-motion`.
+
+### Prohibiciones
+
+Evitar: cyberpunk; HUD; neon; glow excesivo; glassmorphism dominante; gráficos/gauges inventados; decoración sin evidencia real.
+
+### Abstraction discipline
+
+`USE AS-IS` → `CONFIGURE / COMPOSE` → `ADAPT ONLY IF REQUIRED` → `BUILD ONLY IF NECESSARY`.
+
+No crear un design system grande. Abstraer únicamente patrones realmente consumidos.
+
+NO duplicar metodología detallada de las skills upstream.
 
 ## Visual Identity
 
