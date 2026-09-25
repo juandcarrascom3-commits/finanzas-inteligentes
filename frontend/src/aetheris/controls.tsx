@@ -59,17 +59,62 @@ const formatMoney = (value: number) => new Intl.NumberFormat('es-CO', {
   useGrouping: true,
 }).format(value);
 
-const parseMoneyDraft = (draft: string, allowNegative: boolean): number | null => {
-  const compact = draft.replace(/\s/g, '');
-  if (compact === '' || compact === '-' || compact === ',' || compact === '.') return 0;
-  if (!allowNegative && compact.startsWith('-')) return null;
-  const separators = compact.match(/[.,]/g) || [];
-  const normalized = separators.length > 1
-    ? compact.replace(/[.,]/g, '')
-    : compact.replace(',', '.');
-  if (!/^-?\d*(?:\.\d*)?$/.test(normalized)) return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
+/**
+ * Política de parsing monetario para el locale visual es-CO. Determinista:
+ *
+ *  - Espacios y símbolos de moneda ($, €, …) se eliminan: nunca llegan al
+ *    valor canónico. Cualquier otro carácter no numérico rechaza el keystroke
+ *    (el campo controlado no cambia).
+ *  - ',' es SIEMPRE decimal (nunca agrupador). Más de un ',' → rechazado.
+ *  - Varios '.' → todos agrupadores:  12.000.000 → 12000000
+ *  - Un solo '.' con exactamente 3 dígitos después → agrupador:
+ *      1.500 → 1500        (intención agrupadora, contexto monetario es-CO)
+ *  - Un solo '.' con otra cantidad de dígitos → decimal:
+ *      1,5 o 1.5 → 1.5      (decimales permitidos: format admite 8 fracciones)
+ *  - '.' + ',': los '.' se eliminan y la ',' es decimal (1.500,50 → 1500.5).
+ *  - Signo '-' inicial solo si `allowNegative` (sign) lo permite; si no, el
+ *    keystroke se rechaza. Un '-' a medias conserva el draft sin emitir.
+ *  - '' → emite 0 (contrato numérico actual de MoneyField; paridad con V1).
+ */
+const CURRENCY_SYMBOLS = /[$€£¥¢₡₱₲₿]/g;
+const NUMERIC_BODY = /^\d*(?:\.\d*)?$/;
+
+type MoneyParseOutcome = { draft: string; value: number | null };
+
+const parseMoneyDraft = (raw: string, allowNegative: boolean): MoneyParseOutcome | null => {
+  const compact = raw.replace(/[\s\u00A0]/g, '').replace(CURRENCY_SYMBOLS, '');
+  if (compact === '') return { draft: '', value: 0 };
+  if (compact === ',' || compact === '.') return { draft: compact, value: 0 };
+  if (compact === '-') return allowNegative ? { draft: '-', value: null } : null;
+
+  const negative = compact.startsWith('-');
+  if (negative && !allowNegative) return null;
+  const body = negative ? compact.slice(1) : compact;
+  if (body.includes('-')) return null;
+
+  const commas = (body.match(/,/g) || []).length;
+  if (commas > 1) return null;
+
+  let normalized: string;
+  if (commas === 1) {
+    normalized = body.replace(/\./g, '').replace(',', '.');
+  } else {
+    const dots = (body.match(/\./g) || []).length;
+    if (dots === 0) {
+      normalized = body;
+    } else if (dots === 1) {
+      const fraction = body.split('.')[1] || '';
+      normalized = fraction.length === 3 ? body.replace('.', '') : body;
+    } else {
+      normalized = body.replace(/\./g, '');
+    }
+  }
+
+  if (!NUMERIC_BODY.test(normalized)) return null;
+  const magnitude = Number(normalized);
+  if (!Number.isFinite(magnitude)) return null;
+  const value = negative ? -magnitude : magnitude;
+  return { draft: compact, value: value === 0 ? 0 : value };
 };
 
 export type MoneyFieldProps = {
@@ -85,12 +130,17 @@ export type MoneyFieldProps = {
 };
 
 export function MoneyField({ id, label, value, onChange, currency, hint, error, disabled, allowNegative = false }: MoneyFieldProps) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(String(value));
+  // null → presentación formateada; string → representación editable/canónica.
+  const [draft, setDraft] = useState<string | null>(null);
+  const lastEmitted = useRef(value);
 
+  // Cambios externos del contrato re-sincronizan la presentación; los
+  // cambios que nosotros mismos emitimos conservan el draft en edición.
   useEffect(() => {
-    if (!editing) setDraft(String(value));
-  }, [editing, value]);
+    if (value !== lastEmitted.current) setDraft(null);
+    lastEmitted.current = value;
+  }, [value]);
+
   const describedBy = [hint ? `${id}-hint` : null, error ? `${id}-error` : null].filter(Boolean).join(' ') || undefined;
 
   return (
@@ -104,19 +154,21 @@ export function MoneyField({ id, label, value, onChange, currency, hint, error, 
           type="text"
           inputMode="decimal"
           className="min-w-0 flex-1 bg-transparent px-3 py-2 text-right text-sm font-semibold tabular-nums text-[var(--a-text)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
-          value={editing ? draft : formatMoney(value)}
+          value={draft !== null ? draft : formatMoney(value)}
           disabled={disabled}
           aria-describedby={describedBy}
           aria-invalid={Boolean(error) || undefined}
-          onFocus={() => { setDraft(String(value)); setEditing(true); }}
+          onFocus={() => setDraft(String(value))}
           onChange={(event) => {
-            const next = event.target.value;
-            const parsed = parseMoneyDraft(next, allowNegative);
-            if (parsed === null) return;
-            setDraft(next);
-            onChange(parsed);
+            const outcome = parseMoneyDraft(event.target.value, allowNegative);
+            if (!outcome) return; // keystroke inválido: el controlado no cambia
+            setDraft(outcome.draft);
+            if (outcome.value !== null) {
+              lastEmitted.current = outcome.value;
+              onChange(outcome.value);
+            }
           }}
-          onBlur={() => setEditing(false)}
+          onBlur={() => setDraft(null)}
         />
       </div>
     </FieldFrame>
@@ -127,7 +179,12 @@ export type MetricInputProps = {
   id: string;
   label: string;
   value: number;
-  onChange: (value: number) => void;
+  /**
+   * Emite '' cuando el usuario vacía el campo: el vacío se conserva en el
+   * contrato y los handlers existentes lo convierten con sus reglas actuales
+   * (Number(x || …)), por lo que los payloads finales no cambian.
+   */
+  onChange: (value: number | '') => void;
   unit: string;
   hint?: string;
   error?: string;
@@ -139,6 +196,17 @@ export type MetricInputProps = {
 };
 
 export function MetricInput({ id, label, value, onChange, unit, hint, error, min, max, step, disabled, allowNegative = false }: MetricInputProps) {
+  // null → presentación del contrato; string → draft (incluye '' sticky).
+  const [draft, setDraft] = useState<string | null>(null);
+  const lastEmitted = useRef<number | ''>(value);
+
+  useEffect(() => {
+    // El contrato consumidor envuelve con Number(): Number('') === 0.
+    const expected = lastEmitted.current === '' ? 0 : lastEmitted.current;
+    if (value !== expected) setDraft(null);
+    lastEmitted.current = value;
+  }, [value]);
+
   const describedBy = [hint ? `${id}-hint` : null, error ? `${id}-error` : null].filter(Boolean).join(' ') || undefined;
   return (
     <FieldFrame id={id} label={label} hint={hint} error={error}>
@@ -148,7 +216,7 @@ export function MetricInput({ id, label, value, onChange, unit, hint, error, min
           type="number"
           inputMode="decimal"
           className="min-w-0 flex-1 bg-transparent px-3 py-2 text-right text-sm font-semibold tabular-nums text-[var(--a-text)] outline-none disabled:cursor-not-allowed disabled:opacity-60"
-          value={value}
+          value={draft !== null ? draft : String(value)}
           min={min}
           max={max}
           step={step}
@@ -156,10 +224,21 @@ export function MetricInput({ id, label, value, onChange, unit, hint, error, min
           aria-describedby={describedBy}
           aria-invalid={Boolean(error) || undefined}
           onChange={(event) => {
-            const next = Number(event.target.value);
+            const raw = event.target.value;
+            if (raw === '') {
+              // Usuario vació el campo: conserva vacío (F-04), no emite 0.
+              setDraft('');
+              lastEmitted.current = '';
+              onChange('');
+              return;
+            }
+            const next = Number(raw);
             if (!Number.isFinite(next) || (!allowNegative && next < 0)) return;
+            setDraft(raw);
+            lastEmitted.current = next;
             onChange(next);
           }}
+          onBlur={() => setDraft((current) => (current === '' ? '' : null))}
         />
         <span className="flex items-center border-l border-[var(--a-line)] bg-[var(--a-surface)] px-3 text-[11px] font-bold text-[var(--a-secondary)]" aria-hidden="true">
           {unit}

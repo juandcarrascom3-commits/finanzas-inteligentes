@@ -1,15 +1,20 @@
 .aetheris-lab {
-  --a-bg: #0a1322;
+  /* Escalera espacial ascendente (V1.1): luminancia monótona creciente.
+     bg 0.0040 → canvas 0.0101 → surface 0.0170 → elevated 0.0276
+     → floating ~0.0335 (compuesto) → inspector ~0.0397 (compuesto). */
+  --a-bg: #070d18;
   --a-canvas: #0e1a2b;
   --a-surface: #152438;
   --a-elevated: #1c2f49;
-  --a-floating: rgba(24, 40, 64, 0.9);
-  --a-inspector: rgba(26, 44, 70, 0.96);
+  --a-floating: rgba(35, 55, 83, 0.9);
+  --a-inspector: rgba(38, 58, 88, 0.96);
   --a-line: rgba(200, 218, 240, 0.14);
   --a-line-strong: rgba(200, 218, 240, 0.26);
   --a-text: #eef4f8;
   --a-secondary: #aab8c5;
-  --a-muted: #7f8fa2;
+  /* AA en TODAS las superficies donde vive a-meta/kicker, incluidas las más
+     claras de la escalera (floating ~5.1:1, inspector ~4.7:1, elevated ~5.4:1). */
+  --a-muted: #96a6b9;
   --a-brand: #8ab4ff;
   --a-positive: #69d59d;
   --a-negative: #ff7f8f;
