@@ -55,8 +55,16 @@ const dataAreaClass =
 const dataSelectClass =
   'min-h-10 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] transition-colors focus:border-[var(--a-brand)] focus:outline-none';
 
+// Celda de evidencia tokenizada (grupos compactos dentro del dock eToro).
+const dataEvidenceClass =
+  'rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2 text-xs';
+
+// Banner de advertencia tokenizado (evidencia eToro: gates/history/warnings).
+const dataWarningClass =
+  'rounded-[var(--a-radius-sm)] border border-[var(--a-warning)] bg-[var(--a-canvas)] p-2 text-xs text-[var(--a-warning)]';
+
 // Herramienta activa en ToolSurfaceDock (una a la vez; estado local del tab).
-type DataTool = 'csv' | 'wallet' | null;
+type DataTool = 'csv' | 'wallet' | 'etoro' | null;
 
 export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   accounts,
@@ -115,6 +123,7 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   const [openTool, setOpenTool] = useState<DataTool>(null);
   const csvLauncherRef = useRef<HTMLButtonElement>(null);
   const walletLauncherRef = useRef<HTMLButtonElement>(null);
+  const etoroLauncherRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     onFetchWalletStatus().then(setWalletStatus).catch((err) => setFeedback(err.message));
@@ -510,7 +519,7 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
 
       <section className="a-surface p-5" aria-labelledby="data-tool-launcher-title">
         <h2 id="data-tool-launcher-title" className="a-page-kicker">Herramientas bajo demanda</h2>
-        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
           <Button
             ref={csvLauncherRef}
             variant={openTool === 'csv' ? 'operational' : 'quiet'}
@@ -531,93 +540,23 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
           >
             Wallet
           </Button>
+          <Button
+            ref={etoroLauncherRef}
+            variant={openTool === 'etoro' ? 'operational' : 'quiet'}
+            aria-pressed={openTool === 'etoro'}
+            aria-controls="data-etoro-dock"
+            onClick={() => setOpenTool((current) => current === 'etoro' ? null : 'etoro')}
+            className="h-auto min-h-11 justify-start text-left"
+          >
+            eToro
+          </Button>
         </div>
       </section>
 
       <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-          <div>
-            <h3 className="text-sm font-bold text-white">eToro read-only</h3>
-            <p className="text-xs text-gray-400">
-              Fuente REAL solo lectura para inversión. Keys en backend: <span className={etoroStatus?.configured ? 'text-emerald-300' : 'text-amber-300'}>{etoroStatus?.configured ? 'configuradas' : 'no configuradas'}</span>
-              {etoroStatus?.environment ? ` · ${etoroStatus.environment}` : ''}
-              {etoroStatus?.last_success_at ? ` · ultimo import: ${etoroStatus.last_success_at}` : ''}
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <button disabled={etoroBusy} onClick={runEtoroTest} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Probar</button>
-            <button disabled={etoroBusy || !etoroStatus?.configured} onClick={previewEtoro} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 text-xs">Preview</button>
-            <button disabled={etoroBusy || !etoroPreview || !etoroPreview.import_enabled || etoroPreview.history_status !== 'READY' || (etoroPreview.local_conflict_count ?? 0) > 0} onClick={importEtoro} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold">Confirmar importación</button>
-          </div>
-        </div>
-        <div className="text-xs text-gray-400">
-          Estado: <span className="text-gray-200">{etoroStatus?.status || 'sin leer'}</span>
-          {etoroStatus?.last_error ? <span className="text-red-300"> · {etoroStatus.last_error}</span> : null}
-        </div>
+        <h3 className="text-sm font-bold text-white">eToro read-only</h3>
         {etoroPreview && (
           <div className="space-y-3">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Posiciones</div><div className="text-white font-bold">{etoroPreview.positions_found}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Operaciones</div><div className="text-white font-bold">{etoroPreview.operations_found ?? 'No evaluado'}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Importables</div><div className="text-emerald-300 font-bold">{etoroPreview.ready_to_import_count ?? etoroPreview.new_count}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Duplicadas</div><div className="text-amber-300 font-bold">{etoroPreview.duplicate_count}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rechazadas</div><div className="text-red-300 font-bold">{etoroPreview.rejected_count}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Sin mapping</div><div className="text-amber-300 font-bold">{etoroPreview.unmapped_count}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Unsupported</div><div className="text-red-300 font-bold">{etoroPreview.unsupported_count}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Conflictos</div><div className="text-red-300 font-bold">{etoroPreview.local_conflict_count ?? 0}</div></div>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Updates</div><div className="text-white font-bold">{etoroPreview.update_candidate_count ?? 0}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Periodo</div><div className="text-white">{etoroPreview.period?.from || '-'} / {etoroPreview.period?.to || '-'}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">FX faltante</div><div className="text-amber-300 font-bold">{etoroPreview.missing_fx?.join(', ') || '-'}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Ambiente</div><div className="text-white font-bold">{etoroPreview.environment_label || `ETORO ${etoroPreview.environment.toUpperCase()}`}</div></div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Snapshot</div><div className="text-white font-bold">{etoroPreview.snapshot_status || '-'}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Historial</div><div className="text-amber-300 font-bold">{etoroPreview.history_status || 'NOT_AVAILABLE'}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">PnL cuenta</div><div className="text-white font-bold">{etoroPreview.snapshot?.account_pnl_reconciliation?.status || '-'}</div></div>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Preview</div><div className={etoroPreview.preview_valid ? 'text-emerald-300 font-bold' : 'text-red-300 font-bold'}>{etoroPreview.preview_valid ? 'VALIDO' : 'STALE'}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Gates</div><div className={etoroPreview.import_gates?.status === 'PASS' ? 'text-emerald-300 font-bold' : 'text-amber-300 font-bold'}>{etoroPreview.import_gates?.status || '-'}</div></div>
-              <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Backup/import</div><div className="text-white font-bold">{etoroPreview.backup?.created ? 'BACKUP OK' : etoroPreview.import_status || '-'}</div></div>
-            </div>
-            {etoroPreview.import_gates?.failures?.length ? (
-              <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
-                {etoroPreview.import_gates.failures.join(' · ')}
-              </div>
-            ) : null}
-            {etoroPreview.history_summary && (
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-xs">
-                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Rows history</div><div className="text-white font-bold">{etoroPreview.history_summary.rows_downloaded ?? etoroPreview.history_summary.rows ?? 0}</div></div>
-                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Compatibles</div><div className="text-emerald-300 font-bold">{etoroPreview.history_summary.compatible ?? 0}</div></div>
-                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Parciales</div><div className="text-amber-300 font-bold">{etoroPreview.history_summary.partial ?? 0}</div></div>
-                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Conflictos ID</div><div className="text-red-300 font-bold">{etoroPreview.history_summary.identity_conflicts ?? 0}</div></div>
-                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Stop</div><div className="text-gray-200 font-bold">{etoroPreview.history_summary.stop_reason || '-'}</div></div>
-              </div>
-            )}
-            {etoroPreview.history_status !== 'READY' && (
-              <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
-                Historial eToro no disponible/no validado todavía. La importación permanece deshabilitada y no se muestran falsos 0 históricos.
-              </div>
-            )}
-            {etoroPreview.history_status === 'READY' && !etoroPreview.import_enabled && (
-              <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
-                Historial eToro disponible en modo dry-run. La importación real permanece deshabilitada en esta fase.
-              </div>
-            )}
-            {etoroPreview.snapshot && (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
-                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Direct</div><div className="text-white">{etoroPreview.snapshot.direct_summary?.positions ?? 0} posiciones · PnL {money(etoroPreview.snapshot.direct_summary?.unrealized_pnl ?? 0)}</div></div>
-                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">Mirrors</div><div className="text-white">{etoroPreview.snapshot.mirror_summary?.mirrors ?? 0} mirrors · {etoroPreview.snapshot.mirror_summary?.internal_positions ?? 0} internas</div></div>
-                <div className="bg-gray-900/60 rounded-lg p-2"><div className="text-gray-500">PnL reconstruido</div><div className="text-white">{money(etoroPreview.snapshot.account_pnl_reconciliation?.reconstructed_total_pnl ?? 0)}</div></div>
-              </div>
-            )}
-            {etoroPreview.optional_warnings?.length ? (
-              <div className="text-xs text-amber-200 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
-                {etoroPreview.optional_warnings.slice(0, 3).map((warning) => <div key={warning}>{warning}</div>)}
-              </div>
-            ) : null}
             {etoroPreview.mapping_suggestions?.length ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
@@ -842,6 +781,97 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
                 <InlineMetric label="Rango" value={`${walletPreview.date_range?.from || '-'} / ${walletPreview.date_range?.to || '-'}`} />
                 <InlineMetric label="Cuentas nuevas" value={String(walletPreview.new_accounts)} />
                 <InlineMetric label="Fuente" value="BUDGETBAKERS" />
+              </div>
+            )}
+          </div>
+        </ToolSurfaceDock>
+      )}
+      {openTool === 'etoro' && (
+        <ToolSurfaceDock
+          id="data-etoro-dock"
+          title="eToro read-only"
+          description="Estado, preview e importación de la fuente eToro."
+          triggerRef={etoroLauncherRef}
+          onClose={() => setOpenTool(null)}
+        >
+          <div className="space-y-4">
+            <p className="a-meta">
+              Fuente REAL solo lectura para inversión. Keys en backend:{' '}
+              <span className={etoroStatus?.configured ? 'text-[var(--a-positive)]' : 'text-[var(--a-warning)]'}>{etoroStatus?.configured ? 'configuradas' : 'no configuradas'}</span>
+              {etoroStatus?.environment ? ` · ${etoroStatus.environment}` : ''}
+              {etoroStatus?.last_success_at ? ` · ultimo import: ${etoroStatus.last_success_at}` : ''}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="operational" disabled={etoroBusy} onClick={runEtoroTest}>Probar</Button>
+              <Button variant="quiet" disabled={etoroBusy || !etoroStatus?.configured} onClick={previewEtoro}>Preview</Button>
+              <Button variant="primary" disabled={etoroBusy || !etoroPreview || !etoroPreview.import_enabled || etoroPreview.history_status !== 'READY' || (etoroPreview.local_conflict_count ?? 0) > 0} onClick={importEtoro}>Confirmar importación</Button>
+            </div>
+            <div className="a-meta">
+              Estado: <span className="text-[var(--a-text)]">{etoroStatus?.status || 'sin leer'}</span>
+              {etoroStatus?.last_error ? <span className="text-[var(--a-negative)]"> · {etoroStatus.last_error}</span> : null}
+            </div>
+            {etoroPreview && (
+              <div className="max-h-[70vh] space-y-3 overflow-y-auto pr-1">
+                <div className="grid grid-cols-2 gap-2">
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Posiciones</div><div className="text-[var(--a-text)] font-bold">{etoroPreview.positions_found}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Operaciones</div><div className="text-[var(--a-text)] font-bold">{etoroPreview.operations_found ?? 'No evaluado'}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Importables</div><div className="text-[var(--a-positive)] font-bold">{etoroPreview.ready_to_import_count ?? etoroPreview.new_count}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Duplicadas</div><div className="text-[var(--a-warning)] font-bold">{etoroPreview.duplicate_count}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Rechazadas</div><div className="text-[var(--a-negative)] font-bold">{etoroPreview.rejected_count}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Sin mapping</div><div className="text-[var(--a-warning)] font-bold">{etoroPreview.unmapped_count}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Unsupported</div><div className="text-[var(--a-negative)] font-bold">{etoroPreview.unsupported_count}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Conflictos</div><div className="text-[var(--a-negative)] font-bold">{etoroPreview.local_conflict_count ?? 0}</div></div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Updates</div><div className="text-[var(--a-text)] font-bold">{etoroPreview.update_candidate_count ?? 0}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Periodo</div><div className="text-[var(--a-text)]">{etoroPreview.period?.from || '-'} / {etoroPreview.period?.to || '-'}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">FX faltante</div><div className="text-[var(--a-warning)] font-bold">{etoroPreview.missing_fx?.join(', ') || '-'}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Ambiente</div><div className="text-[var(--a-text)] font-bold">{etoroPreview.environment_label || `ETORO ${etoroPreview.environment.toUpperCase()}`}</div></div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Snapshot</div><div className="text-[var(--a-text)] font-bold">{etoroPreview.snapshot_status || '-'}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Historial</div><div className="text-[var(--a-warning)] font-bold">{etoroPreview.history_status || 'NOT_AVAILABLE'}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">PnL cuenta</div><div className="text-[var(--a-text)] font-bold">{etoroPreview.snapshot?.account_pnl_reconciliation?.status || '-'}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Preview</div><div className={etoroPreview.preview_valid ? 'text-[var(--a-positive)] font-bold' : 'text-[var(--a-negative)] font-bold'}>{etoroPreview.preview_valid ? 'VALIDO' : 'STALE'}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Gates</div><div className={etoroPreview.import_gates?.status === 'PASS' ? 'text-[var(--a-positive)] font-bold' : 'text-[var(--a-warning)] font-bold'}>{etoroPreview.import_gates?.status || '-'}</div></div>
+                  <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Backup/import</div><div className="text-[var(--a-text)] font-bold">{etoroPreview.backup?.created ? 'BACKUP OK' : etoroPreview.import_status || '-'}</div></div>
+                </div>
+                {etoroPreview.import_gates?.failures?.length ? (
+                  <div className={dataWarningClass}>
+                    {etoroPreview.import_gates.failures.join(' · ')}
+                  </div>
+                ) : null}
+                {etoroPreview.history_summary && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Rows history</div><div className="text-[var(--a-text)] font-bold">{etoroPreview.history_summary.rows_downloaded ?? etoroPreview.history_summary.rows ?? 0}</div></div>
+                    <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Compatibles</div><div className="text-[var(--a-positive)] font-bold">{etoroPreview.history_summary.compatible ?? 0}</div></div>
+                    <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Parciales</div><div className="text-[var(--a-warning)] font-bold">{etoroPreview.history_summary.partial ?? 0}</div></div>
+                    <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Conflictos ID</div><div className="text-[var(--a-negative)] font-bold">{etoroPreview.history_summary.identity_conflicts ?? 0}</div></div>
+                    <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Stop</div><div className="text-[var(--a-secondary)] font-bold">{etoroPreview.history_summary.stop_reason || '-'}</div></div>
+                  </div>
+                )}
+                {etoroPreview.history_status !== 'READY' && (
+                  <div className={dataWarningClass}>
+                    Historial eToro no disponible/no validado todavía. La importación permanece deshabilitada y no se muestran falsos 0 históricos.
+                  </div>
+                )}
+                {etoroPreview.history_status === 'READY' && !etoroPreview.import_enabled && (
+                  <div className={dataWarningClass}>
+                    Historial eToro disponible en modo dry-run. La importación real permanece deshabilitada en esta fase.
+                  </div>
+                )}
+                {etoroPreview.snapshot && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Direct</div><div className="text-[var(--a-text)]">{etoroPreview.snapshot.direct_summary?.positions ?? 0} posiciones · PnL {money(etoroPreview.snapshot.direct_summary?.unrealized_pnl ?? 0)}</div></div>
+                    <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">Mirrors</div><div className="text-[var(--a-text)]">{etoroPreview.snapshot.mirror_summary?.mirrors ?? 0} mirrors · {etoroPreview.snapshot.mirror_summary?.internal_positions ?? 0} internas</div></div>
+                    <div className={dataEvidenceClass}><div className="text-[var(--a-muted)]">PnL reconstruido</div><div className="text-[var(--a-text)]">{money(etoroPreview.snapshot.account_pnl_reconciliation?.reconstructed_total_pnl ?? 0)}</div></div>
+                  </div>
+                )}
+                {etoroPreview.optional_warnings?.length ? (
+                  <div className={dataWarningClass}>
+                    {etoroPreview.optional_warnings.slice(0, 3).map((warning) => <div key={warning}>{warning}</div>)}
+                  </div>
+                ) : null}
               </div>
             )}
           </div>
