@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Account, Asset, BackupResult, BackupValidation, BudgetBakersPreview, BudgetBakersStatus, Category, CsvImportResult, DataSourceInfo, EtoroMappingSuggestion, EtoroPreview, EtoroStatus, MappingConfig, ReconciliationSummary, SourceMapping, Transaction } from '../../types';
+import { Button, Field } from '../../aetheris/controls';
 
 interface PersonalDataTabProps {
   accounts: Account[];
@@ -366,19 +367,42 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
   };
 
   return (
-    <div className="space-y-5">
-      <div className="bg-[#111827] border border-gray-800 rounded-xl p-4 text-xs text-gray-300 flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-        <span>Fuente activa: <strong className={dataSource?.mode === 'REAL' ? 'text-emerald-400' : 'text-amber-300'}>{dataSource?.mode || 'DEMO'}</strong></span>
-        <span className="font-mono text-gray-500 truncate">{dataSource?.db_path}</span>
-        <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
-          <input className={`${inputClass} min-w-0 sm:min-w-80`} placeholder="Ruta de backup .db para validar/restaurar" value={backupPath} onChange={(e) => setBackupPath(e.target.value)} />
-          <button onClick={backup} className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 border border-gray-700 whitespace-nowrap">Exportar backup</button>
-          <button disabled={!backupPath} onClick={validateBackup} className="px-3 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-50 text-gray-200 border border-gray-700 whitespace-nowrap">Validar</button>
-          <button disabled={!backupPath} onClick={restoreBackup} className="px-3 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 disabled:opacity-50 text-red-200 border border-red-500/30 whitespace-nowrap">Restaurar</button>
-        </div>
-      </div>
+    <section className="a-canvas a-enter space-y-5">
+      <header>
+        <div className="a-page-kicker">Datos</div>
+        <h1 className="a-page-title">Centro de información</h1>
+        <p className="a-page-subtitle">Fuentes, estado, integridad y gestión de los datos financieros.</p>
+      </header>
 
-      {feedback && <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded-xl p-3 text-xs">{feedback}</div>}
+      <section className="a-surface p-5" aria-labelledby="data-source-status-title">
+        <h2 id="data-source-status-title" className="a-page-kicker">Estado de la fuente</h2>
+        <div className="mt-3 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0 space-y-1">
+            <p className="a-meta">
+              Fuente activa:{' '}
+              <strong className="font-semibold text-[var(--a-text)]">{dataSource?.mode || 'DEMO'}</strong>
+            </p>
+            <p className="a-meta break-all">{dataSource?.db_path}</p>
+          </div>
+          <div className="flex flex-col gap-3 sm:min-w-80 md:items-end">
+            <Field
+              id="data-backup-path"
+              label="Ruta de backup .db para validar/restaurar"
+              value={backupPath}
+              onChange={setBackupPath}
+            />
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button variant="operational" onClick={backup} className="whitespace-nowrap">Exportar backup</Button>
+              <Button variant="quiet" disabled={!backupPath} onClick={validateBackup} className="whitespace-nowrap">Validar</Button>
+              <Button variant="negative" disabled={!backupPath} onClick={restoreBackup} className="whitespace-nowrap">Restaurar</Button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {feedback && (
+        <div role="status" className="a-surface p-3 text-xs text-[var(--a-secondary)]">{feedback}</div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <section className="bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3">
@@ -729,6 +753,6 @@ export const PersonalDataTab: React.FC<PersonalDataTabProps> = ({
           </div>
         </div>
       </section>
-    </div>
+    </section>
   );
 };
