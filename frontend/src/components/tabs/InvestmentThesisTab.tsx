@@ -1,6 +1,10 @@
-import React, { useState } from 'react';
-import { Shield, Lock, Unlock, CheckCircle2, AlertTriangle, Star, HelpCircle, ArrowRight, Play } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Lock, Unlock, CheckCircle2, AlertTriangle, Star, Play } from 'lucide-react';
+import { Button, Field, MoneyField } from '../../aetheris/controls';
+import { DataState } from '../../aetheris/primitives';
+import { ToolSurfaceDock } from '../../aetheris/ToolSurfaceDock';
 import { InvestmentThesis, Asset } from '../../types';
+import type { InvestTool } from './WealthTab';
 
 interface InvestmentThesisTabProps {
   theses: InvestmentThesis[];
@@ -8,6 +12,9 @@ interface InvestmentThesisTabProps {
   onSaveThesis: (thesis: Partial<InvestmentThesis>) => Promise<void>;
   onSimulatePurchase: (ticker: string, amountUsd: number) => Promise<any>;
   selectedTickerForSim?: string;
+  openTool: InvestTool | null;
+  onOpenTool: (tool: InvestTool | null) => void;
+  thesisLauncherRef: React.RefObject<HTMLButtonElement>;
 }
 
 export const InvestmentThesisTab: React.FC<InvestmentThesisTabProps> = ({
@@ -15,19 +22,23 @@ export const InvestmentThesisTab: React.FC<InvestmentThesisTabProps> = ({
   assets,
   onSaveThesis,
   onSimulatePurchase,
-  selectedTickerForSim
+  selectedTickerForSim,
+  openTool,
+  onOpenTool,
+  thesisLauncherRef
 }) => {
+  // Selección honesta: contexto real si existe; si no, vacío (sin ticker inventado).
   const [selectedTicker, setSelectedTicker] = useState<string>(
-    selectedTickerForSim || (theses.length > 0 ? theses[0].ticker : 'NVDA')
+    selectedTickerForSim || (theses.length > 0 ? theses[0].ticker : '')
   );
 
   // Active thesis or empty template
   const currentThesis = theses.find((t) => t.ticker === selectedTicker);
 
   const [thesisText, setThesisText] = useState<string>(currentThesis?.thesis_text || '');
-  const [valuationGrade, setValuationGrade] = useState<number>(currentThesis?.valuation_grade || 4);
+  const [valuationGrade, setValuationGrade] = useState<number>(currentThesis?.valuation_grade ?? 3);
   const [timingContext, setTimingContext] = useState<string>(currentThesis?.timing_context || '');
-  const [safetyMargin, setSafetyMargin] = useState<number>(currentThesis?.safety_margin || 25.0);
+  const [safetyMargin, setSafetyMargin] = useState<number>(currentThesis?.safety_margin ?? 20.0);
 
   const [criteria, setCriteria] = useState<{
     knows_business_model: boolean;
@@ -36,14 +47,14 @@ export const InvestmentThesisTab: React.FC<InvestmentThesisTabProps> = ({
     timing_not_overbought: boolean;
     emotional_bias_checked: boolean;
   }>({
-    knows_business_model: currentThesis?.criteria_details?.knows_business_model ?? true,
-    debt_ebitda_healthy: currentThesis?.criteria_details?.debt_ebitda_healthy ?? true,
-    margin_safety_above_20: currentThesis?.criteria_details?.margin_safety_above_20 ?? (safetyMargin >= 20),
-    timing_not_overbought: currentThesis?.criteria_details?.timing_not_overbought ?? true,
+    knows_business_model: currentThesis?.criteria_details?.knows_business_model ?? false,
+    debt_ebitda_healthy: currentThesis?.criteria_details?.debt_ebitda_healthy ?? false,
+    margin_safety_above_20: currentThesis?.criteria_details?.margin_safety_above_20 ?? false,
+    timing_not_overbought: currentThesis?.criteria_details?.timing_not_overbought ?? false,
     emotional_bias_checked: currentThesis?.criteria_details?.emotional_bias_checked ?? false,
   });
 
-  const [simulationAmount, setSimulationAmount] = useState<number>(2000);
+  const [simulationAmount, setSimulationAmount] = useState<number>(0);
   const [simulationResult, setSimulationResult] = useState<any>(null);
   const [simulationError, setSimulationError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -80,6 +91,15 @@ export const InvestmentThesisTab: React.FC<InvestmentThesisTabProps> = ({
       });
     }
   };
+
+  // Lanzamiento contextual: Posiciones/Watchlist/lanzador pueden reseleccionar
+  // el ticker mientras el dock está montado.
+  useEffect(() => {
+    if (selectedTickerForSim && selectedTickerForSim !== selectedTicker) {
+      handleTickerChange(selectedTickerForSim);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTickerForSim]);
 
   // Human safety evaluation logic
   const isAllCriteriaChecked =
@@ -127,31 +147,31 @@ export const InvestmentThesisTab: React.FC<InvestmentThesisTabProps> = ({
     }
   };
 
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
-      {/* LEFT COLUMN: Investing Pro Qualitative Thesis Form */}
-      <div className="lg:col-span-7 bg-[#111827] border border-gray-800 rounded-xl p-5 shadow-lg space-y-5">
-        <div className="flex items-center justify-between pb-3 border-b border-gray-800">
-          <div className="flex items-center space-x-2.5">
-            <div className="p-1.5 rounded-md bg-purple-500/10 text-purple-400">
-              <Shield className="w-4 h-4" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-white tracking-tight">
-                Tesis de Inversión &bull; Filtro Humano (Investing Pro)
-              </h3>
-              <p className="text-[11px] text-gray-400">
-                Variables cualitativas obligatorias y descarte de sesgos antes de ejecutar compras
-              </p>
-            </div>
-          </div>
+  if (openTool !== 'thesis') return null;
 
-          {/* Asset Picker */}
-          <select
-            value={selectedTicker}
-            onChange={(e) => handleTickerChange(e.target.value)}
-            className="bg-gray-900 border border-gray-700 rounded-lg px-3 py-1.5 text-xs font-bold text-emerald-400 focus:outline-none focus:border-emerald-500"
-          >
+  const selectClass = 'min-h-10 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] focus:border-[var(--a-brand)] focus:outline-none';
+  const criteriaItems: Array<{ key: keyof typeof criteria; label: React.ReactNode }> = [
+    { key: 'knows_business_model', label: <><strong>1. Comprensión del Negocio:</strong> Entiendo cómo monetiza y cuál es su ventaja competitiva (Moat).</> },
+    { key: 'debt_ebitda_healthy', label: <><strong>2. Solvencia Financiera:</strong> Ratio Deuda Neta / EBITDA &lt; 3.0x o estructura financiera blindada.</> },
+    { key: 'margin_safety_above_20', label: <><strong>3. Margen de Seguridad:</strong> El descuento sobre valor intrínseco estimado supera el 20%.</> },
+    { key: 'timing_not_overbought', label: <><strong>4. Timing Técnico:</strong> El precio no se encuentra en euforia parabólica ni sobrecompra extrema.</> },
+    { key: 'emotional_bias_checked', label: <><strong>5. Control de Sesgos:</strong> Tesis redactada con frialdad analítica, sin efecto rebaño (FOMO).</> },
+  ];
+
+  return (
+    <ToolSurfaceDock
+      id="invest-thesis-dock"
+      title="Tesis de Inversión · Filtro Humano"
+      description="Variables cualitativas obligatorias y descarte de sesgos antes de ejecutar compras."
+      triggerRef={thesisLauncherRef}
+      onClose={() => onOpenTool(null)}
+    >
+      <div className="space-y-5">
+        {/* Selector de activo */}
+        <div>
+          <label htmlFor="invest-thesis-asset" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Activo</label>
+          <select id="invest-thesis-asset" value={selectedTicker} onChange={(e) => handleTickerChange(e.target.value)} className={selectClass}>
+            {!selectedTicker && <option value="">Seleccionar activo…</option>}
             {assets.map((a) => (
               <option key={a.ticker} value={a.ticker}>
                 {a.ticker} - {a.name}
@@ -160,256 +180,200 @@ export const InvestmentThesisTab: React.FC<InvestmentThesisTabProps> = ({
           </select>
         </div>
 
-        {/* Qualitative Parameters Form */}
-        <div className="space-y-4">
-          {/* Valuation Grade (1 to 5 Stars) */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-300 mb-1.5 flex items-center justify-between">
-              <span>Calificación de Valuación (Investing Pro Fair Value)</span>
-              <span className="text-[11px] text-emerald-400 font-mono">
-                {valuationGrade === 5 ? 'Muy Infravalorado' : valuationGrade === 4 ? 'Infravalorado' : valuationGrade === 3 ? 'Valor Justo' : 'Sobrevalorado'}
-              </span>
-            </label>
-            <div className="flex items-center space-x-2">
-              {[1, 2, 3, 4, 5].map((star) => (
-                <button
-                  key={star}
-                  type="button"
-                  onClick={() => setValuationGrade(star)}
-                  className={`p-2 rounded-lg border transition-all ${
-                    star <= valuationGrade
-                      ? 'bg-amber-500/10 border-amber-500/40 text-amber-400'
-                      : 'bg-gray-900 border-gray-800 text-gray-600'
-                  }`}
-                >
-                  <Star className="w-4 h-4 fill-current" />
-                </button>
-              ))}
-              <span className="text-xs text-gray-400 font-mono ml-2">({valuationGrade}/5)</span>
-            </div>
-          </div>
-
-          {/* Margin of Safety % */}
-          <div>
-            <div className="flex justify-between items-center text-xs font-semibold text-gray-300 mb-1.5">
-              <span>Margen de Seguridad Deseado (%)</span>
-              <span className={`font-mono font-bold ${safetyMargin >= 20 ? 'text-emerald-400' : 'text-red-400'}`}>
-                {safetyMargin}% {safetyMargin < 20 && '(Mínimo 20% para desbloquear)'}
-              </span>
-            </div>
-            <input
-              type="range"
-              min="5"
-              max="50"
-              step="1"
-              value={safetyMargin}
-              onChange={(e) => {
-                const val = parseFloat(e.target.value);
-                setSafetyMargin(val);
-                setCriteria((prev) => ({ ...prev, margin_safety_above_20: val >= 20 }));
-              }}
-              className="w-full accent-emerald-500 bg-gray-900 cursor-pointer h-1.5 rounded-lg"
-            />
-          </div>
-
-          {/* Timing Context */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-300 mb-1.5">
-              Contexto de Timing &bull; Momento Técnico y Macro
-            </label>
-            <input
-              type="text"
-              placeholder="Ej: Consolidación tras corrección en media de 200 periodos; catalizador de resultados."
-              value={timingContext}
-              onChange={(e) => setTimingContext(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 font-sans"
-            />
-          </div>
-
-          {/* Qualitative Thesis Statement */}
-          <div>
-            <label className="block text-xs font-semibold text-gray-300 mb-1.5">
-              Cuerpo de la Tesis de Inversión (Hipótesis Fundamental)
-            </label>
-            <textarea
-              rows={3}
-              placeholder="Describa el foso defensivo (Moat), retorno esperado y riesgos del negocio..."
-              value={thesisText}
-              onChange={(e) => setThesisText(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-800 rounded-lg p-3 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500 leading-relaxed font-sans"
-            />
-          </div>
-
-          {/* Save Button */}
-          <div className="pt-2 flex justify-end">
-            <button
-              onClick={handleSave}
-              disabled={isSaving}
-              className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-md transition-all flex items-center gap-1.5"
-            >
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              <span>{isSaving ? 'Guardando...' : 'Guardar y Certificar Tesis'}</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* RIGHT COLUMN: 5-Point Safety Guardrail Checklist & Simulation Gatekeeper */}
-      <div className="lg:col-span-5 bg-[#111827] border border-gray-800 rounded-xl p-5 shadow-lg flex flex-col justify-between space-y-5">
-        <div>
-          {/* Header Guardrail Status */}
-          <div className="flex items-center justify-between pb-3 border-b border-gray-800 mb-4">
-            <div className="flex items-center space-x-2">
-              {isGuardrailPassed ? (
-                <div className="p-1.5 rounded-md bg-emerald-500/10 text-emerald-400">
-                  <Unlock className="w-4 h-4" />
-                </div>
-              ) : (
-                <div className="p-1.5 rounded-md bg-red-500/10 text-red-400">
-                  <Lock className="w-4 h-4" />
-                </div>
-              )}
+        {!selectedTicker ? (
+          <DataState
+            state="EMPTY"
+            title="Sin activo seleccionado"
+            detail="Elige un activo desde Posiciones o desde este selector para definir su tesis."
+          />
+        ) : (
+          <>
+            {/* ---------------------------------------------------------- */}
+            {/* TESIS cualitativa                                           */}
+            {/* ---------------------------------------------------------- */}
+            <div className="space-y-4">
+              {/* Valuation Grade (1 to 5 Stars) */}
               <div>
-                <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                  Filtro Humano: {selectedTicker}
-                </h4>
-                <p className="text-[10px] text-gray-400">
-                  {isGuardrailPassed ? 'Simulación Habilitada' : 'Operación Estrictamente Bloqueada'}
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[var(--a-secondary)]">Calificación de Valuación (Investing Pro Fair Value)</span>
+                  <span className="text-[11px] font-bold text-[var(--a-text)]">
+                    {valuationGrade === 5 ? 'Muy Infravalorado' : valuationGrade === 4 ? 'Infravalorado' : valuationGrade === 3 ? 'Valor Justo' : 'Sobrevalorado'}
+                  </span>
+                </div>
+                <div className="mt-2 flex items-center gap-2">
+                  {[1, 2, 3, 4, 5].map((star) => (
+                    <button
+                      key={star}
+                      type="button"
+                      onClick={() => setValuationGrade(star)}
+                      aria-label={`Calificación ${star} de 5`}
+                      aria-pressed={star <= valuationGrade}
+                      className={`min-h-10 min-w-10 rounded-[var(--a-radius-sm)] border p-2 transition-colors ${
+                        star <= valuationGrade
+                          ? 'border-[var(--a-brand)] bg-[var(--a-active)] text-[var(--a-brand)]'
+                          : 'border-[var(--a-line)] bg-[var(--a-canvas)] text-[var(--a-muted)] hover:bg-[var(--a-elevated)]'
+                      }`}
+                    >
+                      <Star className="h-4 w-4 fill-current" aria-hidden="true" />
+                    </button>
+                  ))}
+                  <span className="ml-1 text-xs tabular-nums text-[var(--a-secondary)]">({valuationGrade}/5)</span>
+                </div>
               </div>
-            </div>
 
-            <span className={`text-[10px] font-mono px-2 py-0.5 rounded border font-bold ${
-              isGuardrailPassed
-                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                : 'bg-red-500/10 text-red-400 border-red-500/30'
-            }`}>
-              {isGuardrailPassed ? 'DESBLOQUEADO' : 'BLOQUEADO'}
-            </span>
-          </div>
-
-          {/* 5 Mandatory Checkpoints */}
-          <div className="space-y-2.5">
-            <p className="text-[11px] text-gray-400 mb-2">
-              Para mitigar riesgos de capital, valide conscientemente los 5 filtros obligatorios:
-            </p>
-
-            <label className="flex items-start space-x-2.5 p-2 rounded-lg bg-gray-900/60 border border-gray-800 hover:border-gray-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={criteria.knows_business_model}
-                onChange={() => handleCheckboxToggle('knows_business_model')}
-                className="mt-0.5 accent-emerald-500 rounded"
-              />
-              <span className="text-[11px] text-gray-200">
-                <strong>1. Comprensión del Negocio:</strong> Entiendo cómo monetiza y cuál es su ventaja competitiva (Moat).
-              </span>
-            </label>
-
-            <label className="flex items-start space-x-2.5 p-2 rounded-lg bg-gray-900/60 border border-gray-800 hover:border-gray-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={criteria.debt_ebitda_healthy}
-                onChange={() => handleCheckboxToggle('debt_ebitda_healthy')}
-                className="mt-0.5 accent-emerald-500 rounded"
-              />
-              <span className="text-[11px] text-gray-200">
-                <strong>2. Solvencia Financiera:</strong> Ratio Deuda Neta / EBITDA &lt; 3.0x o estructura financiera blindada.
-              </span>
-            </label>
-
-            <label className="flex items-start space-x-2.5 p-2 rounded-lg bg-gray-900/60 border border-gray-800 hover:border-gray-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={criteria.margin_safety_above_20}
-                onChange={() => handleCheckboxToggle('margin_safety_above_20')}
-                className="mt-0.5 accent-emerald-500 rounded"
-              />
-              <span className="text-[11px] text-gray-200">
-                <strong>3. Margen de Seguridad:</strong> El descuento sobre valor intrínseco estimado supera el 20%.
-              </span>
-            </label>
-
-            <label className="flex items-start space-x-2.5 p-2 rounded-lg bg-gray-900/60 border border-gray-800 hover:border-gray-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={criteria.timing_not_overbought}
-                onChange={() => handleCheckboxToggle('timing_not_overbought')}
-                className="mt-0.5 accent-emerald-500 rounded"
-              />
-              <span className="text-[11px] text-gray-200">
-                <strong>4. Timing Técnico:</strong> El precio no se encuentra en euforia parabólica ni sobrecompra extrema.
-              </span>
-            </label>
-
-            <label className="flex items-start space-x-2.5 p-2 rounded-lg bg-gray-900/60 border border-gray-800 hover:border-gray-700 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={criteria.emotional_bias_checked}
-                onChange={() => handleCheckboxToggle('emotional_bias_checked')}
-                className="mt-0.5 accent-emerald-500 rounded"
-              />
-              <span className="text-[11px] text-gray-200">
-                <strong>5. Control de Sesgos:</strong> Tesis redactada con frialdad analítica, sin efecto rebaño (FOMO).
-              </span>
-            </label>
-          </div>
-        </div>
-
-        {/* Guardrail Enforcer & Purchase Simulator */}
-        <div className="pt-3 border-t border-gray-800">
-          {!isGuardrailPassed ? (
-            <div className="p-3 rounded-lg bg-red-500/10 border border-red-500/20 text-red-300 text-xs flex items-start space-x-2">
-              <AlertTriangle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
+              {/* Margin of Safety % */}
               <div>
-                <strong>Guardrail Activo:</strong> La simulación de órdenes de compra está estrictamente deshabilitada. Debe marcar los 5 criterios y asegurar un margen &ge; 20% para desbloquear la ejecución.
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-[var(--a-secondary)]">Margen de Seguridad Deseado (%)</span>
+                  <span className={`text-xs font-bold tabular-nums ${safetyMargin >= 20 ? 'text-[var(--a-positive)]' : 'text-[var(--a-negative)]'}`}>
+                    {safetyMargin}% {safetyMargin < 20 && '(Mínimo 20% para desbloquear)'}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="5"
+                  max="50"
+                  step="1"
+                  value={safetyMargin}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setSafetyMargin(val);
+                    setCriteria((prev) => ({ ...prev, margin_safety_above_20: val >= 20 }));
+                  }}
+                  aria-label="Margen de seguridad deseado"
+                  className="mt-2 w-full cursor-pointer accent-[var(--a-brand)]"
+                />
+              </div>
+
+              {/* Timing Context */}
+              <Field
+                id="invest-thesis-timing"
+                label="Contexto de Timing • Momento Técnico y Macro"
+                placeholder="Ej: Consolidación tras corrección en media de 200 periodos; catalizador de resultados."
+                value={timingContext}
+                onChange={setTimingContext}
+              />
+
+              {/* Qualitative Thesis Statement */}
+              <div>
+                <label htmlFor="invest-thesis-body" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">
+                  Cuerpo de la Tesis de Inversión (Hipótesis Fundamental)
+                </label>
+                <textarea
+                  id="invest-thesis-body"
+                  rows={3}
+                  placeholder="Describa el foso defensivo (Moat), retorno esperado y riesgos del negocio..."
+                  value={thesisText}
+                  onChange={(e) => setThesisText(e.target.value)}
+                  className="min-h-20 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3 text-xs leading-relaxed text-[var(--a-text)] placeholder:text-[var(--a-muted)] focus:border-[var(--a-brand)] focus:outline-none"
+                />
+              </div>
+
+              {/* Save Button */}
+              <div className="flex justify-end pt-1">
+                <Button variant="primary" onClick={handleSave} disabled={isSaving}>
+                  <span className="inline-flex items-center gap-1.5">
+                    <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    {isSaving ? 'Guardando...' : 'Guardar y Certificar Tesis'}
+                  </span>
+                </Button>
               </div>
             </div>
-          ) : (
-            <div className="space-y-3">
-              <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-xs flex items-center space-x-2">
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 flex-shrink-0" />
-                <span><strong>Filtro Humano Validado:</strong> Simulación de compra autorizada.</span>
+
+            {/* ---------------------------------------------------------- */}
+            {/* FILTRO HUMANO · guardrail + simulación                      */}
+            {/* ---------------------------------------------------------- */}
+            <div className="border-t border-[var(--a-line)] pt-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className={isGuardrailPassed ? 'text-[var(--a-positive)]' : 'text-[var(--a-negative)]'}>
+                    {isGuardrailPassed ? <Unlock className="h-4 w-4" aria-hidden="true" /> : <Lock className="h-4 w-4" aria-hidden="true" />}
+                  </span>
+                  <div className="min-w-0">
+                    <div className="text-xs font-bold uppercase tracking-wider text-[var(--a-text)]">Filtro Humano: {selectedTicker}</div>
+                    <div className="a-meta">{isGuardrailPassed ? 'Simulación Habilitada' : 'Operación Estrictamente Bloqueada'}</div>
+                  </div>
+                </div>
+                <span className={`shrink-0 rounded-full border border-[var(--a-line)] bg-[var(--a-canvas)] px-2 py-0.5 text-[10px] font-bold ${isGuardrailPassed ? 'text-[var(--a-positive)]' : 'text-[var(--a-negative)]'}`}>
+                  {isGuardrailPassed ? 'DESBLOQUEADO' : 'BLOQUEADO'}
+                </span>
               </div>
 
-              <div className="flex items-center space-x-2">
-                <div className="relative flex-1">
-                  <span className="absolute left-2.5 top-2 text-gray-500 font-mono text-xs">$</span>
-                  <input
-                    type="number"
-                    value={simulationAmount}
-                    onChange={(e) => setSimulationAmount(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-gray-900 border border-gray-700 rounded-lg pl-6 pr-3 py-1.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500"
-                    placeholder="Monto USD..."
-                  />
-                </div>
-                <button
-                  onClick={handleExecuteSimulation}
-                  className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-all flex items-center space-x-1.5 shadow"
-                >
-                  <Play className="w-3.5 h-3.5" />
-                  <span>Simular Orden</span>
-                </button>
+              {/* 5 Mandatory Checkpoints */}
+              <p className="a-meta mt-3">
+                Para mitigar riesgos de capital, valide conscientemente los 5 filtros obligatorios:
+              </p>
+              <div className="mt-2 space-y-2">
+                {criteriaItems.map((item) => (
+                  <label
+                    key={item.key}
+                    className="flex cursor-pointer items-start gap-2.5 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2 transition-colors hover:bg-[var(--a-hover)]"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={criteria[item.key]}
+                      onChange={() => handleCheckboxToggle(item.key)}
+                      className="mt-0.5 h-4 w-4 shrink-0 rounded accent-[var(--a-brand)]"
+                    />
+                    <span className="text-[11px] leading-[1.5] text-[var(--a-secondary)]">{item.label}</span>
+                  </label>
+                ))}
               </div>
 
-              {simulationResult && (
-                <div className="p-2.5 bg-gray-900/90 rounded-lg border border-emerald-500/30 text-[11px] font-mono space-y-1 text-gray-200">
-                  <div className="text-emerald-400 font-bold">Simulación Exitosa para {simulationResult.ticker}</div>
-                  <div>Capital a Invertir: ${simulationResult.simulated_capital_usd} USD</div>
-                  <div>Acciones Estimadas: {simulationResult.estimated_shares} unidades</div>
-                  <div>Certificado por Filtro Humano: Sí</div>
-                </div>
-              )}
+              {/* Guardrail Enforcer & Purchase Simulator */}
+              <div className="mt-4 border-t border-[var(--a-line)] pt-4">
+                {!isGuardrailPassed ? (
+                  <div className="rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3 text-xs text-[var(--a-negative)]">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                      <div>
+                        <strong>Guardrail Activo:</strong> La simulación de órdenes de compra está estrictamente deshabilitada. Debe marcar los 5 criterios y asegurar un margen &ge; 20% para desbloquear la ejecución.
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2.5 text-xs text-[var(--a-positive)]">
+                      <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span><strong>Filtro Humano Validado:</strong> Simulación de compra autorizada.</span>
+                    </div>
 
-              {simulationError && (
-                <div className="p-2.5 bg-red-500/10 rounded-lg border border-red-500/30 text-[11px] text-red-300">
-                  {simulationError}
-                </div>
-              )}
+                    <MoneyField
+                      id="invest-thesis-sim-amount"
+                      label="Monto de simulación"
+                      value={simulationAmount}
+                      onChange={setSimulationAmount}
+                      currency="USD"
+                    />
+
+                    <Button variant="operational" className="w-full" onClick={handleExecuteSimulation}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <Play className="h-3.5 w-3.5" aria-hidden="true" />
+                        Simular Orden
+                      </span>
+                    </Button>
+
+                    {simulationResult && (
+                      <div className="rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2.5 text-[11px] tabular-nums text-[var(--a-secondary)]">
+                        <div className="font-bold text-[var(--a-positive)]">Simulación Exitosa para {simulationResult.ticker}</div>
+                        <div>Capital a Invertir: ${simulationResult.simulated_capital_usd} USD</div>
+                        <div>Acciones Estimadas: {simulationResult.estimated_shares} unidades</div>
+                        <div>Certificado por Filtro Humano: Sí</div>
+                      </div>
+                    )}
+
+                    {simulationError && (
+                      <div className="rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2.5 text-[11px] text-[var(--a-negative)]">
+                        {simulationError}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
-          )}
-        </div>
+          </>
+        )}
       </div>
-    </div>
+    </ToolSurfaceDock>
   );
 };

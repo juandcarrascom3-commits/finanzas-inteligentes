@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Search, Filter, ArrowUpRight, ArrowDownRight, Eye, Shield, DollarSign } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight } from 'lucide-react';
+import { Field, SegmentedControl } from '../../aetheris/controls';
 import { Asset } from '../../types';
 
 interface AssetListTabProps {
@@ -49,78 +50,73 @@ export const AssetListTab: React.FC<AssetListTabProps> = ({
     .filter((a) => !a.is_watchlist)
     .reduce((acc, a) => acc + (a.market_value_usd || 0), 0);
 
-  return (
-    <div className="bg-[#111827] border border-gray-800 rounded-xl p-5 shadow-lg space-y-4">
-      {/* Header Controls: Search, Type filter, Portfolio vs Watchlist toggle */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3 pb-3 border-b border-gray-800">
-        <div className="flex items-center space-x-2">
-          {/* Portfolio vs Watchlist tabs */}
-          <div className="flex bg-gray-900 p-0.5 rounded-lg border border-gray-800 text-xs">
-            <button
-              onClick={() => setViewMode('PORTFOLIO')}
-              className={`px-3 py-1.5 rounded-md font-semibold transition-all ${
-                viewMode === 'PORTFOLIO' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'
-              }`}
-            >
-              Portafolio Activo
-            </button>
-            <button
-              onClick={() => setViewMode('WATCHLIST')}
-              className={`px-3 py-1.5 rounded-md font-semibold transition-all flex items-center gap-1.5 ${
-                viewMode === 'WATCHLIST' ? 'bg-purple-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'
-              }`}
-            >
-              <Eye className="w-3.5 h-3.5" />
-              Activos en Observación
-            </button>
-          </div>
-        </div>
+  const selectClass = 'min-h-10 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] focus:border-[var(--a-brand)] focus:outline-none';
 
-        <div className="flex flex-wrap items-center gap-2.5 w-full md:w-auto">
-          {/* Search Input */}
-          <div className="relative flex-1 md:w-56">
-            <Search className="w-3.5 h-3.5 absolute left-3 top-2.5 text-gray-500" />
-            <input
-              type="text"
-              placeholder="Buscar ticker, activo..."
+  return (
+    <section className="a-surface mt-5 p-5 space-y-4" aria-labelledby="invest-positions-title">
+      <div className="min-w-0">
+        <h2 id="invest-positions-title" className="text-lg font-bold text-[var(--a-text)]">Posiciones</h2>
+        <p className="a-meta mt-1">Cartera activa y activos en observación sobre datos locales.</p>
+      </div>
+
+      {/* Toolbar: vista · búsqueda · tipo */}
+      <div className="flex flex-col gap-3 border-b border-[var(--a-line)] pb-4 md:flex-row md:items-end md:justify-between">
+        <SegmentedControl
+          label="Vista"
+          value={viewMode}
+          options={[
+            { value: 'PORTFOLIO', label: 'Portafolio Activo' },
+            { value: 'WATCHLIST', label: 'Activos en Observación' },
+          ]}
+          onChange={setViewMode}
+        />
+
+        <div className="flex flex-wrap items-end gap-2.5">
+          <div className="min-w-0 md:w-64">
+            <Field
+              id="invest-asset-search"
+              label="Buscar"
+              placeholder="Ticker, activo o sector"
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-8 pr-3 py-1.5 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500"
+              onChange={setSearchTerm}
             />
           </div>
 
-          {/* Type Filter */}
-          <select
-            value={filterType}
-            onChange={(e) => setFilterType(e.target.value)}
-            className="bg-gray-900 border border-gray-800 rounded-lg px-2.5 py-1.5 text-xs text-gray-300 focus:outline-none focus:border-emerald-500"
-          >
-            <option value="ALL">Todos los Tipos</option>
-            <option value="Renta Variable">Renta Variable</option>
-            <option value="Efectivo">Efectivo</option>
-            <option value="Alternativos">Alternativos</option>
-          </select>
+          <div className="min-w-0">
+            <label htmlFor="invest-type-filter" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Tipo</label>
+            <select
+              id="invest-type-filter"
+              value={filterType}
+              onChange={(e) => setFilterType(e.target.value)}
+              className={selectClass}
+            >
+              <option value="ALL">Todos los Tipos</option>
+              <option value="Renta Variable">Renta Variable</option>
+              <option value="Efectivo">Efectivo</option>
+              <option value="Alternativos">Alternativos</option>
+            </select>
+          </div>
         </div>
       </div>
 
-      {/* Asset Grid Table */}
+      {/* Tabla de posiciones / watchlist */}
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead>
-            <tr className="border-b border-gray-800 text-gray-400 uppercase text-[10px] tracking-wider font-semibold">
-              <th className="py-3 px-3">Activo / Ticker</th>
-              <th className="py-3 px-3">Categoría &bull; Sector</th>
-              <th className="py-3 px-3 text-right">Precio Actual</th>
-              <th className="py-3 px-3 text-right">Precio Promedio Compra</th>
-              <th className="py-3 px-3 text-right">Ponderación %</th>
-              <th className="py-3 px-3 text-right">Retorno Total (P&amp;L)</th>
-              <th className="py-3 px-3 text-center">Acciones</th>
+            <tr className="border-b border-[var(--a-line)] text-[10px] uppercase tracking-wider font-semibold text-[var(--a-muted)]">
+              <th className="py-2.5 px-3">Activo / Ticker</th>
+              <th className="py-2.5 px-3">Categoría &bull; Sector</th>
+              <th className="py-2.5 px-3 text-right">Precio Actual</th>
+              <th className="py-2.5 px-3 text-right">Precio Promedio Compra</th>
+              <th className="py-2.5 px-3 text-right">Ponderación %</th>
+              <th className="py-2.5 px-3 text-right">Retorno Total (P&amp;L)</th>
+              <th className="py-2.5 px-3 text-center">Acciones</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-800/60 font-mono">
+          <tbody className="divide-y divide-[var(--a-line)]">
             {filteredAssets.length === 0 ? (
               <tr>
-                <td colSpan={7} className="py-8 text-center text-gray-500 text-xs font-sans">
+                <td colSpan={7} className="py-8 text-center text-[var(--a-muted)] text-xs">
                   No se encontraron activos con los filtros seleccionados.
                 </td>
               </tr>
@@ -135,35 +131,35 @@ export const AssetListTab: React.FC<AssetListTabProps> = ({
                   : '0.0';
 
                 return (
-                  <tr key={asset.ticker} className="hover:bg-gray-800/40 transition-colors">
+                  <tr key={asset.ticker} className="transition-colors hover:bg-[var(--a-hover)]">
                     {/* Ticker & Logo */}
-                    <td className="py-3 px-3 font-sans">
+                    <td className="py-2.5 px-3">
                       <div className="flex items-center space-x-2.5">
                         {asset.logo_url ? (
                           <img
                             src={asset.logo_url}
                             alt={asset.ticker}
-                            className="w-7 h-7 rounded-lg bg-gray-800 object-contain p-0.5 border border-gray-700"
+                            className="w-7 h-7 rounded-lg border border-[var(--a-line)] bg-[var(--a-canvas)] object-contain p-0.5"
                             onError={(e) => {
                               // Fallback if logo fails
                               (e.target as HTMLElement).style.display = 'none';
                             }}
                           />
                         ) : (
-                          <div className="w-7 h-7 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center font-bold text-xs">
+                          <div className="w-7 h-7 rounded-lg border border-[var(--a-line)] bg-[var(--a-canvas)] text-[var(--a-secondary)] flex items-center justify-center font-bold text-xs">
                             {asset.ticker.slice(0, 2)}
                           </div>
                         )}
                         <div>
-                          <div className="font-bold text-white flex items-center gap-1.5">
+                          <div className="font-bold text-[var(--a-text)] flex items-center gap-1.5">
                             {asset.ticker}
                             {isWatchlist && (
-                              <span className="text-[9px] font-mono px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
+                              <span className="rounded-full border border-[var(--a-line-strong)] bg-[var(--a-canvas)] px-1.5 py-0.5 text-[9px] font-bold text-[var(--a-analytical)]">
                                 Observación
                               </span>
                             )}
                           </div>
-                          <div className="text-[11px] text-gray-400 truncate max-w-[140px]">
+                          <div className="text-[11px] text-[var(--a-secondary)] truncate max-w-[140px]">
                             {asset.name}
                           </div>
                         </div>
@@ -171,51 +167,52 @@ export const AssetListTab: React.FC<AssetListTabProps> = ({
                     </td>
 
                     {/* Category & Sector */}
-                    <td className="py-3 px-3 font-sans">
-                      <div className="text-gray-200 font-medium text-xs">{asset.asset_type}</div>
-                      <div className="text-[10px] text-gray-400">{asset.sector} &bull; {asset.country}</div>
+                    <td className="py-2.5 px-3">
+                      <div className="text-[var(--a-text)] font-medium text-xs">{asset.asset_type}</div>
+                      <div className="text-[10px] text-[var(--a-secondary)]">{asset.sector} &bull; {asset.country}</div>
                     </td>
 
                     {/* Current Price */}
-                    <td className="py-3 px-3 text-right font-bold text-white">
+                    <td className="py-2.5 px-3 text-right font-bold text-[var(--a-text)] tabular-nums">
                       {formatPrice(asset.current_price, asset.currency)}
                     </td>
 
                     {/* Avg Buy Price */}
-                    <td className="py-3 px-3 text-right text-gray-300">
+                    <td className="py-2.5 px-3 text-right text-[var(--a-secondary)] tabular-nums">
                       {asset.avg_price > 0 ? formatPrice(asset.avg_price, asset.currency) : '—'}
                     </td>
 
                     {/* Allocation */}
-                    <td className="py-3 px-3 text-right font-sans">
-                      <span className="font-mono font-bold text-emerald-400">{allocationPct}%</span>
+                    <td className="py-2.5 px-3 text-right">
+                      <span className="font-bold text-[var(--a-text)] tabular-nums">{allocationPct}%</span>
                       {asset.target_allocation_pct && asset.target_allocation_pct > 0 && (
-                        <div className="text-[10px] text-gray-500 font-mono">Meta: {asset.target_allocation_pct}%</div>
+                        <div className="text-[10px] text-[var(--a-muted)] tabular-nums">Meta: {asset.target_allocation_pct}%</div>
                       )}
                     </td>
 
                     {/* Return Total P&L */}
-                    <td className="py-3 px-3 text-right">
+                    <td className="py-2.5 px-3 text-right">
                       {isWatchlist || asset.quantity === 0 ? (
-                        <span className="text-gray-500 text-[11px]">—</span>
+                        <span className="text-[var(--a-muted)] text-[11px]">—</span>
                       ) : (
                         <div>
-                          <div className={`font-bold flex items-center justify-end gap-0.5 ${isPositive ? 'text-emerald-400' : 'text-red-400'}`}>
+                          <div className={`font-bold flex items-center justify-end gap-0.5 tabular-nums ${isPositive ? 'text-[var(--a-positive)]' : 'text-[var(--a-negative)]'}`}>
                             {isPositive ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownRight className="w-3 h-3" />}
                             {isPositive ? '+' : ''}{pnlPct}%
                           </div>
-                          <div className="text-[10px] text-gray-400">
+                          <div className="text-[10px] text-[var(--a-secondary)] tabular-nums">
                             {privacyMode ? '••••' : `${isPositive ? '+' : ''}$${pnlUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`}
                           </div>
                         </div>
                       )}
                     </td>
 
-                    {/* Action Button: Simulate Purchase / Guardrail */}
-                    <td className="py-3 px-3 text-center font-sans">
+                    {/* Action: contextual thesis / simulation */}
+                    <td className="py-2.5 px-3 text-center">
                       <button
+                        type="button"
                         onClick={() => onSelectForSimulation(asset.ticker)}
-                        className="px-2.5 py-1 rounded bg-gray-800 hover:bg-emerald-600/20 hover:text-emerald-400 text-gray-300 border border-gray-700 hover:border-emerald-500/40 text-[11px] font-semibold transition-all"
+                        className="min-h-10 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-surface)] px-2.5 py-1.5 text-[11px] font-bold text-[var(--a-secondary)] transition-colors hover:bg-[var(--a-elevated)] [@media(pointer:coarse)]:min-h-11"
                       >
                         Simular / Tesis
                       </button>
@@ -227,6 +224,6 @@ export const AssetListTab: React.FC<AssetListTabProps> = ({
           </tbody>
         </table>
       </div>
-    </div>
+    </section>
   );
 };

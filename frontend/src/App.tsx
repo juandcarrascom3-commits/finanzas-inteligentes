@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Header } from './components/Header';
 import { AssetListTab } from './components/tabs/AssetListTab';
 import { InvestmentThesisTab } from './components/tabs/InvestmentThesisTab';
 import { WealthTab } from './components/tabs/WealthTab';
+import type { InvestTool } from './components/tabs/WealthTab';
 import { PersonalDataTab } from './components/tabs/PersonalDataTab';
 import { PlanningTab } from './components/tabs/PlanningTab';
 import { AetherisShell, AetherisTab } from './aetheris/AetherisShell';
@@ -86,6 +87,9 @@ export const App: React.FC = () => {
   const [privacyMode, setPrivacyModeState] = useState<boolean>(() => localStorage.getItem('finance_privacy_mode') === '1');
   const [understandPeriod, setUnderstandPeriod] = useState<string>('current_month');
   const [selectedTickerForSim, setSelectedTickerForSim] = useState<string | undefined>(undefined);
+  // Una sola familia de herramienta activa por contexto Invest (dueño común: App).
+  const [investTool, setInvestTool] = useState<InvestTool | null>(null);
+  const thesisLauncherRef = useRef<HTMLButtonElement>(null);
 
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
   const [assets, setAssets] = useState<Asset[]>([]);
@@ -157,6 +161,7 @@ export const App: React.FC = () => {
 
   const handleSelectAssetForSimulation = (ticker: string) => {
     setSelectedTickerForSim(ticker);
+    setInvestTool('thesis');
     setActiveTab('invest');
   };
 
@@ -305,11 +310,14 @@ export const App: React.FC = () => {
           )}
 
           {activeTab === 'invest' && (
-            <div className="space-y-5">
+            <div className={investTool ? 'grid gap-[var(--a-stack)] min-[1041px]:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]' : ''}>
               <WealthTab
                 data={wealth}
                 exposure={portfolioExposure}
                 privacyMode={privacyMode}
+                openTool={investTool}
+                onOpenTool={setInvestTool}
+                thesisLauncherRef={thesisLauncherRef}
                 onRefresh={refreshWealth}
                 onImportValuations={importValuationsCsv}
                 onImportBenchmark={importBenchmarkCsv}
@@ -325,20 +333,24 @@ export const App: React.FC = () => {
                 onSavePriceAuthority={async (authority) => { await savePriceAuthority(authority); await refreshWealth(); }}
                 onSaveMarketDataConfig={async (config) => { await saveMarketDataConfig(config); await refreshWealth(); }}
                 onSaveFxRate={async (rate) => { await saveFxRate(rate); await refreshWealth(); }}
-              />
-              <AssetListTab
-                assets={assets}
-                currency={currency}
-                exchangeRate={exchangeRate}
-                onSelectForSimulation={handleSelectAssetForSimulation}
-                privacyMode={privacyMode}
-              />
+              >
+                <AssetListTab
+                  assets={assets}
+                  currency={currency}
+                  exchangeRate={exchangeRate}
+                  onSelectForSimulation={handleSelectAssetForSimulation}
+                  privacyMode={privacyMode}
+                />
+              </WealthTab>
               <InvestmentThesisTab
                 theses={theses}
                 assets={assets}
                 onSaveThesis={handleSaveThesis}
                 onSimulatePurchase={handleSimulatePurchase}
                 selectedTickerForSim={selectedTickerForSim}
+                openTool={investTool}
+                onOpenTool={setInvestTool}
+                thesisLauncherRef={thesisLauncherRef}
               />
             </div>
           )}

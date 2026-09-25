@@ -1,11 +1,16 @@
-import React, { useState } from 'react';
-import { AlertTriangle, BarChart3, GitCompare, PieChart, RefreshCw, Target, Upload } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { GitCompare, RefreshCw, Upload } from 'lucide-react';
+import { Button, Field, MetricInput, MoneyField, SegmentedControl } from '../../aetheris/controls';
+import { DataState, InlineMetric } from '../../aetheris/primitives';
+import { ToolSurfaceDock } from '../../aetheris/ToolSurfaceDock';
 import { CsvImportResult, FundCompositionRefreshResult, InvestmentOperation, MarketDataSyncResult, PortfolioExposureResult, WealthData } from '../../types';
 
 interface WealthTabProps {
   data: WealthData | null;
   exposure: PortfolioExposureResult | null;
   privacyMode: boolean;
+  /** Slot de composición: workspace operativo (Posiciones) entre X-Ray y Allocation. */
+  children?: React.ReactNode;
   onRefresh: (contributionUsd?: number, benchmarkKey?: string) => Promise<void>;
   onImportValuations: (content: string) => Promise<CsvImportResult>;
   onImportBenchmark: (content: string, benchmarkKey: string) => Promise<CsvImportResult>;
@@ -21,12 +26,23 @@ interface WealthTabProps {
   onSavePriceAuthority: (authority: { ticker: string; authority_mode: 'AUTO' | 'MANUAL'; manual_price?: number; manual_currency?: string; notes?: string }) => Promise<void>;
   onSaveMarketDataConfig: (config: Record<string, unknown>) => Promise<void>;
   onSaveFxRate: (rate: { base_currency: string; quote_currency: string; rate: number; rate_date: string; provider?: string; source?: string }) => Promise<void>;
+  /** Herramienta activa del contexto Invest (una a la vez). */
+  openTool: InvestTool | null;
+  onOpenTool: (tool: InvestTool | null) => void;
+  /** Ref del lanzador de Tesis (el dock lo renderiza InvestmentThesisTab). */
+  thesisLauncherRef: React.RefObject<HTMLButtonElement>;
 }
 
-const panel = 'bg-[#111827] border border-gray-800 rounded-xl p-4 space-y-3';
-const input = 'bg-gray-900 border border-gray-800 rounded-lg px-3 py-2 text-xs text-white placeholder-gray-500 focus:outline-none focus:border-emerald-500';
+export type InvestTool = 'thesis' | 'rebalance' | 'ledger' | 'market';
 
-export const WealthTab: React.FC<WealthTabProps> = ({ data, exposure, privacyMode, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv, onSaveOpeningPosition, onSetPositionAuthority, onSyncMarketData, onRefreshFundCompositions, onSaveSymbolMapping, onSavePriceAuthority, onSaveMarketDataConfig, onSaveFxRate }) => {
+const rowClass = 'flex items-baseline justify-between gap-3 border-b border-[var(--a-line)] py-1.5 last:border-b-0';
+const dividerClass = 'min-w-0 lg:border-l lg:border-[var(--a-line)] lg:pl-6';
+const boxClass = 'rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3 text-xs';
+
+const signDirection = (value: number | null | undefined) =>
+  value === null || value === undefined ? 'neutral' : value > 0 ? 'positive' : value < 0 ? 'negative' : 'neutral';
+
+export const WealthTab: React.FC<WealthTabProps> = ({ data, exposure, privacyMode, children, openTool, onOpenTool, thesisLauncherRef, onRefresh, onImportValuations, onImportBenchmark, onSaveInvestmentOperation, onDeleteInvestmentOperation, onPreviewInvestmentCsv, onImportInvestmentCsv, onSaveOpeningPosition, onSetPositionAuthority, onSyncMarketData, onRefreshFundCompositions, onSaveSymbolMapping, onSavePriceAuthority, onSaveMarketDataConfig, onSaveFxRate }) => {
   const [contribution, setContribution] = useState(0);
   const [benchmarkKey, setBenchmarkKey] = useState('');
   const [valuationCsv, setValuationCsv] = useState('');
@@ -51,6 +67,9 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, exposure, privacyMod
   const [symbolDrafts, setSymbolDrafts] = useState<Record<string, string>>({});
   const [manualPriceDrafts, setManualPriceDrafts] = useState<Record<string, string>>({});
   const [fxForm, setFxForm] = useState({ base_currency: 'COP', quote_currency: 'USD', rate: 0, rate_date: new Date().toISOString().slice(0, 10) });
+  const rebalanceLauncherRef = useRef<HTMLButtonElement>(null);
+  const ledgerLauncherRef = useRef<HTMLButtonElement>(null);
+  const marketLauncherRef = useRef<HTMLButtonElement>(null);
 
   const money = (value?: number | null) => {
     if (value === null || value === undefined) return 'N/D';
@@ -194,82 +213,210 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, exposure, privacyMod
 
   if (!data) {
     return (
-      <section className={panel}>
-        <div className="text-sm text-gray-300">Cargando Wealth...</div>
+      <section className="a-canvas a-enter">
+        <div className="a-page-kicker">Invest</div>
+        <p className="a-page-subtitle mt-3">Cargando estado de inversión…</p>
+        {children}
       </section>
     );
   }
 
   return (
-    <div className="space-y-5">
-      {feedback && <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 rounded-xl p-3 text-xs">{feedback}</div>}
+    <>
+    <section className="a-canvas a-enter">
+      {/* =============================================================== */}
+      {/* HEADER                                                          */}
+      {/* =============================================================== */}
+      <header>
+        <div className="a-page-kicker">Invest</div>
+        <p className="a-page-subtitle mt-3">
+          Estado de la cartera, rendimiento y exposición; posiciones operativas y herramientas de mantenimiento sobre datos locales.
+        </p>
+      </header>
 
-      <section className="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        <div className={panel}>
-          <div className="flex items-center gap-2 text-gray-400 text-xs"><PieChart className="w-4 h-4 text-emerald-400" />Portfolio</div>
-          <div className="text-2xl font-bold text-white">{money(data.summary.total_value_usd)}</div>
-          <div className="text-xs text-gray-400">P&L no realizado: <span className="text-emerald-300">{money(data.summary.unrealized_pnl_usd)}</span></div>
+      {feedback && (
+        <div role="status" className="a-surface mt-5 p-3 text-xs text-[var(--a-secondary)]">{feedback}</div>
+      )}
+
+      {/* =============================================================== */}
+      {/* 1 · ESTADO EJECUTIVO: Portfolio dominante → Performance fuerte   */}
+      {/*     → Riesgo secundario → Calidad de datos                     */}
+      {/* =============================================================== */}
+      <section className="a-elevated mt-7 p-5 md:p-6" aria-labelledby="invest-status-title">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h2 id="invest-status-title" className="text-lg font-bold text-[var(--a-text)]">Estado de la cartera</h2>
+            <p className="a-meta mt-1">Valor consolidado, rendimiento, riesgo y confianza de los datos.</p>
+          </div>
         </div>
-        <div className={panel}>
-          <div className="flex items-center gap-2 text-gray-400 text-xs"><BarChart3 className="w-4 h-4 text-purple-400" />Performance</div>
-          <div className="text-sm text-white">TWR: {metric(data.performance.twr)}</div>
-          <div className="text-sm text-white">MWR: {metric(data.performance.mwr)}</div>
-          <div className="text-xs text-gray-400">Retorno acumulado: {metric(data.performance.cumulative_return)}</div>
-          <div className="text-xs text-gray-400">P&L realizado: {money(data.performance.realized_pnl.value_usd)}</div>
+
+        {/* Portfolio dominante | Performance fuerte */}
+        <div className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+          <div className="min-w-0">
+            <div className="a-page-kicker">Portfolio</div>
+            <div className="mt-3 text-[clamp(34px,4.6vw,54px)] font-[760] leading-none tabular-nums text-[var(--a-text)]">
+              {money(data.summary.total_value_usd)}
+            </div>
+            <div className="mt-4">
+              <InlineMetric
+                label="P&L no realizado"
+                value={money(data.summary.unrealized_pnl_usd)}
+                direction={privacyMode ? 'neutral' : signDirection(data.summary.unrealized_pnl_usd)}
+              />
+            </div>
+            <p className="a-meta mt-2">Estado {data.summary.unrealized_pnl_status || 'N/D'} · política {data.history.policy}</p>
+          </div>
+
+          <div className={dividerClass}>
+            <div className="a-page-kicker">Performance</div>
+            <div className="mt-4 grid gap-x-6 gap-y-4 sm:grid-cols-2">
+              <InlineMetric label="TWR" value={String(metric(data.performance.twr))} />
+              <InlineMetric label="MWR" value={String(metric(data.performance.mwr))} />
+              <InlineMetric label="Retorno acumulado" value={String(metric(data.performance.cumulative_return))} />
+              <InlineMetric label="P&L realizado" value={money(data.performance.realized_pnl.value_usd)} />
+            </div>
+
+            {/* Benchmark (estado real de comparación de desempeño) */}
+            <div className="mt-4 border-t border-[var(--a-line)] pt-3">
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Benchmark</span>
+                <span className="text-xs font-bold tabular-nums text-[var(--a-text)]">
+                  {data.market_data.benchmark_symbol || 'N/D'} · {data.benchmark.status}
+                  {data.benchmark.excess_return_pct !== undefined ? ` · Excess return ${pct(data.benchmark.excess_return_pct)}` : ''}
+                </span>
+              </div>
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Cobertura benchmark</span>
+                <span className="text-xs tabular-nums text-[var(--a-text)]">
+                  Alineadas {data.benchmark.coverage?.aligned_observations ?? 0} · Portfolio {data.benchmark.coverage?.portfolio_observations ?? 0} · Benchmark {data.benchmark.coverage?.benchmark_observations ?? 0}
+                </span>
+              </div>
+              {data.benchmark.excess_return_pct === undefined && data.benchmark.reason && (
+                <p className="a-meta mt-1">{data.benchmark.reason}</p>
+              )}
+            </div>
+          </div>
         </div>
-        <div className={panel}>
-          <div className="flex items-center gap-2 text-gray-400 text-xs"><AlertTriangle className="w-4 h-4 text-amber-400" />Exposure & Risk</div>
-          <div className="text-sm text-white">Top activo: {data.concentration.top_asset?.ticker || 'N/D'} {data.concentration.top_asset ? `${data.concentration.top_asset.allocation_pct}%` : ''}</div>
-          <div className="text-xs text-gray-400">Volatilidad: {metric(data.performance.risk.volatility)}</div>
-          <div className="text-xs text-gray-400">Max DD: {metric(data.performance.risk.max_drawdown)}</div>
-        </div>
-        <div className={panel}>
-          <div className="flex items-center gap-2 text-gray-400 text-xs"><Target className="w-4 h-4 text-blue-400" />Calidad</div>
-          <div className="text-sm text-white">{data.data_quality.history_coverage_pct}% con historial</div>
-          <div className="text-xs text-gray-400">{data.data_quality.issues.length} datos por completar</div>
-                <div className="text-xs text-gray-400">Ledger: {data.ledger.reconciliation.issues.length} acciones</div>
-          <div className="text-xs text-gray-400">{data.history.policy}</div>
+
+        <div className="my-6 h-px bg-[var(--a-line)]" />
+
+        {/* Riesgo secundario | Calidad de datos */}
+        <div className="grid gap-6 md:grid-cols-2">
+          <div className="min-w-0">
+            <div className="a-page-kicker">Exposición y riesgo</div>
+            <div className="mt-3">
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Top activo</span>
+                <span className="text-xs font-bold tabular-nums text-[var(--a-text)]">
+                  {data.concentration.top_asset ? `${data.concentration.top_asset.ticker} ${data.concentration.top_asset.allocation_pct}%` : 'N/D'}
+                </span>
+              </div>
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Volatilidad</span>
+                <span className="text-xs font-bold tabular-nums text-[var(--a-text)]">{metric(data.performance.risk.volatility)}</span>
+              </div>
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Max DD</span>
+                <span className="text-xs font-bold tabular-nums text-[var(--a-text)]">{metric(data.performance.risk.max_drawdown)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className={dividerClass}>
+            <div className="a-page-kicker">Calidad de datos</div>
+            <div className="mt-3">
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Historial</span>
+                <span className="text-xs font-bold tabular-nums text-[var(--a-text)]">{data.data_quality.history_coverage_pct}% con historial</span>
+              </div>
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Datos por completar</span>
+                <span className="text-xs font-bold tabular-nums text-[var(--a-text)]">{data.data_quality.issues.length}</span>
+              </div>
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Ledger</span>
+                <span className="text-xs font-bold tabular-nums text-[var(--a-text)]">{data.ledger.reconciliation.issues.length} acciones</span>
+              </div>
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Mercado</span>
+                <span className="text-xs font-bold tabular-nums text-[var(--a-text)]">
+                  {data.market_data.provider} · {data.market_data.last_sync_at ? `actualizado ${new Date(data.market_data.last_sync_at).toLocaleString()}` : 'sin sync'}
+                </span>
+              </div>
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Precios</span>
+                <span className="text-xs tabular-nums text-[var(--a-text)]">
+                  {data.market_data.updated_assets} activos · {data.market_data.fx_pairs} FX · {data.market_data.stale_tickers.length} stale · {data.market_data.missing_tickers.length} missing
+                </span>
+              </div>
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Cobertura</span>
+                <span className="text-xs tabular-nums text-[var(--a-text)]">
+                  {data.market_data.coverage.summary.holdings_ok}/{data.market_data.coverage.summary.holdings_total} OK · {data.market_data.coverage.summary.fresh_value_pct}% valor fresco · Provider {data.market_data.provider_health}
+                </span>
+              </div>
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Benchmark coverage</span>
+                <span className="text-xs tabular-nums text-[var(--a-text)]">
+                  {data.market_data.coverage.summary.benchmark_status} · {data.market_data.coverage.summary.benchmark_observations} obs.
+                </span>
+              </div>
+            </div>
+            {data.market_data.last_error && (
+              <p className="a-meta mt-2 text-[var(--a-negative)]">Error de mercado: {data.market_data.last_error}</p>
+            )}
+            <p className="a-meta mt-2">{data.history.policy}</p>
+          </div>
         </div>
       </section>
 
-      <section className={panel}>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div>
-            <div className="text-sm font-bold text-white">Portfolio X-Ray</div>
-            <div className="text-xs text-gray-400">
+      {/* =============================================================== */}
+      {/* 2 · PORTFOLIO X-RAY                                             */}
+      {/* =============================================================== */}
+      <section className="a-surface mt-5 p-5" aria-labelledby="invest-xray-title">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <h2 id="invest-xray-title" className="text-lg font-bold text-[var(--a-text)]">Portfolio X-Ray</h2>
+            <p className="a-meta mt-1">
               {exposure ? `${exposure.status} · Look-through ${exposure.lenses?.underlying_security?.coverage_pct ?? 0}% · ${money(exposure.portfolio_value)}` : 'Sin exposición calculada'}
-            </div>
+            </p>
           </div>
-          <div className="flex flex-wrap gap-2">
-            {(['asset_class', 'sector', 'underlying_security'] as const).map((lens) => (
-              <button key={lens} onClick={() => setXrayLens(lens)} className={`px-3 py-2 rounded-lg text-xs font-bold ${xrayLens === lens ? 'bg-emerald-600 text-white' : 'bg-gray-800 text-gray-300'}`}>
-                {lens === 'asset_class' ? 'Asset Class' : lens === 'sector' ? 'Sector' : 'Underlying'}
-              </button>
-            ))}
-            <button onClick={refreshFunds} disabled={refreshingFunds} className="px-3 py-2 rounded-lg bg-gray-800 disabled:opacity-60 text-gray-200 text-xs font-bold">
+          <div className="flex flex-wrap items-end gap-3">
+            <SegmentedControl
+              label="Lente"
+              value={xrayLens}
+              options={[
+                { value: 'asset_class', label: 'Asset Class' },
+                { value: 'sector', label: 'Sector' },
+                { value: 'underlying_security', label: 'Underlying' },
+              ]}
+              onChange={setXrayLens}
+            />
+            <Button variant="quiet" onClick={refreshFunds} disabled={refreshingFunds}>
               {refreshingFunds ? 'Actualizando...' : 'Refresh funds'}
-            </button>
+            </Button>
           </div>
         </div>
+
         {exposure?.lenses?.[xrayLens] ? (
-          <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-4">
-            <div className="space-y-2">
-              <div className="h-2 bg-gray-900 rounded-full overflow-hidden">
-                <div className="h-full bg-emerald-500" style={{ width: `${Math.min(100, Math.max(0, exposure.lenses[xrayLens].coverage_pct || 0))}%` }} />
+          <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_280px]">
+            <div className="min-w-0 space-y-2">
+              <div className="h-2 overflow-hidden rounded-full bg-[var(--a-canvas)]">
+                <div className="h-full bg-[var(--a-brand)]" style={{ width: `${Math.min(100, Math.max(0, exposure.lenses[xrayLens].coverage_pct || 0))}%` }} />
               </div>
-              <div className="text-xs text-gray-400">
+              <div className="a-meta">
                 Cobertura {exposure.lenses[xrayLens].coverage_pct}% · residual {(exposure.lenses[xrayLens].residual_weight * 100).toFixed(2)}% · opaque {(exposure.lenses[xrayLens].opaque_weight * 100).toFixed(2)}% · unclassified {(exposure.lenses[xrayLens].unclassified_weight * 100).toFixed(2)}%
               </div>
               {exposure.lenses[xrayLens].items.slice(0, 10).map((row) => (
-                <details key={row.id} className="bg-gray-900/60 border border-gray-800 rounded-lg p-3 text-xs">
+                <details key={row.id} className={boxClass}>
                   <summary className="cursor-pointer">
-                    <span className="text-white font-bold">{row.label}</span>
-                    <span className="float-right text-gray-300">{row.allocation_pct}% · {money(row.value_usd)}</span>
+                    <span className="font-bold text-[var(--a-text)]">{row.label}</span>
+                    <span className="float-right text-[var(--a-secondary)]">{row.allocation_pct}% · {money(row.value_usd)}</span>
                   </summary>
                   <div className="mt-2 space-y-1">
                     {row.contributors.map((contributor) => (
-                      <div key={`${row.id}-${contributor.source_symbol}-${contributor.effective_weight}`} className="flex justify-between border-t border-gray-800 pt-1 text-gray-400">
-                        <span>{contributor.source_symbol}<span className="text-gray-600"> · source {(contributor.source_weight * 100).toFixed(2)}%</span></span>
+                      <div key={`${row.id}-${contributor.source_symbol}-${contributor.effective_weight}`} className="flex justify-between border-t border-[var(--a-line)] pt-1 text-[var(--a-muted)]">
+                        <span>{contributor.source_symbol}<span className="text-[var(--a-muted)]"> · source {(contributor.source_weight * 100).toFixed(2)}%</span></span>
                         <span>{(contributor.effective_weight * 100).toFixed(2)}%</span>
                       </div>
                     ))}
@@ -277,286 +424,608 @@ export const WealthTab: React.FC<WealthTabProps> = ({ data, exposure, privacyMod
                 </details>
               ))}
             </div>
+
             <div className="space-y-2 text-xs">
-              <div className="bg-gray-900/60 border border-gray-800 rounded-lg p-3">
-                <div className="text-gray-500">Opaque</div>
-                {(exposure.opaque_positions || []).slice(0, 5).map((row) => <div key={row.ticker} className="flex justify-between"><span>{row.ticker}</span><span>{(row.portfolio_weight * 100).toFixed(2)}%</span></div>)}
-                {(exposure.opaque_positions || []).length === 0 && <div className="text-gray-500">Sin posiciones opacas.</div>}
+              <div className={boxClass}>
+                <div className="text-[var(--a-muted)]">Opaque</div>
+                {(exposure.opaque_positions || []).slice(0, 5).map((row) => (
+                  <div key={row.ticker} className="flex justify-between"><span className="text-[var(--a-secondary)]">{row.ticker}</span><span className="tabular-nums text-[var(--a-text)]">{(row.portfolio_weight * 100).toFixed(2)}%</span></div>
+                ))}
+                {(exposure.opaque_positions || []).length === 0 && <div className="text-[var(--a-muted)]">Sin posiciones opacas.</div>}
               </div>
-              <div className="bg-gray-900/60 border border-gray-800 rounded-lg p-3">
-                <div className="text-gray-500">Intersections</div>
-                {(exposure.intersections || []).slice(0, 5).map((row) => <div key={row.id} className="flex justify-between"><span>{row.label}</span><span>{row.allocation_pct}%</span></div>)}
-                {(exposure.intersections || []).length === 0 && <div className="text-gray-500">Sin exposición compartida.</div>}
+              <div className={boxClass}>
+                <div className="text-[var(--a-muted)]">Intersections</div>
+                {(exposure.intersections || []).slice(0, 5).map((row) => (
+                  <div key={row.id} className="flex justify-between"><span className="text-[var(--a-secondary)]">{row.label}</span><span className="tabular-nums text-[var(--a-text)]">{row.allocation_pct}%</span></div>
+                ))}
+                {(exposure.intersections || []).length === 0 && <div className="text-[var(--a-muted)]">Sin exposición compartida.</div>}
               </div>
-              <div className="bg-gray-900/60 border border-gray-800 rounded-lg p-3 text-gray-500">
+              <div className={`${boxClass} text-[var(--a-muted)]`}>
                 Concentración: {exposure.concentration?.status || 'DEFERRED'}
               </div>
             </div>
           </div>
         ) : (
-          <div className="text-xs text-gray-500 bg-gray-900/60 rounded-lg p-3">X-Ray no evaluable todavía.</div>
+          <div className="mt-5">
+            <DataState
+              state="UNEVALUABLE"
+              title="X-Ray no evaluable todavía"
+              detail="Aún no hay exposición calculada con las lentes disponibles."
+            />
+          </div>
         )}
       </section>
 
-      <section className={panel}>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div>
-            <div className="text-sm font-bold text-white">Market Data</div>
-            <div className="text-xs text-gray-400">
-              {data.market_data.provider} · {data.market_data.last_sync_at ? `actualizado ${new Date(data.market_data.last_sync_at).toLocaleString()}` : 'sin sync'} · Benchmark {data.market_data.benchmark_symbol || 'N/D'}
-            </div>
-            <div className="text-xs text-gray-500">
-              {data.market_data.updated_assets} activos · {data.market_data.fx_pairs} FX · {data.market_data.stale_tickers.length} stale · {data.market_data.missing_tickers.length} missing
-              {data.market_data.last_error ? ` · ${data.market_data.last_error}` : ''}
-            </div>
+      {/* =============================================================== */}
+      {/* 3 · POSICIONES / WATCHLIST (workspace operativo, slot)          */}
+      {/* =============================================================== */}
+      {children}
+
+      {/* =============================================================== */}
+      {/* 4 · ALLOCATION (cómo está distribuido) | ATRIBUTIÓN (qué        */}
+      {/*     explicó el cambio)                                          */}
+      {/* =============================================================== */}
+      <section className="a-surface mt-5 grid gap-6 p-5 lg:grid-cols-2" aria-label="Distribución y explicación del cambio">
+        <div className="min-w-0">
+          <h2 className="text-lg font-bold text-[var(--a-text)]">Allocation</h2>
+          <p className="a-meta mt-1">Cómo está distribuido el patrimonio por dimensión.</p>
+          <div className="mt-4">
+            {['asset_type', 'sector', 'country', 'currency'].map((dimension) => (
+              <div key={dimension} className="mb-4 last:mb-0">
+                <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">{dimension}</div>
+                <div className="mt-1">
+                  {(data.allocation.dimensions[dimension] || []).slice(0, 4).map((row) => (
+                    <div key={`${dimension}-${row.name}`} className={rowClass}>
+                      <span className="min-w-0 truncate text-xs text-[var(--a-secondary)]">{row.name || 'Unknown'}</span>
+                      <span className="shrink-0 text-xs font-bold tabular-nums text-[var(--a-text)]">{row.allocation_pct}% · {money(row.value_usd)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
           </div>
-          <div className="flex flex-wrap gap-2">
-            <button onClick={() => syncMarket('QUICK')} disabled={syncingMarket} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-2">
-              <RefreshCw className={`w-4 h-4 ${syncingMarket ? 'animate-spin' : ''}`} />Quick refresh
-            </button>
-            <button onClick={() => syncMarket('FULL')} disabled={syncingMarket} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 disabled:opacity-60 text-gray-200 text-xs font-bold">Full history</button>
-          </div>
+        </div>
+
+        <div className={dividerClass}>
+          <h2 className="text-lg font-bold text-[var(--a-text)]">Attribution</h2>
+          <p className="a-meta mt-1">Qué explicó el cambio del periodo.</p>
+          {data.attribution.status !== 'AVAILABLE' && <p className="a-meta mt-3">{data.attribution.reason}</p>}
+          {data.attribution.status === 'AVAILABLE' && (
+            <div className="mt-4">
+              <div className={rowClass}>
+                <span className="text-xs text-[var(--a-secondary)]">Cambio</span>
+                <span className="text-xs font-bold tabular-nums text-[var(--a-text)]">{money(data.attribution.change_usd)}</span>
+              </div>
+              <div className="mt-4 grid gap-4 sm:grid-cols-2">
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Ganadores</div>
+                  <div className="mt-1 space-y-1">
+                    {data.attribution.top_winners?.map((row) => (
+                      <div key={row.ticker} className="text-xs font-semibold tabular-nums text-[var(--a-positive)]">{row.ticker}: {money(row.contribution_usd)}</div>
+                    ))}
+                  </div>
+                </div>
+                <div className="min-w-0">
+                  <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Detractores</div>
+                  <div className="mt-1 space-y-1">
+                    {data.attribution.top_detractors?.map((row) => (
+                      <div key={row.ticker} className="text-xs font-semibold tabular-nums text-[var(--a-negative)]">{row.ticker}: {money(row.contribution_usd)}</div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </section>
 
-      <section className={panel}>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-          <div>
-            <div className="text-sm font-bold text-white">Coverage</div>
-            <div className="text-xs text-gray-400">
-              {data.market_data.coverage.summary.holdings_ok}/{data.market_data.coverage.summary.holdings_total} OK · {data.market_data.coverage.summary.fresh_value_pct}% valor fresco · Provider {data.market_data.provider_health}
-            </div>
-          </div>
-          <div className="text-xs text-gray-500">Benchmark: {data.market_data.coverage.summary.benchmark_status} · {data.market_data.coverage.summary.benchmark_observations} obs.</div>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {data.market_data.coverage.rows.map((row) => (
-            <div key={row.ticker} className="bg-gray-900/60 border border-gray-800 rounded-lg p-3 space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-white font-bold text-sm">{row.ticker}</div>
-                <div className={row.status === 'OK' ? 'text-emerald-300 text-xs' : 'text-amber-300 text-xs'}>{row.status}</div>
-              </div>
-              <div className="text-xs text-gray-400">Precio: {money(row.current_price)} · {row.freshness} · {row.price_source}</div>
-              <div className="text-xs text-gray-500">Provider symbol: {row.provider_symbol || 'Sin resolver'} · Historial {row.history_count} · FX {row.fx_status}</div>
-              <div className="grid grid-cols-[1fr_auto] gap-2">
-                <input className={input} placeholder={row.provider_symbol || row.ticker} value={symbolDrafts[row.ticker] ?? ''} onChange={(e) => setSymbolDrafts({ ...symbolDrafts, [row.ticker]: e.target.value.toUpperCase() })} />
-                <button onClick={() => saveCoverageSymbol(row.ticker)} className="px-2 py-1 rounded bg-gray-800 text-gray-200 text-xs">Símbolo</button>
-              </div>
-              <div className="grid grid-cols-[1fr_auto_auto] gap-2">
-                <input className={input} type="number" placeholder="Precio manual" value={manualPriceDrafts[row.ticker] ?? ''} onChange={(e) => setManualPriceDrafts({ ...manualPriceDrafts, [row.ticker]: e.target.value })} />
-                <button onClick={() => saveAuthority(row.ticker, 'MANUAL', row.currency || 'USD')} className="px-2 py-1 rounded bg-gray-800 text-gray-200 text-xs">MANUAL</button>
-                <button onClick={() => saveAuthority(row.ticker, 'AUTO', row.currency || 'USD')} className="px-2 py-1 rounded bg-emerald-700 text-white text-xs">AUTO</button>
-              </div>
+      {/* =============================================================== */}
+      {/* 5 · ATENCIÓN / ACTION CENTER                                    */}
+      {/* =============================================================== */}
+      <section className="a-surface mt-5 p-5" aria-labelledby="invest-attention-title">
+        <h2 id="invest-attention-title" className="a-page-kicker">Atención</h2>
+        <p className="a-meta mt-1">Señales de Wealth: qué requiere revisión y por qué.</p>
+        <div className="mt-4">
+          {data.action_items.length === 0 && (
+            <DataState state="EMPTY" title="Sin acciones pendientes de Wealth." detail="No hay señales abiertas en esta fuente." />
+          )}
+          {data.action_items.slice(0, 8).map((item, idx) => (
+            <div key={`${item.type}-${idx}`} className="border-b border-[var(--a-line)] py-2.5 last:border-b-0">
+              <div className="text-xs font-semibold text-[var(--a-text)]">{item.title}</div>
+              <div className="a-meta mt-0.5">{item.why}</div>
+              <div className="mt-1 text-xs font-semibold text-[var(--a-brand)]">{item.action}</div>
             </div>
           ))}
         </div>
       </section>
 
-      <section className={panel}>
-        <div className="flex flex-col lg:flex-row lg:items-end gap-3">
-          <div className="flex-1">
-            <div className="text-sm font-bold text-white mb-1">Histórico manual / CSV</div>
-            <textarea className={`${input} w-full min-h-20`} placeholder="ticker,date,price,currency&#10;NVDA,2026-09-01,120,USD" value={valuationCsv} onChange={(e) => setValuationCsv(e.target.value)} />
-          </div>
-          <button onClick={importValuations} className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-2"><Upload className="w-4 h-4" />Importar valoraciones</button>
+      {/* =============================================================== */}
+      {/* TOOLS · lanzadores (una familia activa por contexto)            */}
+      {/* =============================================================== */}
+      <section className="a-surface mt-5 p-5" aria-labelledby="invest-tools-title">
+        <h2 id="invest-tools-title" className="a-page-kicker">Herramientas</h2>
+        <p className="a-meta mt-1">Abre un instrumento sin perder el contexto de cartera, rendimiento y posiciones.</p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <Button
+            ref={thesisLauncherRef}
+            variant={openTool === 'thesis' ? 'operational' : 'quiet'}
+            aria-pressed={openTool === 'thesis'}
+            aria-controls="invest-thesis-dock"
+            onClick={() => onOpenTool(openTool === 'thesis' ? null : 'thesis')}
+          >
+            Tesis de inversión
+          </Button>
+          <Button
+            ref={rebalanceLauncherRef}
+            variant={openTool === 'rebalance' ? 'operational' : 'quiet'}
+            aria-pressed={openTool === 'rebalance'}
+            aria-controls="invest-rebalance-dock"
+            onClick={() => onOpenTool(openTool === 'rebalance' ? null : 'rebalance')}
+          >
+            Rebalance Planner
+          </Button>
+          <Button
+            ref={ledgerLauncherRef}
+            variant={openTool === 'ledger' ? 'operational' : 'quiet'}
+            aria-pressed={openTool === 'ledger'}
+            aria-controls="invest-ledger-dock"
+            onClick={() => onOpenTool(openTool === 'ledger' ? null : 'ledger')}
+          >
+            Investment Ledger
+          </Button>
+          <Button
+            ref={marketLauncherRef}
+            variant={openTool === 'market' ? 'operational' : 'quiet'}
+            aria-pressed={openTool === 'market'}
+            aria-controls="invest-market-dock"
+            onClick={() => onOpenTool(openTool === 'market' ? null : 'market')}
+          >
+            Market Data
+          </Button>
         </div>
       </section>
+      </section>
 
-      <section className={panel}>
-        <div className="flex flex-col lg:flex-row lg:items-start gap-4">
-          <div className="lg:w-80 space-y-2">
-            <div className="text-sm font-bold text-white">Investment Ledger</div>
-            <div className="grid grid-cols-2 gap-2">
-              <input className={input} type="date" value={opForm.occurred_at || ''} onChange={(e) => setOpForm({ ...opForm, occurred_at: e.target.value })} />
-              <select className={input} value={opForm.operation_type || 'BUY'} onChange={(e) => setOpForm({ ...opForm, operation_type: e.target.value as InvestmentOperation['operation_type'] })}>
-                {['CONTRIBUTION', 'WITHDRAWAL', 'BUY', 'SELL', 'DIVIDEND', 'INTEREST', 'FEE', 'TRANSFER_IN', 'TRANSFER_OUT'].map((item) => <option key={item} value={item}>{item}</option>)}
-              </select>
-              <input className={input} placeholder="Ticker" value={opForm.ticker || ''} onChange={(e) => setOpForm({ ...opForm, ticker: e.target.value.toUpperCase() })} />
-              <input className={input} placeholder="Moneda" value={opForm.currency || 'USD'} onChange={(e) => setOpForm({ ...opForm, currency: e.target.value.toUpperCase() })} />
-              <input className={input} type="number" placeholder="Cantidad" value={opForm.quantity ?? 0} onChange={(e) => setOpForm({ ...opForm, quantity: Number(e.target.value) })} />
-              <input className={input} type="number" placeholder="Precio" value={opForm.price ?? 0} onChange={(e) => setOpForm({ ...opForm, price: Number(e.target.value) })} />
-              <input className={input} type="number" placeholder="Importe" value={opForm.amount ?? 0} onChange={(e) => setOpForm({ ...opForm, amount: Number(e.target.value) })} />
-              <input className={input} type="number" placeholder="Fee" value={opForm.fee ?? 0} onChange={(e) => setOpForm({ ...opForm, fee: Number(e.target.value) })} />
-            </div>
-            <input className={`${input} w-full`} placeholder="Notas" value={opForm.notes || ''} onChange={(e) => setOpForm({ ...opForm, notes: e.target.value })} />
-            <button onClick={saveOperation} className="w-full px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold">Guardar operación</button>
-          </div>
-
-          <div className="flex-1 space-y-2">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-              <div>
-                <div className="text-sm font-bold text-white">Actividad</div>
-                <div className="text-xs text-gray-400">CONTRIBUTION/WITHDRAWAL son cashflows externos; BUY/SELL son operaciones internas.</div>
+      {/* =============================================================== */}
+      {/* DOCK · Rebalance Planner                                         */}
+      {/* =============================================================== */}
+      {openTool === 'rebalance' && (
+        <ToolSurfaceDock
+          id="invest-rebalance-dock"
+          title="Rebalance Planner"
+          description="Tradicional y con nuevos aportes; no ejecuta operaciones."
+          triggerRef={rebalanceLauncherRef}
+          onClose={() => onOpenTool(null)}
+        >
+          <div className="space-y-4">
+            <div className="flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <MoneyField
+                  id="invest-rebalance-contribution"
+                  label="Aporte nuevo"
+                  value={contribution}
+                  onChange={setContribution}
+                  currency="USD"
+                  allowNegative
+                />
               </div>
-              <input className={input} placeholder="Filtrar ticker/tipo" value={ledgerFilter} onChange={(e) => setLedgerFilter(e.target.value.toUpperCase())} />
+              <Button variant="operational" onClick={() => onRefresh(contribution, benchmarkKey || undefined)}>
+                Calcular
+              </Button>
             </div>
-            <div className="overflow-x-auto max-h-64">
+
+            {data.rebalancing.status !== 'AVAILABLE' && <p className="a-meta">{data.rebalancing.reason}</p>}
+
+            <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
-                <thead className="text-gray-500 uppercase text-[10px]"><tr><th className="py-2">Fecha</th><th>Tipo</th><th>Ticker</th><th>Cantidad</th><th>Precio</th><th>Importe</th><th>Fuente</th><th></th></tr></thead>
-                <tbody className="divide-y divide-gray-800">
-                  {data.ledger.operations
-                    .filter((op) => !ledgerFilter || `${op.ticker || ''} ${op.operation_type}`.includes(ledgerFilter))
-                    .slice(-50)
-                    .reverse()
-                    .map((op) => (
-                      <tr key={op.id}>
-                        <td className="py-2">{op.occurred_at.slice(0, 10)}</td>
-                        <td className="text-white">{op.operation_type}</td>
-                        <td>{op.ticker || '-'}</td>
-                        <td>{op.quantity}</td>
-                        <td>{money(op.price)}</td>
-                        <td>{money(op.amount)}</td>
-                        <td>{op.source}</td>
-                        <td><button onClick={() => window.confirm('Eliminar operación?') && onDeleteInvestmentOperation(op.id)} className="text-red-300">Eliminar</button></td>
+                <thead className="border-b border-[var(--a-line)] text-[10px] uppercase tracking-wider text-[var(--a-muted)]">
+                  <tr>
+                    <th className="py-2 pr-2">Activo</th>
+                    <th className="py-2 pr-2">Actual</th>
+                    <th className="py-2 pr-2">Meta</th>
+                    <th className="py-2 pr-2">Desvío</th>
+                    <th className="py-2 pr-2">Compra/Venta</th>
+                    <th className="py-2">Aporte</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--a-line)]">
+                  {data.rebalancing.traditional.map((row) => {
+                    const aport = data.rebalancing.new_contribution.find((item) => item.ticker === row.ticker);
+                    return (
+                      <tr key={row.ticker}>
+                        <td className="py-2 pr-2 font-bold text-[var(--a-text)]">{row.ticker}</td>
+                        <td className="py-2 pr-2 tabular-nums text-[var(--a-secondary)]">{row.current_pct}%</td>
+                        <td className="py-2 pr-2 tabular-nums text-[var(--a-secondary)]">{row.target_pct}%</td>
+                        <td className="py-2 pr-2 tabular-nums text-[var(--a-secondary)]">{row.drift_pct} pp</td>
+                        <td className="py-2 pr-2 tabular-nums text-[var(--a-text)]">{money(row.trade_usd)}</td>
+                        <td className="py-2 tabular-nums text-[var(--a-text)]">{money(aport?.contribution_usd || 0)}</td>
                       </tr>
-                    ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           </div>
-        </div>
+        </ToolSurfaceDock>
+      )}
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2">
-          <div className="space-y-2">
-            <div className="text-xs font-bold text-gray-300">Import CSV ledger</div>
-            <textarea className={`${input} w-full min-h-20`} placeholder="date,ticker,type,quantity,price,amount,fee,currency,account_id,external_id&#10;2026-01-01,NVDA,BUY,10,100,1000,1,USD,,trade-1" value={ledgerCsv} onChange={(e) => setLedgerCsv(e.target.value)} />
-            <div className="flex gap-2">
-              <button onClick={previewLedger} className="px-3 py-2 rounded-lg bg-gray-800 text-gray-200 text-xs">Preview</button>
-              <button onClick={importLedger} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold">Importar</button>
-            </div>
-          </div>
-          <div>
-            <div className="text-xs font-bold text-gray-300 mb-2">Portfolio → Reconciliation</div>
-            <div className="space-y-1 max-h-40 overflow-auto">
-              {data.ledger.reconciliation.rows.map((row) => (
-                <button key={row.ticker} onClick={() => setSelectedRecon(selectedRecon === row.ticker ? null : row.ticker)} className="w-full text-left text-xs bg-gray-900/60 rounded-lg p-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-white font-bold">{row.ticker}</span>
-                    <span className={row.status === 'MATCH' ? 'text-emerald-300' : 'text-amber-300'}>{row.status}</span>
-                    <span className="text-gray-400">hold {row.registered_quantity} / ledger {row.derived_quantity}</span>
-                    <span className="text-gray-400">avg {row.registered_avg_price} / {row.derived_avg_price}</span>
-                    <span className="text-gray-500">{row.coverage} · {row.source}</span>
-                  </div>
-                  {selectedRecon === row.ticker && (
-                    <div className="mt-2 border-t border-gray-800 pt-2 space-y-2">
-                      <div className="text-gray-400">
-                        Fuente actual: {row.source}. Autoridad: {row.authority_state}. Diff qty: {row.quantity_diff}; diff avg: {row.avg_price_diff}.
-                      </div>
-                      <div className="flex flex-wrap gap-2">
-                        <button onClick={(e) => { e.stopPropagation(); registerOpeningFromRow(row); }} className="px-2 py-1 rounded bg-gray-800 text-gray-200">Registrar posición inicial</button>
-                        <button onClick={(e) => { e.stopPropagation(); createAdjustment(row); }} className="px-2 py-1 rounded bg-gray-800 text-gray-200">Adjustment explícito</button>
-                        <button disabled={row.status !== 'MATCH'} onClick={(e) => { e.stopPropagation(); adoptLedger(row.ticker); }} className="px-2 py-1 rounded bg-emerald-600 disabled:opacity-50 text-white">Adoptar Ledger</button>
-                        <button onClick={(e) => { e.stopPropagation(); keepManual(row.ticker); }} className="px-2 py-1 rounded bg-gray-800 text-gray-200">Mantener manual</button>
-                      </div>
-                    </div>
-                  )}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className={panel}>
-          <div className="text-sm font-bold text-white">Allocation</div>
-          {['asset_type', 'sector', 'country', 'currency'].map((dimension) => (
-            <div key={dimension}>
-              <div className="text-[10px] uppercase text-gray-500 mb-1">{dimension}</div>
-              {(data.allocation.dimensions[dimension] || []).slice(0, 4).map((row) => (
-                <div key={`${dimension}-${row.name}`} className="flex items-center justify-between text-xs py-1 border-b border-gray-800/60">
-                  <span className="text-gray-300">{row.name || 'Unknown'}</span>
-                  <span className="text-white">{row.allocation_pct}% · {money(row.value_usd)}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-
-        <div className={panel}>
-          <div className="text-sm font-bold text-white">Action Center</div>
-          {data.action_items.length === 0 && <div className="text-xs text-gray-400">Sin acciones pendientes de Wealth.</div>}
-          {data.action_items.slice(0, 8).map((item, idx) => (
-            <div key={`${item.type}-${idx}`} className="text-xs bg-gray-900/60 border border-gray-800 rounded-lg p-2">
-              <div className="text-white font-semibold">{item.title}</div>
-              <div className="text-gray-400">{item.why}</div>
-              <div className="text-emerald-300">{item.action}</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className={panel}>
-          <div className="text-sm font-bold text-white">Attribution v1</div>
-          {data.attribution.status !== 'AVAILABLE' && <div className="text-xs text-gray-400">{data.attribution.reason}</div>}
-          {data.attribution.status === 'AVAILABLE' && (
-            <>
-              <div className="text-xs text-gray-400">Cambio: <span className="text-white">{money(data.attribution.change_usd)}</span></div>
-              <div className="grid grid-cols-2 gap-3">
+      {/* =============================================================== */}
+      {/* DOCK · Investment Ledger / Reconciliation                        */}
+      {/* =============================================================== */}
+      {openTool === 'ledger' && (
+        <ToolSurfaceDock
+          id="invest-ledger-dock"
+          title="Investment Ledger"
+          description="Operaciones, importación CSV y reconciliación de posiciones."
+          triggerRef={ledgerLauncherRef}
+          onClose={() => onOpenTool(null)}
+        >
+          <div className="space-y-5">
+            {/* Registrar operación */}
+            <div className="space-y-3">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Registrar operación</div>
+              <div className="grid grid-cols-2 gap-2.5">
                 <div>
-                  <div className="text-[10px] uppercase text-gray-500">Ganadores</div>
-                  {data.attribution.top_winners?.map((row) => <div key={row.ticker} className="text-xs text-emerald-300">{row.ticker}: {money(row.contribution_usd)}</div>)}
+                  <label htmlFor="invest-op-date" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Fecha</label>
+                  <input
+                    id="invest-op-date"
+                    type="date"
+                    value={opForm.occurred_at || ''}
+                    onChange={(e) => setOpForm({ ...opForm, occurred_at: e.target.value })}
+                    className="min-h-10 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] focus:border-[var(--a-brand)] focus:outline-none"
+                  />
                 </div>
                 <div>
-                  <div className="text-[10px] uppercase text-gray-500">Detractores</div>
-                  {data.attribution.top_detractors?.map((row) => <div key={row.ticker} className="text-xs text-red-300">{row.ticker}: {money(row.contribution_usd)}</div>)}
+                  <label htmlFor="invest-op-type" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Tipo</label>
+                  <select
+                    id="invest-op-type"
+                    value={opForm.operation_type || 'BUY'}
+                    onChange={(e) => setOpForm({ ...opForm, operation_type: e.target.value as InvestmentOperation['operation_type'] })}
+                    className="min-h-10 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] focus:border-[var(--a-brand)] focus:outline-none"
+                  >
+                    {['CONTRIBUTION', 'WITHDRAWAL', 'BUY', 'SELL', 'DIVIDEND', 'INTEREST', 'FEE', 'TRANSFER_IN', 'TRANSFER_OUT'].map((item) => <option key={item} value={item}>{item}</option>)}
+                  </select>
+                </div>
+                <Field
+                  id="invest-op-ticker"
+                  label="Ticker"
+                  value={opForm.ticker || ''}
+                  onChange={(value) => setOpForm({ ...opForm, ticker: value.toUpperCase() })}
+                />
+                <Field
+                  id="invest-op-currency"
+                  label="Moneda"
+                  value={opForm.currency || 'USD'}
+                  onChange={(value) => setOpForm({ ...opForm, currency: value.toUpperCase() })}
+                />
+                <MetricInput
+                  id="invest-op-quantity"
+                  label="Cantidad"
+                  unit="uds"
+                  value={Number(opForm.quantity ?? 0)}
+                  onChange={(value) => setOpForm({ ...opForm, quantity: value === '' ? 0 : value })}
+                  allowNegative
+                />
+                <MetricInput
+                  id="invest-op-price"
+                  label="Precio"
+                  unit={opForm.currency || 'USD'}
+                  value={Number(opForm.price ?? 0)}
+                  onChange={(value) => setOpForm({ ...opForm, price: value === '' ? 0 : value })}
+                  allowNegative
+                />
+                <MoneyField
+                  id="invest-op-amount"
+                  label="Importe"
+                  value={Number(opForm.amount ?? 0)}
+                  onChange={(value) => setOpForm({ ...opForm, amount: value })}
+                  currency={opForm.currency || 'USD'}
+                  allowNegative
+                />
+                <MoneyField
+                  id="invest-op-fee"
+                  label="Fee"
+                  value={Number(opForm.fee ?? 0)}
+                  onChange={(value) => setOpForm({ ...opForm, fee: value })}
+                  currency={opForm.currency || 'USD'}
+                  allowNegative
+                />
+              </div>
+              <Field
+                id="invest-op-notes"
+                label="Notas"
+                value={opForm.notes || ''}
+                onChange={(value) => setOpForm({ ...opForm, notes: value })}
+              />
+              <Button variant="primary" className="w-full" onClick={saveOperation}>
+                Guardar operación
+              </Button>
+            </div>
+
+            {/* Actividad */}
+            <div className="border-t border-[var(--a-line)] pt-4">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Actividad</div>
+              <p className="a-meta mt-1">CONTRIBUTION/WITHDRAWAL son cashflows externos; BUY/SELL son operaciones internas.</p>
+              <div className="mt-3">
+                <Field
+                  id="invest-ledger-filter"
+                  label="Filtrar ticker/tipo"
+                  value={ledgerFilter}
+                  onChange={(value) => setLedgerFilter(value.toUpperCase())}
+                />
+              </div>
+              <div className="mt-2 overflow-x-auto max-h-64">
+                <table className="w-full text-left text-xs">
+                  <thead className="border-b border-[var(--a-line)] text-[10px] uppercase tracking-wider text-[var(--a-muted)]">
+                    <tr>
+                      <th className="py-2 pr-2">Fecha</th>
+                      <th className="py-2 pr-2">Tipo</th>
+                      <th className="py-2 pr-2">Ticker</th>
+                      <th className="py-2 pr-2">Cantidad</th>
+                      <th className="py-2 pr-2">Precio</th>
+                      <th className="py-2 pr-2">Importe</th>
+                      <th className="py-2 pr-2">Fuente</th>
+                      <th className="py-2"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--a-line)]">
+                    {data.ledger.operations
+                      .filter((op) => !ledgerFilter || `${op.ticker || ''} ${op.operation_type}`.includes(ledgerFilter))
+                      .slice(-50)
+                      .reverse()
+                      .map((op) => (
+                        <tr key={op.id}>
+                          <td className="py-2 pr-2 tabular-nums text-[var(--a-secondary)]">{op.occurred_at.slice(0, 10)}</td>
+                          <td className="py-2 pr-2 font-bold text-[var(--a-text)]">{op.operation_type}</td>
+                          <td className="py-2 pr-2 text-[var(--a-text)]">{op.ticker || '-'}</td>
+                          <td className="py-2 pr-2 tabular-nums text-[var(--a-secondary)]">{op.quantity}</td>
+                          <td className="py-2 pr-2 tabular-nums text-[var(--a-secondary)]">{money(op.price)}</td>
+                          <td className="py-2 pr-2 tabular-nums text-[var(--a-text)]">{money(op.amount)}</td>
+                          <td className="py-2 pr-2 text-[var(--a-muted)]">{op.source}</td>
+                          <td className="py-2">
+                            <Button
+                              variant="negative"
+                              className="px-2.5 py-1.5"
+                              onClick={() => window.confirm('Eliminar operación?') && onDeleteInvestmentOperation(op.id)}
+                            >
+                              Eliminar
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Import CSV */}
+            <div className="border-t border-[var(--a-line)] pt-4">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Import CSV ledger</div>
+              <div className="mt-3 space-y-2.5">
+                <label htmlFor="invest-ledger-csv" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">CSV de operaciones</label>
+                <textarea
+                  id="invest-ledger-csv"
+                  rows={3}
+                  placeholder="date,ticker,type,quantity,price,amount,fee,currency,account_id,external_id&#10;2026-01-01,NVDA,BUY,10,100,1000,1,USD,,trade-1"
+                  value={ledgerCsv}
+                  onChange={(e) => setLedgerCsv(e.target.value)}
+                  className="min-h-20 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3 text-xs leading-relaxed text-[var(--a-text)] placeholder:text-[var(--a-muted)] focus:border-[var(--a-brand)] focus:outline-none"
+                />
+                <div className="flex gap-2">
+                  <Button variant="quiet" className="flex-1" onClick={previewLedger}>Preview</Button>
+                  <Button variant="primary" className="flex-1" onClick={importLedger}>Importar</Button>
                 </div>
               </div>
-            </>
-          )}
-        </div>
+            </div>
 
-        <div className={panel}>
-          <div className="flex items-center justify-between gap-2">
-            <div className="text-sm font-bold text-white">Benchmark</div>
-            <button onClick={() => onRefresh(contribution, benchmarkKey || undefined)} className="p-2 rounded-lg bg-gray-800 text-gray-300"><RefreshCw className="w-4 h-4" /></button>
+            {/* Reconciliation */}
+            <div className="border-t border-[var(--a-line)] pt-4">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Portfolio → Reconciliation</div>
+              <div className="mt-3 space-y-1 max-h-40 overflow-auto">
+                {data.ledger.reconciliation.rows.map((row) => (
+                  <button
+                    key={row.ticker}
+                    onClick={() => setSelectedRecon(selectedRecon === row.ticker ? null : row.ticker)}
+                    className="w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-2 text-left text-xs transition-colors hover:bg-[var(--a-hover)]"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold text-[var(--a-text)]">{row.ticker}</span>
+                      <span className={row.status === 'MATCH' ? 'font-bold text-[var(--a-positive)]' : 'font-bold text-[var(--a-warning)]'}>{row.status}</span>
+                      <span className="tabular-nums text-[var(--a-secondary)]">hold {row.registered_quantity} / ledger {row.derived_quantity}</span>
+                      <span className="tabular-nums text-[var(--a-secondary)]">avg {row.registered_avg_price} / {row.derived_avg_price}</span>
+                      <span className="text-[var(--a-muted)]">{row.coverage} · {row.source}</span>
+                    </div>
+                    {selectedRecon === row.ticker && (
+                      <div className="mt-2 space-y-2 border-t border-[var(--a-line)] pt-2">
+                        <div className="text-[var(--a-secondary)]">
+                          Fuente actual: {row.source}. Autoridad: {row.authority_state}. Diff qty: {row.quantity_diff}; diff avg: {row.avg_price_diff}.
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button variant="quiet" className="px-2.5 py-1.5" onClick={(e) => { e.stopPropagation(); registerOpeningFromRow(row); }}>Registrar posición inicial</Button>
+                          <Button variant="quiet" className="px-2.5 py-1.5" onClick={(e) => { e.stopPropagation(); createAdjustment(row); }}>Adjustment explícito</Button>
+                          <Button variant="positive" className="px-2.5 py-1.5" disabled={row.status !== 'MATCH'} onClick={(e) => { e.stopPropagation(); adoptLedger(row.ticker); }}>Adoptar Ledger</Button>
+                          <Button variant="quiet" className="px-2.5 py-1.5" onClick={(e) => { e.stopPropagation(); keepManual(row.ticker); }}>Mantener manual</Button>
+                        </div>
+                      </div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-          <input className={input} placeholder={`Actual: ${data.market_data.benchmark_symbol || 'sin benchmark'}`} value={benchmarkKey} onChange={(e) => setBenchmarkKey(e.target.value.toUpperCase())} />
-          <button onClick={saveBenchmarkConfig} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs">Guardar benchmark</button>
-          <textarea className={`${input} w-full min-h-16`} placeholder="date,price,currency&#10;2026-09-01,100,USD" value={benchmarkCsv} onChange={(e) => setBenchmarkCsv(e.target.value)} />
-          <button onClick={importBenchmark} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs flex items-center gap-2"><GitCompare className="w-4 h-4" />Importar benchmark</button>
-          <div className="text-xs text-gray-400">Estado: {data.benchmark.status} {data.benchmark.excess_return_pct !== undefined ? `· Excess return ${pct(data.benchmark.excess_return_pct)}` : data.benchmark.reason}</div>
-          <div className="text-xs text-gray-500">Alineadas: {data.benchmark.coverage?.aligned_observations ?? 0} · Portfolio {data.benchmark.coverage?.portfolio_observations ?? 0} · Benchmark {data.benchmark.coverage?.benchmark_observations ?? 0}</div>
-        </div>
+        </ToolSurfaceDock>
+      )}
 
-        <div className={panel}>
-          <div className="text-sm font-bold text-white">FX manual</div>
-          <div className="grid grid-cols-2 gap-2">
-            <input className={input} value={fxForm.base_currency} onChange={(e) => setFxForm({ ...fxForm, base_currency: e.target.value.toUpperCase() })} />
-            <input className={input} value={fxForm.quote_currency} onChange={(e) => setFxForm({ ...fxForm, quote_currency: e.target.value.toUpperCase() })} />
-            <input className={input} type="date" value={fxForm.rate_date} onChange={(e) => setFxForm({ ...fxForm, rate_date: e.target.value })} />
-            <input className={input} type="number" placeholder="Rate" value={fxForm.rate || ''} onChange={(e) => setFxForm({ ...fxForm, rate: Number(e.target.value) })} />
-          </div>
-          <button onClick={saveFx} className="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-200 text-xs">Guardar FX</button>
-          <div className="text-xs text-gray-500">Pares faltantes: {data.market_data.coverage.summary.missing_fx.join(', ') || 'Ninguno'}</div>
-        </div>
-      </section>
+      {/* =============================================================== */}
+      {/* DOCK · Market Data                                              */}
+      {/* =============================================================== */}
+      {openTool === 'market' && (
+        <ToolSurfaceDock
+          id="invest-market-dock"
+          title="Market Data"
+          description="Sincronización, cobertura de precios, valoraciones manuales, benchmark y FX."
+          triggerRef={marketLauncherRef}
+          onClose={() => onOpenTool(null)}
+        >
+          <div className="space-y-5">
+            {/* Sincronización */}
+            <div className="space-y-3">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Sincronización</div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="operational" disabled={syncingMarket} onClick={() => syncMarket('QUICK')}>
+                  <span className="inline-flex items-center gap-2">
+                    <RefreshCw className={`h-4 w-4 ${syncingMarket ? 'animate-spin' : ''}`} aria-hidden="true" />
+                    Quick refresh
+                  </span>
+                </Button>
+                <Button variant="quiet" disabled={syncingMarket} onClick={() => syncMarket('FULL')}>
+                  Full history
+                </Button>
+              </div>
+            </div>
 
-      <section className={panel}>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-          <div>
-            <div className="text-sm font-bold text-white">Rebalance Planner</div>
-            <div className="text-xs text-gray-400">Tradicional y con nuevos aportes; no ejecuta operaciones.</div>
+            {/* Cobertura por activo */}
+            <div className="border-t border-[var(--a-line)] pt-4">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Cobertura por activo</div>
+              <div className="mt-3 space-y-3">
+                {data.market_data.coverage.rows.map((row) => (
+                  <div key={row.ticker} className="rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-[var(--a-text)]">{row.ticker}</span>
+                      <span className={row.status === 'OK' ? 'text-xs font-bold text-[var(--a-positive)]' : 'text-xs font-bold text-[var(--a-warning)]'}>{row.status}</span>
+                    </div>
+                    <div className="a-meta">Precio: {money(row.current_price)} · {row.freshness} · {row.price_source}</div>
+                    <div className="a-meta">Provider symbol: {row.provider_symbol || 'Sin resolver'} · Historial {row.history_count} · FX {row.fx_status}</div>
+                    <div className="grid grid-cols-[1fr_auto] gap-2">
+                      <input
+                        aria-label={`Provider symbol para ${row.ticker}`}
+                        placeholder={row.provider_symbol || row.ticker}
+                        value={symbolDrafts[row.ticker] ?? ''}
+                        onChange={(e) => setSymbolDrafts({ ...symbolDrafts, [row.ticker]: e.target.value.toUpperCase() })}
+                        className="min-h-10 min-w-0 rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-surface)] px-3 py-2 text-sm text-[var(--a-text)] placeholder:text-[var(--a-muted)] focus:border-[var(--a-brand)] focus:outline-none"
+                      />
+                      <Button variant="quiet" onClick={() => saveCoverageSymbol(row.ticker)}>Símbolo</Button>
+                    </div>
+                    <MetricInput
+                      id={`invest-manual-price-${row.ticker}`}
+                      label="Precio manual"
+                      unit={row.currency || 'USD'}
+                      value={Number(manualPriceDrafts[row.ticker] || 0)}
+                      onChange={(value) => setManualPriceDrafts({ ...manualPriceDrafts, [row.ticker]: value === '' ? '' : String(value) })}
+                    />
+                    <div className="flex gap-2">
+                      <Button variant="quiet" className="flex-1" onClick={() => saveAuthority(row.ticker, 'MANUAL', row.currency || 'USD')}>MANUAL</Button>
+                      <Button variant="operational" className="flex-1" onClick={() => saveAuthority(row.ticker, 'AUTO', row.currency || 'USD')}>AUTO</Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Histórico manual / CSV */}
+            <div className="border-t border-[var(--a-line)] pt-4">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Histórico manual / CSV</div>
+              <div className="mt-3 space-y-2.5">
+                <label htmlFor="invest-valuation-csv" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Valoraciones CSV</label>
+                <textarea
+                  id="invest-valuation-csv"
+                  rows={3}
+                  placeholder="ticker,date,price,currency&#10;NVDA,2026-09-01,120,USD"
+                  value={valuationCsv}
+                  onChange={(e) => setValuationCsv(e.target.value)}
+                  className="min-h-20 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3 text-xs leading-relaxed text-[var(--a-text)] placeholder:text-[var(--a-muted)] focus:border-[var(--a-brand)] focus:outline-none"
+                />
+                <Button variant="primary" className="w-full" onClick={importValuations}>
+                  <span className="inline-flex items-center gap-2">
+                    <Upload className="h-4 w-4" aria-hidden="true" />
+                    Importar valoraciones
+                  </span>
+                </Button>
+              </div>
+            </div>
+
+            {/* Benchmark */}
+            <div className="border-t border-[var(--a-line)] pt-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">Benchmark</div>
+                <Button
+                  variant="quiet"
+                  className="px-2.5"
+                  aria-label="Recalcular wealth con el benchmark actual"
+                  onClick={() => onRefresh(contribution, benchmarkKey || undefined)}
+                >
+                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                </Button>
+              </div>
+              <div className="mt-3 space-y-2.5">
+                <Field
+                  id="invest-benchmark-key"
+                  label="Benchmark key"
+                  placeholder={`Actual: ${data.market_data.benchmark_symbol || 'sin benchmark'}`}
+                  value={benchmarkKey}
+                  onChange={(value) => setBenchmarkKey(value.toUpperCase())}
+                />
+                <Button variant="quiet" className="w-full" onClick={saveBenchmarkConfig}>Guardar benchmark</Button>
+                <label htmlFor="invest-benchmark-csv" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Benchmark CSV</label>
+                <textarea
+                  id="invest-benchmark-csv"
+                  rows={2}
+                  placeholder="date,price,currency&#10;2026-09-01,100,USD"
+                  value={benchmarkCsv}
+                  onChange={(e) => setBenchmarkCsv(e.target.value)}
+                  className="min-h-16 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3 text-xs leading-relaxed text-[var(--a-text)] placeholder:text-[var(--a-muted)] focus:border-[var(--a-brand)] focus:outline-none"
+                />
+                <Button variant="quiet" className="w-full" onClick={importBenchmark}>
+                  <span className="inline-flex items-center gap-2">
+                    <GitCompare className="h-4 w-4" aria-hidden="true" />
+                    Importar benchmark
+                  </span>
+                </Button>
+              </div>
+            </div>
+
+            {/* FX manual */}
+            <div className="border-t border-[var(--a-line)] pt-4">
+              <div className="text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">FX manual</div>
+              <div className="mt-3 space-y-2.5">
+                <div className="grid grid-cols-2 gap-2.5">
+                  <Field
+                    id="invest-fx-base"
+                    label="Base"
+                    value={fxForm.base_currency}
+                    onChange={(value) => setFxForm({ ...fxForm, base_currency: value.toUpperCase() })}
+                  />
+                  <Field
+                    id="invest-fx-quote"
+                    label="Quote"
+                    value={fxForm.quote_currency}
+                    onChange={(value) => setFxForm({ ...fxForm, quote_currency: value.toUpperCase() })}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="invest-fx-date" className="mb-1.5 block text-xs font-bold text-[var(--a-secondary)]">Fecha</label>
+                  <input
+                    id="invest-fx-date"
+                    type="date"
+                    value={fxForm.rate_date}
+                    onChange={(e) => setFxForm({ ...fxForm, rate_date: e.target.value })}
+                    className="min-h-10 w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] px-3 py-2 text-sm text-[var(--a-text)] focus:border-[var(--a-brand)] focus:outline-none"
+                  />
+                </div>
+                <MetricInput
+                  id="invest-fx-rate"
+                  label="Rate"
+                  unit={`${fxForm.base_currency || 'BASE'}/${fxForm.quote_currency || 'QUOTE'}`}
+                  value={Number(fxForm.rate || 0)}
+                  onChange={(value) => setFxForm({ ...fxForm, rate: value === '' ? 0 : value })}
+                />
+                <Button variant="quiet" className="w-full" onClick={saveFx}>Guardar FX</Button>
+                <p className="a-meta">Pares faltantes: {data.market_data.coverage.summary.missing_fx.join(', ') || 'Ninguno'}</p>
+              </div>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <input className={input} type="number" value={contribution} onChange={(e) => setContribution(Number(e.target.value) || 0)} />
-            <button onClick={() => onRefresh(contribution, benchmarkKey || undefined)} className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-bold">Calcular</button>
-          </div>
-        </div>
-        {data.rebalancing.status !== 'AVAILABLE' && <div className="text-xs text-gray-400">{data.rebalancing.reason}</div>}
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="text-gray-500 uppercase text-[10px]"><tr><th className="py-2">Activo</th><th>Actual</th><th>Meta</th><th>Desvío</th><th>Compra/Venta</th><th>Aporte</th></tr></thead>
-            <tbody className="divide-y divide-gray-800">
-              {data.rebalancing.traditional.map((row) => {
-                const aport = data.rebalancing.new_contribution.find((item) => item.ticker === row.ticker);
-                return <tr key={row.ticker}><td className="py-2 text-white">{row.ticker}</td><td>{row.current_pct}%</td><td>{row.target_pct}%</td><td>{row.drift_pct} pp</td><td>{money(row.trade_usd)}</td><td>{money(aport?.contribution_usd || 0)}</td></tr>;
-              })}
-            </tbody>
-          </table>
-        </div>
-      </section>
-    </div>
+        </ToolSurfaceDock>
+      )}
+    </>
   );
 };
