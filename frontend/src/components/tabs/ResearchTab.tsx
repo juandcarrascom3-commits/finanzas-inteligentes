@@ -5,6 +5,7 @@ import { fetchResearchItems } from '../../services/api';
 import type { ResearchItem } from '../../types';
 import { DataState } from '../../aetheris/primitives';
 import { Button } from '../../aetheris/controls';
+import { ResearchImportDock } from './ResearchImportDock';
 
 /**
  * Tope de consulta del listado GET. Es un límite de lectura, no una
@@ -146,6 +147,9 @@ export function ResearchTab() {
   const [knownSources, setKnownSources] = useState<string[]>([]);
   const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const requestIdRef = useRef(0);
+  /* RF2: dock de importación, estado local del tab (patrón PlanningTab). */
+  const [openImport, setOpenImport] = useState(false);
+  const importLauncherRef = useRef<HTMLButtonElement>(null);
 
   const load = useCallback(async (sourceId: string, epistemic: string) => {
     const requestId = ++requestIdRef.current;
@@ -235,7 +239,13 @@ export function ResearchTab() {
 
   return (
     <div className="a-enter">
-      <div className="a-workspace mt-0">
+      <div
+        className={
+          openImport
+            ? 'grid gap-[var(--a-stack)] min-[1041px]:grid-cols-[minmax(0,1fr)_minmax(300px,360px)]'
+            : 'a-workspace mt-0'
+        }
+      >
         <section className="a-canvas" aria-labelledby="research-title">
           <div className="a-page-kicker">Research</div>
           <h1 id="research-title" className="a-page-title">Conocimiento externo</h1>
@@ -304,14 +314,24 @@ export function ResearchTab() {
               sobre los {items.length} elementos cargados. La consulta usa un límite de{' '}
               {RESEARCH_QUERY_LIMIT} registros y no representa el corpus completo.
             </p>
-            <Button
-              variant="quiet"
-              onClick={() => load(sourceFilter, epistemicFilter)}
-              disabled={status === 'loading'}
-            >
-              <RefreshCw className="mr-1.5 inline h-3.5 w-3.5" aria-hidden="true" />
-              Actualizar
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                ref={importLauncherRef}
+                variant={openImport ? 'operational' : 'quiet'}
+                aria-pressed={openImport}
+                onClick={() => setOpenImport((current) => !current)}
+              >
+                Importar Research
+              </Button>
+              <Button
+                variant="quiet"
+                onClick={() => load(sourceFilter, epistemicFilter)}
+                disabled={status === 'loading'}
+              >
+                <RefreshCw className="mr-1.5 inline h-3.5 w-3.5" aria-hidden="true" />
+                Actualizar
+              </Button>
+            </div>
           </div>
 
           <div className="mt-6 border-t border-[var(--a-line)] pt-5" aria-live="polite">
@@ -440,7 +460,18 @@ export function ResearchTab() {
           </div>
         </section>
 
-        <aside className="a-elevated h-fit p-5" aria-labelledby="research-inspector-title">
+        {openImport && (
+          <ResearchImportDock
+            triggerRef={importLauncherRef}
+            onClose={() => setOpenImport(false)}
+            onApplied={() => load(sourceFilter, epistemicFilter)}
+          />
+        )}
+
+        <aside
+          className={`a-elevated h-fit p-5 ${openImport ? 'min-[1041px]:col-span-2' : ''}`}
+          aria-labelledby="research-inspector-title"
+        >
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="a-page-kicker">Inspector</div>

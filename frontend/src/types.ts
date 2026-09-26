@@ -960,3 +960,60 @@ export interface ResearchItem {
   reasons?: string[];
   external_ref_derived?: boolean;
 }
+
+/* Research RF2 — contratos de preview/ingest del backend R1B/R1C.
+   Valores de enum idénticos a backend/services/research_service.py. */
+export type ResearchDecisionStatus = 'NEW' | 'CHANGED' | 'UNCHANGED' | 'CONFLICT' | 'REJECTED';
+
+export interface ResearchCounts {
+  total: number;
+  new: number;
+  changed: number;
+  unchanged: number;
+  conflict: number;
+  rejected: number;
+  warnings: number;
+}
+
+/** Decisión por identidad. Los duplicados colapsados emiten una sola fila;
+    los rejected conservan source_id/external_ref cuando el input lo permite. */
+export interface ResearchDecision {
+  id: string | null;
+  source_id: string | null;
+  external_ref: string | null;
+  status: ResearchDecisionStatus;
+  content_hash: string | null;
+  /* Solo CHANGED: el backend expone qué campos cambiaron, nunca valores previos. */
+  changed_fields?: string[];
+  reasons?: string[];
+}
+
+/** Señal informativa entre fuentes; nunca es clave de merge ni bloquea ingesta. */
+export interface ResearchCrossSourceSignal {
+  entity_ticker: string;
+  content_hash: string;
+  source_ids: string[];
+  item_ids: string[];
+  signal: 'POSSIBLE_CROSS_SOURCE_DUPLICATE';
+}
+
+/** POST /api/research/preview — solo lectura, cero persistencia. */
+export interface ResearchPreview {
+  scope_key: string;
+  ingest_complete: boolean;
+  counts: ResearchCounts;
+  items: ResearchDecision[];
+  cross_source_signals: ResearchCrossSourceSignal[];
+  preview_hash: string;
+}
+
+/** POST /api/research/ingest — solo con result === 'APPLIED'. */
+export interface ResearchIngestResult {
+  result: 'APPLIED';
+  scope_key: string;
+  ingest_complete: boolean;
+  preview_hash: string;
+  counts: ResearchCounts;
+  write_counts: { inserted: number; updated: number; unchanged: number };
+  audit: { recorded: boolean; source: 'RESEARCH'; event_type: 'INGEST' };
+}

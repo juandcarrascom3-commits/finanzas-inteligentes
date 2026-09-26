@@ -26,7 +26,9 @@ import type {
   MarketDataSyncResult,
   RecurringRule,
   ReconciliationSummary,
+  ResearchIngestResult,
   ResearchItem,
+  ResearchPreview,
   SourceMapping,
   SafeToSpendResult,
   ScenarioEvaluationResult,
@@ -612,10 +614,35 @@ export async function evaluateFinancialInbox(payload: Record<string, unknown>): 
 }
 
 /**
- * Parser propio de Research: los endpoints de Research devuelven `detail`
- * estructurado (p. ej. `{ "code": "EPISTEMIC_INVALID" }`), que el helper
- * compartido `readJson` convertiría en "[object Object]" al construir el
- * mensaje. Solo se usa dentro de esta capa GET; `readJson` no se modifica.
+ * Error tipado de Research: el MISMO parser de RF1 (único mecanismo de
+ * errores de Research), ahora conservando el código estable, el estado HTTP
+ * y el `message` documentado del backend para que la UI pueda ramificar sin
+ * un segundo mecanismo. El texto que se muestra lo decide siempre la UI;
+ * nunca se expone excepción cruda.
+ */
+export class ResearchApiError extends Error {
+  readonly code?: string;
+  readonly status: number;
+  readonly serverMessage?: string;
+
+  constructor(
+    message: string,
+    options: { status: number; code?: string; serverMessage?: string }
+  ) {
+    super(message);
+    this.name = 'ResearchApiError';
+    this.status = options.status;
+    this.code = options.code;
+    this.serverMessage = options.serverMessage;
+  }
+}
+
+/**
+ * Parser propio de Research (lo usan el GET de elementos y los POST de
+ * preview/ingest): los endpoints devuelven `detail` estructurado (p. ej.
+ * `{ "code": "EPISTEMIC_INVALID" }`), que el helper compartido `readJson`
+ * convertiría en "[object Object]" al construir el mensaje. `readJson` no
+ * se modifica.
  */
 async function readResearchJson<T>(response: Response, fallbackMessage: string): Promise<T> {
   if (!response.ok) {
@@ -629,10 +656,13 @@ async function readResearchJson<T>(response: Response, fallbackMessage: string):
     const code = detail && typeof detail === 'object' && typeof (detail as { code?: unknown }).code === 'string'
       ? (detail as { code: string }).code
       : undefined;
+    const serverMessage = detail && typeof detail === 'object' && typeof (detail as { message?: unknown }).message === 'string'
+      ? (detail as { message: string }).message
+      : undefined;
     const message = typeof detail === 'string' && detail.trim()
       ? detail
       : code || fallbackMessage || `HTTP error ${response.status}`;
-    throw new Error(message);
+    throw new ResearchApiError(message, { status: response.status, code, serverMessage });
   }
   return response.json();
 }
@@ -655,4 +685,38 @@ export async function fetchResearchItems(params: FetchResearchItemsParams = {}):
   query.set('limit', String(params.limit ?? 1000));
   const res = await fetch(`${API_BASE}/research/items?${query.toString()}`);
   return readResearchJson<ResearchItem[]>(res, 'Error al cargar elementos de Research.');
+}
+
+/**
+ * RF2: vista previa de solo lectura (cero persistencia según el backend).
+ * Sin fetched_at/meta en V1: ambos POST omiten ambos campos de forma
+ * idéntica, así el preview_hash sigue vinculando el mismo scope.
+ */
+export async function previewResearch(items: unknown[]): Promise<ResearchPreview> {
+  const res = await fetch(`${API_BASE}/research/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items })
+  });
+  return readResearchJson<ResearchPreview>(res, 'Error al previsualizar Research.');
+}
+
+export interface ResearchIngestRequest {
+  items: unknown[];
+  preview_hash: string;
+  confirm_import: true;
+}
+
+/**
+ * RF2: aplica exactamente el lote que produjo la preview. `preview_hash` y
+ * `confirm_import: true` son obligatorios; sin confirmación explícita el
+ * backend responde CONFIRMATION_REQUIRED y con hash viejo, STALE_PREVIEW.
+ */
+export async function ingestResearch(payload: ResearchIngestRequest): Promise<ResearchIngestResult> {
+  const res = await fetch(`${API_BASE}/research/ingest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  return readResearchJson<ResearchIngestResult>(res, 'Error al aplicar la ingesta de Research.');
 }
