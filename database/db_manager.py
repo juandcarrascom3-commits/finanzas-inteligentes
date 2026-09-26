@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional
 DEFAULT_DB_FILE = os.path.join(os.path.dirname(__file__), "finanzas.db")
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 SEED_FILE = os.path.join(os.path.dirname(__file__), "seeds", "initial_seed.sql")
+BACKUP_FILE_PREFIXES = ("finance-backup-", "finance-pre-restore-")
 VALID_SOURCES = {"DEMO", "MANUAL", "CSV", "BUDGETBAKERS", "ETORO", "GOOGLE", "MARKET_DATA"}
 VALID_INVESTMENT_OPERATION_TYPES = {
     "CONTRIBUTION", "WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "INTEREST", "FEE",
@@ -1921,6 +1922,38 @@ class DatabaseManager:
             "duplicate_count": duplicates,
         }
 
+    def _backup_directory(self) -> str:
+        """Canonical directory where FINANCE writes its own backups."""
+        return os.path.realpath(
+            os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "backups")
+        )
+
+    def _resolve_backup_path(self, backup_path: str) -> str:
+        """Resolve a caller-supplied backup path, failing closed outside the backup directory.
+
+        Only files directly inside <dirname(db_path)>/backups/ whose names match the
+        FINANCE-generated patterns (`finance-backup-*.db`, `finance-pre-restore-*.db`)
+        are accepted. Resolution uses real paths, so traversal, foreign, sibling,
+        UNC and symlinked locations outside the directory are rejected.
+        """
+        if not isinstance(backup_path, str) or not backup_path.strip():
+            raise ValueError("Backup path is not allowed.")
+
+        backup_dir = self._backup_directory()
+        resolved = os.path.realpath(os.path.abspath(backup_path))
+
+        if os.path.normcase(os.path.dirname(resolved)) != os.path.normcase(backup_dir):
+            raise ValueError("Backup path must be inside the FINANCE backup directory.")
+
+        filename = os.path.basename(resolved)
+        if not filename.endswith(".db"):
+            raise ValueError("Backup file name must use the .db FINANCE backup pattern.")
+        if not filename.startswith(BACKUP_FILE_PREFIXES):
+            raise ValueError("Backup file name does not match a FINANCE-generated backup.")
+        if not os.path.isfile(resolved):
+            raise ValueError("Backup file does not exist.")
+        return resolved
+
     def export_backup(self) -> Dict[str, Any]:
         tables = [
             "accounts",
@@ -1964,50 +1997,50 @@ class DatabaseManager:
         }
 
     def validate_backup(self, backup_path: str) -> Dict[str, Any]:
-        if not backup_path or not os.path.exists(backup_path):
-            raise ValueError("Backup file does not exist.")
-        if not os.path.isfile(backup_path):
-            raise ValueError("Backup path must point to a file.")
-
-        conn = sqlite3.connect(backup_path)
-        conn.row_factory = sqlite3.Row
+        resolved = self._resolve_backup_path(backup_path)
         try:
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            if integrity != "ok":
-                raise ValueError(f"Backup integrity check failed: {integrity}")
-            tables = {
-                row["name"]
-                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            }
-            required = {"accounts", "assets", "transactions", "categories", "schema_migrations"}
-            missing = sorted(required - tables)
-            if missing:
-                raise ValueError(f"Backup is missing required tables: {', '.join(missing)}")
-            migrations = [
-                dict(row)
-                for row in conn.execute(
-                    "SELECT version, filename, applied_at FROM schema_migrations ORDER BY version"
-                ).fetchall()
-            ]
-            return {
-                "valid": True,
-                "path": backup_path,
-                "tables": sorted(tables),
-                "latest_version": migrations[-1]["version"] if migrations else None,
-                "migrations": migrations,
-            }
-        finally:
-            conn.close()
+            conn = sqlite3.connect(resolved)
+            conn.row_factory = sqlite3.Row
+            try:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                if integrity != "ok":
+                    raise ValueError(f"Backup integrity check failed: {integrity}")
+                tables = {
+                    row["name"]
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                }
+                required = {"accounts", "assets", "transactions", "categories", "schema_migrations"}
+                missing = sorted(required - tables)
+                if missing:
+                    raise ValueError(f"Backup is missing required tables: {', '.join(missing)}")
+                migrations = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT version, filename, applied_at FROM schema_migrations ORDER BY version"
+                    ).fetchall()
+                ]
+                return {
+                    "valid": True,
+                    "path": backup_path,
+                    "tables": sorted(tables),
+                    "latest_version": migrations[-1]["version"] if migrations else None,
+                    "migrations": migrations,
+                }
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup file is not a valid SQLite database.") from exc
 
     def restore_backup(self, backup_path: str) -> Dict[str, Any]:
-        validation = self.validate_backup(backup_path)
+        resolved = self._resolve_backup_path(backup_path)
+        validation = self.validate_backup(resolved)
         backup_dir = os.path.join(os.path.dirname(self.db_path), "backups")
         os.makedirs(backup_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         pre_restore_path = os.path.join(backup_dir, f"finance-pre-restore-{stamp}.db")
         if os.path.exists(self.db_path):
             shutil.copy2(self.db_path, pre_restore_path)
-        shutil.copy2(backup_path, self.db_path)
+        shutil.copy2(resolved, self.db_path)
         logger.warning("Restored local database from %s", backup_path)
         return {
             "status": "RESTORED",
