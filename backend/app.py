@@ -18,6 +18,7 @@ import uuid
 import calendar
 import datetime
 from typing import Dict, Any, List, Optional
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -96,6 +97,23 @@ from backend.analytics.investment_ledger import (
 from backend.services.budgetbakers_client import BudgetBakersClient, DailyQuotaExceededError
 from backend.services.guardrail_service import GuardrailService, TradeGuardrailBlockedError
 from backend.services.market_data_service import apply_market_prices, get_cached_fund_compositions, get_market_data_status, refresh_fund_compositions, sync_market_data
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_local_env(env_file: Optional[str] = None) -> str:
+    """Load the repository `.env` before application configuration reads the environment.
+
+    `override=False` keeps the process environment authoritative, so values injected
+    by the caller (pytest isolation, shell exports, service managers) always win.
+    """
+    path = env_file if env_file is not None else os.path.join(PROJECT_ROOT, ".env")
+    load_dotenv(path, override=False)
+    return path
+
+
+# Must run before `db = DatabaseManager()` and before `cors_origins` read the environment.
+load_local_env()
 
 app = FastAPI(
     title="Finanzas Inteligentes API",

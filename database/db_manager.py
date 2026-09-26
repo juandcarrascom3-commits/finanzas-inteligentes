@@ -7,15 +7,16 @@ import io
 import json
 import logging
 import os
-import shutil
 import sqlite3
 import uuid
+from contextlib import closing
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 DEFAULT_DB_FILE = os.path.join(os.path.dirname(__file__), "finanzas.db")
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 SEED_FILE = os.path.join(os.path.dirname(__file__), "seeds", "initial_seed.sql")
+BACKUP_FILE_PREFIXES = ("finance-backup-", "finance-pre-restore-")
 VALID_SOURCES = {"DEMO", "MANUAL", "CSV", "BUDGETBAKERS", "ETORO", "GOOGLE", "MARKET_DATA"}
 VALID_INVESTMENT_OPERATION_TYPES = {
     "CONTRIBUTION", "WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "INTEREST", "FEE",
@@ -34,6 +35,11 @@ def resolve_db_path() -> str:
     return DEFAULT_DB_FILE
 
 
+def _quote_sql_literal(value: str) -> str:
+    """Escape repository-controlled metadata for interpolation into an executescript."""
+    return "'" + value.replace("'", "''") + "'"
+
+
 class DatabaseManager:
     def __init__(self, db_path: str = ""):
         self.db_path = db_path or resolve_db_path()
@@ -48,7 +54,7 @@ class DatabaseManager:
 
     def _initialize_database(self):
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
-        with self.get_connection() as conn:
+        with closing(self.get_connection()) as conn:
             cursor = conn.cursor()
             logger.info("Initializing Finance database at %s", self.db_path)
             self._run_migrations(cursor)
@@ -86,15 +92,62 @@ class DatabaseManager:
                     raise RuntimeError(f"Migration {filename} was modified after being applied.")
                 continue
             logger.info("Applying database migration %s", filename)
+            statements: List[str] = []
             if version == "001":
-                self._prepare_legacy_schema_for_baseline(cursor)
-            cursor.executescript(sql)
-            cursor.execute(
-                "INSERT INTO schema_migrations (version, filename, checksum) VALUES (?, ?, ?)",
-                (version, filename, checksum),
-            )
+                statements.extend(self._legacy_baseline_statements(cursor))
+            statements.append(sql)
+            self._apply_migration_atomically(cursor, version, filename, checksum, statements)
 
-    def _prepare_legacy_schema_for_baseline(self, cursor: sqlite3.Cursor):
+    def _apply_migration_atomically(
+        self,
+        cursor: sqlite3.Cursor,
+        version: str,
+        filename: str,
+        checksum: str,
+        statements: List[str],
+    ):
+        """Apply migration SQL and its schema_migrations record as one SQLite transaction.
+
+        `executescript` commits any pending transaction first, then runs this script
+        verbatim, so the explicit BEGIN IMMEDIATE/COMMIT pair below is what makes the
+        migration and its record all-or-nothing. Any failure leaves the transaction open
+        and is rolled back here, so a half-applied schema can never be recorded.
+        """
+        if not version or not all(ch in "0123456789" for ch in version):
+            raise RuntimeError(f"Migration {filename} has an unsupported version; refusing to apply it.")
+        if len(checksum) != 64 or any(ch not in "0123456789abcdef" for ch in checksum):
+            raise RuntimeError(f"Migration {filename} has an unsupported checksum; refusing to apply it.")
+        if not filename.startswith(f"{version}_") or not all(ch.isalnum() or ch in "._-" for ch in filename):
+            raise RuntimeError(f"Migration {filename} has an unsupported name; refusing to apply it.")
+
+        sql_statements = [
+            statement.strip().rstrip(";").rstrip() + ";"
+            for statement in statements
+            if statement.strip()
+        ]
+        script = "\n".join(
+            ["BEGIN IMMEDIATE;"]
+            + sql_statements
+            + [
+                "INSERT INTO schema_migrations (version, filename, checksum) VALUES ("
+                f"{_quote_sql_literal(version)}, {_quote_sql_literal(filename)}, {_quote_sql_literal(checksum)});",
+                "COMMIT;",
+            ]
+        )
+        connection = cursor.connection
+        try:
+            connection.executescript(script)
+        except BaseException:
+            connection.rollback()
+            raise
+
+    def _legacy_baseline_statements(self, cursor: sqlite3.Cursor) -> List[str]:
+        """Return the ALTER statements migration 001 needs on a legacy database.
+
+        They are collected instead of executed so they join the migration transaction:
+        a legacy baseline can never end up half-applied.
+        """
+        statements: List[str] = []
         tables = self._table_names(cursor)
 
         def columns(table: str) -> set[str]:
@@ -108,10 +161,11 @@ class DatabaseManager:
                 "external_id": "TEXT",
             }.items():
                 if name not in tx_cols:
-                    cursor.execute(f"ALTER TABLE transactions ADD COLUMN {name} {ddl}")
+                    statements.append(f"ALTER TABLE transactions ADD COLUMN {name} {ddl}")
 
         if "assets" in tables and "source" not in columns("assets"):
-            cursor.execute("ALTER TABLE assets ADD COLUMN source TEXT NOT NULL DEFAULT 'DEMO'")
+            statements.append("ALTER TABLE assets ADD COLUMN source TEXT NOT NULL DEFAULT 'DEMO'")
+        return statements
 
     def _ensure_schema(self, cursor: sqlite3.Cursor):
         def columns(table: str) -> set[str]:
@@ -1921,6 +1975,54 @@ class DatabaseManager:
             "duplicate_count": duplicates,
         }
 
+    def _backup_directory(self) -> str:
+        """Canonical directory where FINANCE writes its own backups."""
+        return os.path.realpath(
+            os.path.join(os.path.dirname(os.path.abspath(self.db_path)), "backups")
+        )
+
+    def _resolve_backup_path(self, backup_path: str) -> str:
+        """Resolve a caller-supplied backup path, failing closed outside the backup directory.
+
+        Only files directly inside <dirname(db_path)>/backups/ whose names match the
+        FINANCE-generated patterns (`finance-backup-*.db`, `finance-pre-restore-*.db`)
+        are accepted. Resolution uses real paths, so traversal, foreign, sibling,
+        UNC and symlinked locations outside the directory are rejected.
+        """
+        if not isinstance(backup_path, str) or not backup_path.strip():
+            raise ValueError("Backup path is not allowed.")
+
+        backup_dir = self._backup_directory()
+        resolved = os.path.realpath(os.path.abspath(backup_path))
+
+        if os.path.normcase(os.path.dirname(resolved)) != os.path.normcase(backup_dir):
+            raise ValueError("Backup path must be inside the FINANCE backup directory.")
+
+        filename = os.path.basename(resolved)
+        if not filename.endswith(".db"):
+            raise ValueError("Backup file name must use the .db FINANCE backup pattern.")
+        if not filename.startswith(BACKUP_FILE_PREFIXES):
+            raise ValueError("Backup file name does not match a FINANCE-generated backup.")
+        if not os.path.isfile(resolved):
+            raise ValueError("Backup file does not exist.")
+        return resolved
+
+    def _copy_sqlite(self, source_path: str, destination_path: str) -> None:
+        """Copy a SQLite database with the SQLite backup API and deterministic closes.
+
+        Both connections are always closed, so the result is a transactionally
+        consistent snapshot instead of a mid-write byte copy of a live file, and
+        Windows never keeps a stray handle on a generated backup.
+        """
+        if not os.path.isfile(source_path):
+            raise ValueError("Source database file does not exist.")
+        if os.path.abspath(source_path) == os.path.abspath(destination_path):
+            raise ValueError("Source and destination database must be different files.")
+        with closing(sqlite3.connect(source_path)) as source_conn:
+            with closing(sqlite3.connect(destination_path)) as destination_conn:
+                source_conn.backup(destination_conn)
+                destination_conn.commit()
+
     def export_backup(self) -> Dict[str, Any]:
         tables = [
             "accounts",
@@ -1944,7 +2046,7 @@ class DatabaseManager:
             "reconciliation_audit_events",
             "schema_migrations",
         ]
-        with self.get_connection() as conn:
+        with closing(self.get_connection()) as conn:
             data = {
                 table: [dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
                 for table in tables
@@ -1954,7 +2056,7 @@ class DatabaseManager:
         os.makedirs(backup_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         db_copy = os.path.join(backup_dir, f"finance-backup-{stamp}.db")
-        shutil.copy2(self.db_path, db_copy)
+        self._copy_sqlite(self.db_path, db_copy)
         logger.info("Created local backup at %s", db_copy)
         return {
             "generated_at": datetime.now().isoformat(),
@@ -1963,51 +2065,100 @@ class DatabaseManager:
             "data": data,
         }
 
-    def validate_backup(self, backup_path: str) -> Dict[str, Any]:
-        if not backup_path or not os.path.exists(backup_path):
-            raise ValueError("Backup file does not exist.")
-        if not os.path.isfile(backup_path):
-            raise ValueError("Backup path must point to a file.")
-
-        conn = sqlite3.connect(backup_path)
-        conn.row_factory = sqlite3.Row
+    def _validate_database_file(self, path: str) -> Dict[str, Any]:
+        """Validate integrity, required tables and migration records of a database file."""
         try:
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-            if integrity != "ok":
-                raise ValueError(f"Backup integrity check failed: {integrity}")
-            tables = {
-                row["name"]
-                for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            }
-            required = {"accounts", "assets", "transactions", "categories", "schema_migrations"}
-            missing = sorted(required - tables)
-            if missing:
-                raise ValueError(f"Backup is missing required tables: {', '.join(missing)}")
-            migrations = [
-                dict(row)
-                for row in conn.execute(
-                    "SELECT version, filename, applied_at FROM schema_migrations ORDER BY version"
-                ).fetchall()
+            with closing(sqlite3.connect(path)) as conn:
+                conn.row_factory = sqlite3.Row
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                if integrity != "ok":
+                    raise ValueError(f"Backup integrity check failed: {integrity}")
+                tables = {
+                    row["name"]
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+                }
+                required = {"accounts", "assets", "transactions", "categories", "schema_migrations"}
+                missing = sorted(required - tables)
+                if missing:
+                    raise ValueError(f"Backup is missing required tables: {', '.join(missing)}")
+                migrations = [
+                    dict(row)
+                    for row in conn.execute(
+                        "SELECT version, filename, applied_at FROM schema_migrations ORDER BY version"
+                    ).fetchall()
+                ]
+                return {
+                    "tables": sorted(tables),
+                    "latest_version": migrations[-1]["version"] if migrations else None,
+                    "migrations": migrations,
+                }
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup file is not a valid SQLite database.") from exc
+
+    def validate_backup(self, backup_path: str) -> Dict[str, Any]:
+        resolved = self._resolve_backup_path(backup_path)
+        info = self._validate_database_file(resolved)
+        return {"valid": True, "path": backup_path, **info}
+
+    def _assert_migrations_compatible(self, path: str) -> None:
+        """Fail unless every migration recorded in `path` exists unchanged in this build."""
+        with closing(sqlite3.connect(path)) as conn:
+            conn.row_factory = sqlite3.Row
+            applied = [
+                (row["filename"], row["checksum"])
+                for row in conn.execute("SELECT filename, checksum FROM schema_migrations ORDER BY version")
             ]
-            return {
-                "valid": True,
-                "path": backup_path,
-                "tables": sorted(tables),
-                "latest_version": migrations[-1]["version"] if migrations else None,
-                "migrations": migrations,
-            }
-        finally:
-            conn.close()
+        known: Dict[str, str] = {}
+        for file_path in glob.glob(os.path.join(MIGRATIONS_DIR, "*_sqlite_*.sql")):
+            with open(file_path, "r", encoding="utf-8") as f:
+                known[os.path.basename(file_path)] = hashlib.sha256(f.read().encode("utf-8")).hexdigest()
+        for filename, checksum in applied:
+            if filename not in known:
+                raise ValueError("Restored database applies a migration unknown to this build.")
+            if known[filename] != checksum:
+                raise ValueError("Restored database migration checksums do not match this build.")
+
+    def _verify_restored_database(self) -> None:
+        """Post-restore gate: schema/integrity invariants plus migration compatibility."""
+        self._validate_database_file(self.db_path)
+        self._assert_migrations_compatible(self.db_path)
+
+    def _recover_previous_database(self, had_live_database: bool, pre_restore_path: str) -> bool:
+        """Return the live database to its pre-restore state after a failed restore."""
+        try:
+            if had_live_database:
+                self._copy_sqlite(pre_restore_path, self.db_path)
+                self._validate_database_file(self.db_path)
+            elif os.path.exists(self.db_path):
+                os.remove(self.db_path)
+            return True
+        except Exception:
+            logger.exception("Could not recover the live database after a failed restore")
+            return False
 
     def restore_backup(self, backup_path: str) -> Dict[str, Any]:
-        validation = self.validate_backup(backup_path)
+        resolved = self._resolve_backup_path(backup_path)
+        validation = self.validate_backup(resolved)
         backup_dir = os.path.join(os.path.dirname(self.db_path), "backups")
-        os.makedirs(backup_dir, exist_ok=True)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         pre_restore_path = os.path.join(backup_dir, f"finance-pre-restore-{stamp}.db")
-        if os.path.exists(self.db_path):
-            shutil.copy2(self.db_path, pre_restore_path)
-        shutil.copy2(backup_path, self.db_path)
+        had_live_database = os.path.exists(self.db_path)
+
+        try:
+            os.makedirs(backup_dir, exist_ok=True)
+            if had_live_database:
+                self._copy_sqlite(self.db_path, pre_restore_path)
+        except Exception as exc:
+            raise ValueError("Could not create the pre-restore backup; restore was cancelled.") from exc
+
+        try:
+            self._copy_sqlite(resolved, self.db_path)
+            self._verify_restored_database()
+        except Exception as exc:
+            if self._recover_previous_database(had_live_database, pre_restore_path):
+                raise ValueError("Restore failed; the previous database was left unchanged.") from exc
+            raise ValueError("Restore failed and the live database could not be recovered.") from exc
+
         logger.warning("Restored local database from %s", backup_path)
         return {
             "status": "RESTORED",

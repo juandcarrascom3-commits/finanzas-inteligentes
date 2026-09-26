@@ -51,6 +51,12 @@ FINANCE_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000,http://localhos
 
 `database/*.local.db`, `database/*.personal.db` y `database/backups/` no deben versionarse. No guarde tokens reales en el repositorio.
 
+El backend carga `.env` automáticamente al arrancar, antes de construir su configuración. La carga usa `override=False`: **las variables ya presentes en el proceso siempre ganan sobre `.env`**, así que un valor exportado en la terminal, fijado por el servicio o inyectado por las pruebas conserva prioridad. Si `.env` no existe, el backend arranca sin error usando los valores por defecto.
+
+`.env` es local y está en `.gitignore`: no se versiona ni se comparte. Use `.env.example` como plantilla, que solo contiene placeholders vacíos.
+
+Este proyecto es local-first: ejecute el backend con `--host 127.0.0.1` (comando en la sección 2) para que solo esta máquina pueda hablar con la API.
+
 La estrategia de migraciones SQLite es incremental:
 - `database/migrations/001_sqlite_local.sql`: baseline local.
 - `database/migrations/002_sqlite_operational_hardening.sql`: indices operativos.
