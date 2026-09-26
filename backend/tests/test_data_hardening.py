@@ -141,6 +141,25 @@ def test_wallet_preview_performs_zero_persistence(monkeypatch):
         )
 
 
+# --- B. malformed plan rejected at the typed boundary ------------------------
+
+
+def test_category_less_budget_rejected_at_boundary():
+    """S2A B: a budget item without category identity is malformed client
+    structure -> controlled 422, zero persistence, zero audit events."""
+    before = _db_snapshot()
+
+    missing = client.post("/api/budgetbakers/import-plan", json={"budgets": [{}], "standing_orders": []})
+    assert missing.status_code == 422
+    blank = client.post("/api/budgetbakers/import-plan", json={"budgets": [{"category": "   "}], "standing_orders": []})
+    assert blank.status_code == 422
+    explicit_null = client.post("/api/budgetbakers/import-plan", json={"budgets": [{"category": None}], "standing_orders": []})
+    assert explicit_null.status_code == 422
+
+    # nothing written anywhere, no audit event claiming a mutation
+    assert _db_snapshot() == before
+
+
 # --- C. standing orders idempotent by (source, external_id) -----------------
 
 
@@ -223,23 +242,41 @@ def test_manual_budgets_are_preserved_from_plan_import():
 # --- E. wallet import-plan atomic -------------------------------------------
 
 
-def test_import_plan_failure_rolls_back_every_row():
+def test_import_plan_failure_rolls_back_every_row(monkeypatch):
     uid = uuid.uuid4().hex[:10]
-    valid_category = f"S2A Atomic Budget {uid}"
+    first_category = f"S2A Atomic Budget {uid}"
+    second_category = f"S2A Atomic Budget 2 {uid}"
     before = {event["id"] for event in db.get_action_events(limit=1000)}
 
-    # first budget is valid, second lacks category -> KeyError after row one
+    # Malformed input is rejected at the typed boundary now (422), so the
+    # mid-plan failure is forced deterministically on the SECOND budget write:
+    # row one is already written when the failure hits and must roll back.
+    original = db._upsert_budget
+    calls = {"count": 0}
+
+    def flaky(conn, budget, preserve_manual=False):
+        calls["count"] += 1
+        if calls["count"] >= 2:
+            raise RuntimeError("simulated plan persistence failure")
+        return original(conn, budget, preserve_manual=preserve_manual)
+
+    monkeypatch.setattr(db, "_upsert_budget", flaky)
     response = lenient_client.post("/api/budgetbakers/import-plan", json={
-        "budgets": [{"category": valid_category, "monthly_limit": 10, "currency": "USD"}, {}],
+        "budgets": [
+            {"category": first_category, "monthly_limit": 10, "currency": "USD"},
+            {"category": second_category, "monthly_limit": 20, "currency": "USD"},
+        ],
         "standing_orders": [],
     })
     assert response.status_code == 500
-    assert _scalar("SELECT COUNT(*) FROM budgets WHERE category = ?", (valid_category,)) == 0
+    assert calls["count"] == 2  # the second budget really did fail mid-plan
+    assert _scalar("SELECT COUNT(*) FROM budgets WHERE category = ?", (first_category,)) == 0
+    assert _scalar("SELECT COUNT(*) FROM budgets WHERE category = ?", (second_category,)) == 0
 
     new_events = [e for e in db.get_action_events(limit=1000) if e["id"] not in before]
     assert [event["event_type"] for event in new_events] == ["IMPORT_PLAN_FAILED"]
     payload = json.loads(new_events[0]["payload"] or "{}")
-    assert payload["error_type"] == "KeyError"
+    assert payload["error_type"] == "RuntimeError"
     assert payload["imported_budgets"] == 0
     assert payload["imported_standing_orders"] == 0
     assert payload["rolled_back"] is True
