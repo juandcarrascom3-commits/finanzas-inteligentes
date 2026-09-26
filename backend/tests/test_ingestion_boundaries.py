@@ -258,20 +258,25 @@ def test_oversized_plan_rejected():
     assert _scalar("SELECT COUNT(*) FROM budgets WHERE category LIKE 'S2C Big %'") == 0
 
 
-def test_s2b_import_plan_failure_event_semantics_preserved():
-    """§16.10/23: a missing category still fails in the db layer with the S2B
-    IMPORT_PLAN_FAILED event (KeyError), because plan typing keeps category
-    optional and rejects only shape/type/size violations up front."""
+def test_s2b_malformed_plan_rejected_at_boundary():
+    """Contract correction (S2 micro-closeout): a budget item without category
+    identity is malformed client structure, so the typed layer rejects it with
+    a controlled 422 BEFORE any mutation — no KeyError, no generic 500, no
+    IMPORT_PLAN_FAILED event and zero rows written (S2A B). Genuine
+    persistence failures keep the S2B IMPORT_PLAN_FAILED semantics proven in
+    test_destructive_audit.py."""
     before = _all_event_ids()
-    response = lenient_client.post("/api/budgetbakers/import-plan", json={"budgets": [{}], "standing_orders": []})
-    assert response.status_code == 500
-    new_events = _new_events(before)
-    assert len(new_events) == 1
-    event = new_events[0]
-    assert event["event_type"] == "IMPORT_PLAN_FAILED"
-    payload = json.loads(event["payload"] or "{}")
-    assert payload["error_type"] == "KeyError"
-    assert payload["imported_budgets"] == 0
+    budgets_before = _scalar("SELECT COUNT(*) FROM budgets")
+
+    missing = client.post("/api/budgetbakers/import-plan", json={"budgets": [{}], "standing_orders": []})
+    blank = client.post("/api/budgetbakers/import-plan", json={"budgets": [{"category": "   "}], "standing_orders": []})
+    explicit_null = client.post("/api/budgetbakers/import-plan", json={"budgets": [{"category": None}], "standing_orders": []})
+
+    assert missing.status_code == 422
+    assert blank.status_code == 422
+    assert explicit_null.status_code == 422
+    assert _new_events(before) == []
+    assert _scalar("SELECT COUNT(*) FROM budgets") == budgets_before
 
 
 # --- PREVIEW BINDING: BudgetBakers canonical (§10-11 / §16.11-15) ----------

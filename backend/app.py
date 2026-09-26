@@ -24,7 +24,7 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from database.db_manager import (
     DatabaseManager,
@@ -361,13 +361,15 @@ class BudgetInput(BaseModel):
 class BudgetPlanItemInput(BaseModel):
     """Typed BudgetBakers plan budget (adapter.normalize_budgets shape).
 
-    category stays optional at the model so a missing category keeps failing in
-    the persistence layer exactly as before (KeyError -> 500 + S2B
-    IMPORT_PLAN_FAILED event, zero rows written); every field the db reads is
-    typed here so malformed shapes are rejected before any mutation starts.
+    The category is the budget row identity (UNIQUE) and is REQUIRED at the
+    typed boundary: a category-less budget item is malformed client structure
+    and is rejected with a controlled 422 before any DB mutation starts — no
+    KeyError, no generic 500, no IMPORT_PLAN_FAILED event for malformed input
+    (S2A B). adapter.normalize_budgets always emits a category, so valid
+    Wallet plans are unaffected.
     """
     id: Optional[str] = None
-    category: Optional[str] = None
+    category: str
     monthly_limit: float = Field(default=0.0, ge=0)
     currency: str = "USD"
     source: str = "MANUAL"
@@ -375,6 +377,13 @@ class BudgetPlanItemInput(BaseModel):
     is_active: bool = True
     external_id: Optional[str] = None
     raw_payload: Optional[Dict[str, Any]] = None
+
+    @field_validator("category", mode="after")
+    @classmethod
+    def _reject_blank_category_identity(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("budget.category es obligatorio y no puede estar vacío")
+        return value
 
 class StandingOrderPlanItemInput(BaseModel):
     """Typed BudgetBakers plan standing order (adapter.normalize_standing_orders shape)."""

@@ -368,19 +368,31 @@ def test_import_plan_records_single_audit_event():
         )
 
 
-def test_failed_import_plan_records_failure_not_success():
+def test_failed_import_plan_records_failure_not_success(monkeypatch):
     before = _snapshot_ids()
+    budgets_before = _row_count("budgets")
 
-    response = lenient_client.post("/api/budgetbakers/import-plan", json={"budgets": [{}], "standing_orders": []})
+    # Malformed client structure no longer reaches the db (typed 422, zero
+    # events); the S2B contract still governs genuine persistence failures,
+    # forced deterministically here at the first write.
+    def boom(conn, budget, preserve_manual=False):
+        raise RuntimeError("simulated plan persistence failure")
+
+    monkeypatch.setattr(db, "_upsert_budget", boom)
+    response = lenient_client.post(
+        "/api/budgetbakers/import-plan",
+        json={"budgets": [{"category": "Audit Fail Budget", "monthly_limit": 1, "currency": "USD"}], "standing_orders": []},
+    )
 
     assert response.status_code == 500
+    assert _row_count("budgets") == budgets_before
     new_audited = _new_audited(before)
     assert len(new_audited) == 1
     event = new_audited[0]
     assert event["event_type"] == "IMPORT_PLAN_FAILED"
     assert event["severity"] == "ERROR"
     assert _payload(event)["imported_budgets"] == 0
-    assert _payload(event)["error_type"] == "KeyError"
+    assert _payload(event)["error_type"] == "RuntimeError"
 
 
 # --- metadata minimization and untouched subsystems -------------------------
