@@ -6,6 +6,7 @@ import { WealthTab } from './components/tabs/WealthTab';
 import type { InvestTool } from './components/tabs/WealthTab';
 import { PersonalDataTab } from './components/tabs/PersonalDataTab';
 import { PlanningTab } from './components/tabs/PlanningTab';
+import { ResearchTab } from './components/tabs/ResearchTab';
 import { AetherisShell, AetherisTab } from './aetheris/AetherisShell';
 import { AetherisOverview } from './aetheris/AetherisOverview';
 import {
@@ -247,6 +248,8 @@ export const App: React.FC = () => {
           <p className="a-page-subtitle">Se mantiene la interfaz disponible mientras el backend local responde.</p>
         </section>
       )}
+
+      {activeTab === 'research' && <ResearchTab />}
 
       <section className="space-y-4">
         <div className="pt-2">

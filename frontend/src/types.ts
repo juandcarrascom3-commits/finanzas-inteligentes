@@ -922,3 +922,41 @@ export interface InvestmentOperation {
   notes?: string;
   metadata?: Record<string, unknown>;
 }
+
+/* Research (conocimiento externo) — contrato persistido R0 del backend.
+   Valores de enum idénticos a backend/analytics/research_normalize.py. */
+export type ResearchEpistemic = 'FACT' | 'REPORTED' | 'ANALYSIS' | 'UNSPECIFIED';
+export type ResearchNormalizationStatus = 'READY' | 'PARTIAL' | 'UNKNOWN';
+
+export interface ResearchProvenance {
+  source_id: string;
+  external_ref: string;
+  url: string | null;
+  published_at: string | null;
+  fetched_at: string;
+  content_hash: string;
+  provider?: string;
+  ingestion_method?: string;
+}
+
+export interface ResearchItem {
+  id: string;
+  source_id: string;
+  external_ref: string;
+  title: string;
+  url: string | null;
+  published_at: string | null;
+  fetched_at: string;
+  content_hash: string;
+  epistemic: ResearchEpistemic;
+  entity_tickers: string[];
+  normalization_status: ResearchNormalizationStatus;
+  provenance: ResearchProvenance;
+  /* Claves opcionales: ausentes en la persistencia cuando la columna es NULL. */
+  summary?: string;
+  provider?: string;
+  ingestion_method?: string;
+  language?: string;
+  reasons?: string[];
+  external_ref_derived?: boolean;
+}
