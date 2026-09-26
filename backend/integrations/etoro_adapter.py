@@ -16,6 +16,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend.integrations.provider_security import DEFAULT_TIMEOUT_SECONDS, redact_secrets
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,7 +50,7 @@ class EtoroAdapter:
         user_key: Optional[str] = None,
         base_url: Optional[str] = None,
         environment: Optional[str] = None,
-        timeout: float = 15.0,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
     ):
         self.api_key = self._clean_env_value(api_key if api_key is not None else os.getenv("ETORO_API_KEY", ""))
         self.user_key = self._clean_env_value(user_key if user_key is not None else os.getenv("ETORO_USER_KEY", ""))
@@ -834,8 +836,14 @@ class EtoroAdapter:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = response.read().decode("utf-8")
-                return json.loads(body or "{}"), self._response_meta(response.headers)
+                raw = response.read()
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except ValueError as exc:
+                    raise self._malformed_response_error(url, response, raw, "JSON malformado") from exc
+                if not isinstance(payload, (dict, list)):
+                    raise self._malformed_response_error(url, response, raw, "estructura inesperada")
+                return payload, self._response_meta(response.headers)
         except urllib.error.HTTPError as exc:
             diagnostic = self._safe_http_diagnostic(request, exc)
             logger.warning("eToro HTTP error diagnostic: %s", json.dumps(diagnostic, ensure_ascii=False))
@@ -846,8 +854,19 @@ class EtoroAdapter:
             if exc.code == 429:
                 raise EtoroRateLimitError("Rate limit de eToro alcanzado.", retry_after=exc.headers.get("Retry-After")) from exc
             raise EtoroNetworkError(f"eToro respondió HTTP {exc.code}.", diagnostic=diagnostic) from exc
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, TimeoutError) as exc:
             raise EtoroNetworkError("No se pudo conectar con eToro.") from exc
+
+    def _malformed_response_error(self, url: str, response: Any, raw: bytes, reason: str) -> EtoroNetworkError:
+        diagnostic = {
+            "url": url,
+            "method": "GET",
+            "status_code": getattr(response, "status", 200),
+            "response_content_type": response.headers.get("Content-Type") if getattr(response, "headers", None) else None,
+            "response_body": self._sanitize_text(raw.decode("utf-8", errors="replace"))[:1000],
+        }
+        logger.warning("eToro malformed response diagnostic: %s", json.dumps(diagnostic, ensure_ascii=False))
+        return EtoroNetworkError(f"Respuesta inválida de eToro ({reason}).", diagnostic=diagnostic)
 
     def _safe_http_diagnostic(self, request: urllib.request.Request, exc: urllib.error.HTTPError) -> Dict[str, Any]:
         body = ""
@@ -866,11 +885,7 @@ class EtoroAdapter:
         }
 
     def _sanitize_text(self, value: str) -> str:
-        text = value or ""
-        for secret in [self.api_key, self.user_key]:
-            if secret:
-                text = text.replace(secret, "[REDACTED]")
-        return text
+        return redact_secrets(value, [self.api_key, self.user_key])
 
     def _is_cloudflare_client_block(self, diagnostic: Dict[str, Any]) -> bool:
         body = diagnostic.get("response_body") or ""

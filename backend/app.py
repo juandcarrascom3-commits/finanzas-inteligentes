@@ -13,17 +13,27 @@ Exposes endpoints for:
 
 import hashlib
 import json
+import math
 import os
 import uuid
 import calendar
 import datetime
 from typing import Dict, Any, List, Optional
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, model_validator
 
-from database.db_manager import DatabaseManager
+from database.db_manager import (
+    DatabaseManager,
+    MAX_CANONICAL_ACCOUNTS,
+    MAX_CANONICAL_TRANSACTIONS,
+    MAX_CSV_CONTENT_CHARS,
+    MAX_IMPORT_PLAN_ITEMS,
+    MAX_MAPPING_ITEMS,
+)
 from backend.analytics.metrics import (
     calculate_net_worth,
     calculate_savings_rate,
@@ -53,7 +63,9 @@ from backend.integrations.budgetbakers_adapter import (
     BudgetBakersAdapter,
     BudgetBakersAuthError,
     BudgetBakersInitSyncError,
+    BudgetBakersMalformedResponseError,
     BudgetBakersNetworkError,
+    BudgetBakersPaginationError,
     BudgetBakersRateLimitError,
 )
 from backend.integrations.etoro_adapter import (
@@ -62,6 +74,7 @@ from backend.integrations.etoro_adapter import (
     EtoroNetworkError,
     EtoroRateLimitError,
 )
+from backend.integrations.provider_security import sanitize_provider_message
 from backend.analytics.understand import (
     build_analysis_export,
     expand_financial_events,
@@ -120,6 +133,34 @@ app = FastAPI(
     description="Backend for Wealth Management, Risk Analytics & Ingestion",
     version="1.0.0"
 )
+
+
+def _json_safe_errors(value: Any) -> Any:
+    """Deep-copy a validation error tree into JSON-serializable values.
+
+    Non-finite floats and exception objects carried by pydantic (ctx.error from
+    model validators) are rendered as their string form.
+    """
+    if value is None or isinstance(value, (bool, str, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe_errors(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe_errors(item) for item in value]
+    return str(value)
+
+
+@app.exception_handler(RequestValidationError)
+async def sanitized_validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Keep 422 responses controlled even when the rejected input is NaN/Infinity.
+
+    FastAPI's default handler echoes the raw input back, and Starlette renders
+    JSON with allow_nan=False, so a non-finite float (e.g. manual_price, S2A L)
+    would crash the handler and turn a clean 422 into an unhandled 500.
+    """
+    return JSONResponse(status_code=422, content={"detail": _json_safe_errors(exc.errors())})
 
 
 def _understand_period_context(period: Optional[str]) -> tuple[str, Optional[datetime.date]]:
@@ -205,7 +246,8 @@ class TransactionInput(BaseModel):
     external_id: Optional[str] = None
 
 class CsvImportInput(BaseModel):
-    content: str
+    content: str = Field(max_length=MAX_CSV_CONTENT_CHARS)
+    preview_hash: Optional[str] = None
 
 class BackupPathInput(BaseModel):
     path: str
@@ -218,11 +260,11 @@ class ValuationInput(BaseModel):
     source: str = "MANUAL"
 
 class ValuationCsvInput(BaseModel):
-    content: str
+    content: str = Field(max_length=MAX_CSV_CONTENT_CHARS)
     source: str = "MANUAL"
 
 class BenchmarkCsvInput(BaseModel):
-    content: str
+    content: str = Field(max_length=MAX_CSV_CONTENT_CHARS)
     benchmark_key: str
     label: Optional[str] = None
     source: str = "MANUAL"
@@ -247,8 +289,9 @@ class InvestmentOperationInput(BaseModel):
     metadata: Dict[str, Any] = {}
 
 class InvestmentLedgerCsvInput(BaseModel):
-    content: str
+    content: str = Field(max_length=MAX_CSV_CONTENT_CHARS)
     source: str = "CSV"
+    preview_hash: Optional[str] = None
 
 class OpeningPositionInput(BaseModel):
     id: Optional[str] = None
@@ -279,9 +322,10 @@ class SourceMappingInput(BaseModel):
     is_active: bool = True
 
 class CanonicalImportInput(BaseModel):
-    accounts: List[Dict[str, Any]] = []
-    transactions: List[Dict[str, Any]] = []
-    meta: Dict[str, Any] = {}
+    accounts: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_CANONICAL_ACCOUNTS)
+    transactions: List[Dict[str, Any]] = Field(default_factory=list, max_length=MAX_CANONICAL_TRANSACTIONS)
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    preview_hash: Optional[str] = None
 
 class EtoroImportInput(BaseModel):
     operations: List[Dict[str, Any]] = []
@@ -296,6 +340,14 @@ class EtoroBulkMappingInput(BaseModel):
 class MappingConfigInput(BaseModel):
     config: Dict[str, Any]
 
+    @model_validator(mode="after")
+    def _bound_collections(self) -> "MappingConfigInput":
+        for key in ("etoro_instrument_mappings", "market_symbol_mappings", "price_authority"):
+            value = self.config.get(key)
+            if isinstance(value, list) and len(value) > MAX_MAPPING_ITEMS:
+                raise ValueError(f"{key} excede el límite de {MAX_MAPPING_ITEMS} elementos.")
+        return self
+
 class BudgetInput(BaseModel):
     id: Optional[str] = None
     category: str
@@ -305,6 +357,43 @@ class BudgetInput(BaseModel):
     period: str = "MONTHLY"
     is_active: bool = True
     external_id: Optional[str] = None
+
+class BudgetPlanItemInput(BaseModel):
+    """Typed BudgetBakers plan budget (adapter.normalize_budgets shape).
+
+    category stays optional at the model so a missing category keeps failing in
+    the persistence layer exactly as before (KeyError -> 500 + S2B
+    IMPORT_PLAN_FAILED event, zero rows written); every field the db reads is
+    typed here so malformed shapes are rejected before any mutation starts.
+    """
+    id: Optional[str] = None
+    category: Optional[str] = None
+    monthly_limit: float = Field(default=0.0, ge=0)
+    currency: str = "USD"
+    source: str = "MANUAL"
+    period: str = "MONTHLY"
+    is_active: bool = True
+    external_id: Optional[str] = None
+    raw_payload: Optional[Dict[str, Any]] = None
+
+class StandingOrderPlanItemInput(BaseModel):
+    """Typed BudgetBakers plan standing order (adapter.normalize_standing_orders shape)."""
+    id: Optional[str] = None
+    merchant: str
+    category: str = "General"
+    account_id: Optional[str] = None
+    typical_amount: float = 0.0
+    frequency: str = "monthly"
+    status: str = "confirmed"
+    source: str = "MANUAL"
+    external_id: Optional[str] = None
+    next_expected: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    last_seen: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    raw_payload: Optional[Dict[str, Any]] = None
+
+class BudgetBakersPlanInput(BaseModel):
+    budgets: List[BudgetPlanItemInput] = Field(default_factory=list, max_length=MAX_IMPORT_PLAN_ITEMS)
+    standing_orders: List[StandingOrderPlanItemInput] = Field(default_factory=list, max_length=MAX_IMPORT_PLAN_ITEMS)
 
 class RecurringStatusInput(BaseModel):
     status: str
@@ -341,9 +430,17 @@ class SymbolMappingInput(BaseModel):
 class PriceAuthorityInput(BaseModel):
     ticker: str
     authority_mode: str = "AUTO"
-    manual_price: Optional[float] = None
+    # S2A L: a manual price is a REAL number greater than zero — infinities and
+    # NaN are rejected by pydantic before they can reach price resolution.
+    manual_price: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     manual_currency: Optional[str] = None
     notes: str = ""
+
+    @model_validator(mode="after")
+    def _manual_mode_requires_manual_price(self) -> "PriceAuthorityInput":
+        if self.authority_mode.strip().upper() == "MANUAL" and self.manual_price is None:
+            raise ValueError("El modo MANUAL requiere un manual_price finito y mayor que 0.")
+        return self
 
 class FxRateInput(BaseModel):
     base_currency: str
@@ -354,7 +451,7 @@ class FxRateInput(BaseModel):
     source: str = "MANUAL"
 
 class FxCsvInput(BaseModel):
-    content: str
+    content: str = Field(max_length=MAX_CSV_CONTENT_CHARS)
     source: str = "MANUAL"
 
 
@@ -454,6 +551,32 @@ def get_etoro_adapter() -> EtoroAdapter:
     return EtoroAdapter()
 
 
+def _ingest_preview_hash(payload: Dict[str, Any]) -> str:
+    """Deterministic sha256 over canonical JSON.
+
+    Mirrors the eToro preview-hash mechanism (sort_keys + default=str) so any
+    server-normalized preview can be bound to the exact input later persisted.
+    """
+    encoded = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _csv_preview_hash_payload(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Canonical hash input for CSV previews.
+
+    Server-generated ids (uuid4 assigned during normalization) are volatile by
+    design, so they are excluded; everything else is derived purely from the
+    submitted CSV content and is stable across recomputation.
+    """
+    return {"accepted_rows": [{key: value for key, value in row.items() if key != "id"} for row in rows]}
+
+
+def _verify_ingest_preview_hash(requested_hash: Optional[str], current_hash: str) -> None:
+    """Reject a confirm whose submitted preview hash no longer matches the input."""
+    if requested_hash and requested_hash != current_hash:
+        raise HTTPException(status_code=409, detail={"code": "STALE_PREVIEW", "current_preview_hash": current_hash})
+
+
 def budgetbakers_error_response(exc: Exception):
     now = datetime.datetime.now().isoformat()
     if isinstance(exc, BudgetBakersAuthError):
@@ -469,7 +592,12 @@ def budgetbakers_error_response(exc: Exception):
         db.add_action_event("BUDGETBAKERS", "RATE_LIMITED", str(exc), "WARNING", {"retry_after": exc.retry_after})
         headers = {"Retry-After": exc.retry_after} if exc.retry_after else None
         raise HTTPException(status_code=429, detail={"message": str(exc), "retry_after": exc.retry_after}, headers=headers)
-    if isinstance(exc, BudgetBakersNetworkError):
+    if isinstance(exc, BudgetBakersMalformedResponseError):
+        # Malformed upstream payload: deterministic 502, no raw body anywhere,
+        # no new action event (same event policy as network/pagination failures).
+        db.set_sync_state("BUDGETBAKERS", {"status": "NETWORK_ERROR", "last_sync_at": now, "last_error": str(exc)})
+        raise HTTPException(status_code=502, detail=str(exc))
+    if isinstance(exc, (BudgetBakersPaginationError, BudgetBakersNetworkError)):
         db.set_sync_state("BUDGETBAKERS", {"status": "NETWORK_ERROR", "last_sync_at": now, "last_error": str(exc)})
         raise HTTPException(status_code=502, detail=str(exc))
     raise exc
@@ -948,11 +1076,19 @@ def get_asset_valuations(ticker: Optional[str] = None, start: Optional[str] = No
 
 @app.post("/api/valuations")
 def save_asset_valuation(valuation: ValuationInput):
-    return db.save_asset_valuation(valuation.model_dump())
+    try:
+        return db.save_asset_valuation(valuation.model_dump())
+    except ValueError as exc:
+        # controlled 4xx for an unknown ticker (asset_valuations FK to assets)
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/api/valuations/import")
 def import_asset_valuations_csv(payload: ValuationCsvInput):
-    return db.import_asset_valuations_csv(payload.content, source=payload.source)
+    try:
+        return db.import_asset_valuations_csv(payload.content, source=payload.source)
+    except Exception as exc:
+        # controlled 4xx for content-driven failures (row cap, unknown ticker FK)
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.get("/api/benchmarks")
 def get_benchmark_prices(benchmark_key: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None):
@@ -960,7 +1096,10 @@ def get_benchmark_prices(benchmark_key: Optional[str] = None, start: Optional[st
 
 @app.post("/api/benchmarks/import")
 def import_benchmark_prices_csv(payload: BenchmarkCsvInput):
-    return db.import_benchmark_prices_csv(payload.content, payload.benchmark_key, label=payload.label, source=payload.source)
+    try:
+        return db.import_benchmark_prices_csv(payload.content, payload.benchmark_key, label=payload.label, source=payload.source)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.get("/api/market-data/status")
 def market_data_status():
@@ -1003,7 +1142,10 @@ def save_fx_rate(payload: FxRateInput):
 
 @app.post("/api/market-data/fx/import")
 def import_fx_rates(payload: FxCsvInput):
-    return db.import_fx_rates_csv(payload.content, source=payload.source)
+    try:
+        return db.import_fx_rates_csv(payload.content, source=payload.source)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/api/market-data/sync")
 def run_market_data_sync(payload: MarketDataSyncInput = MarketDataSyncInput()):
@@ -1018,8 +1160,9 @@ def run_market_data_sync(payload: MarketDataSyncInput = MarketDataSyncInput()):
         )
     except Exception as exc:
         now = datetime.datetime.now().isoformat()
-        db.set_sync_state("MARKET_DATA", {"status": "FAILED", "last_sync_at": now, "last_error": str(exc)})
-        raise HTTPException(status_code=502, detail=str(exc))
+        message = sanitize_provider_message(str(exc))
+        db.set_sync_state("MARKET_DATA", {"status": "FAILED", "last_sync_at": now, "last_error": message})
+        raise HTTPException(status_code=502, detail=message)
 
 @app.post("/api/market-data/fund-compositions/refresh")
 def run_fund_composition_refresh(payload: FundCompositionRefreshInput = FundCompositionRefreshInput()):
@@ -1031,8 +1174,9 @@ def run_fund_composition_refresh(payload: FundCompositionRefreshInput = FundComp
         return refresh_fund_compositions(db, symbols or [])
     except Exception as exc:
         now = datetime.datetime.now().isoformat()
-        db.set_sync_state("FUND_COMPOSITIONS", {"status": "FAILED", "last_sync_at": now, "last_error": str(exc)})
-        raise HTTPException(status_code=502, detail=str(exc))
+        message = sanitize_provider_message(str(exc))
+        db.set_sync_state("FUND_COMPOSITIONS", {"status": "FAILED", "last_sync_at": now, "last_error": message})
+        raise HTTPException(status_code=502, detail=message)
 
 
 @app.get("/api/portfolio/exposure")
@@ -1063,11 +1207,26 @@ def delete_investment_operation(operation_id: str):
 
 @app.post("/api/investment-ledger/preview")
 def preview_investment_ledger_csv(payload: InvestmentLedgerCsvInput):
-    return db.preview_investment_transactions_csv(payload.content, source=payload.source)
+    try:
+        preview = db.preview_investment_transactions_csv(payload.content, source=payload.source)
+        return {**preview, "preview_hash": _ingest_preview_hash(_csv_preview_hash_payload(preview["accepted_rows"]))}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/api/investment-ledger/import")
 def import_investment_ledger_csv(payload: InvestmentLedgerCsvInput):
-    return db.import_investment_transactions_csv(payload.content, source=payload.source)
+    try:
+        if payload.preview_hash:
+            preview = db.preview_investment_transactions_csv(payload.content, source=payload.source)
+            _verify_ingest_preview_hash(
+                payload.preview_hash,
+                _ingest_preview_hash(_csv_preview_hash_payload(preview["accepted_rows"])),
+            )
+        return db.import_investment_transactions_csv(payload.content, source=payload.source)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.get("/api/investment-ledger/reconciliation")
 def investment_ledger_reconciliation():
@@ -1833,11 +1992,26 @@ def update_recurring(rule_id: str, payload: RecurringStatusInput):
 
 @app.post("/api/import/transactions/preview")
 def preview_transactions_csv(payload: CsvImportInput):
-    return db.preview_transactions_csv(payload.content)
+    try:
+        preview = db.preview_transactions_csv(payload.content)
+        return {**preview, "preview_hash": _ingest_preview_hash(_csv_preview_hash_payload(preview["accepted_rows"]))}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.post("/api/import/transactions")
 def import_transactions_csv(payload: CsvImportInput):
-    return db.import_transactions_csv(payload.content)
+    try:
+        if payload.preview_hash:
+            preview = db.preview_transactions_csv(payload.content)
+            _verify_ingest_preview_hash(
+                payload.preview_hash,
+                _ingest_preview_hash(_csv_preview_hash_payload(preview["accepted_rows"])),
+            )
+        return db.import_transactions_csv(payload.content)
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 @app.get("/api/backup")
 def export_backup():
@@ -2004,32 +2178,24 @@ def preview_budgetbakers_import():
         normalized_categories = adapter.normalize_categories(categories_result["items"])
         normalized_budgets = adapter.normalize_budgets(budgets_result["items"])
         normalized_standing_orders = adapter.normalize_standing_orders(standing_orders_result["items"])
-        for category in normalized_categories:
-            db.save_source_mapping({
-                "source": "BUDGETBAKERS",
-                "external_type": "category",
-                "external_id": category["external_id"],
-                "external_name": category["external_name"],
-                "local_id": _budgetbakers_category_mappings().get(category["external_name"]),
-                "local_type": "category",
-                "is_active": True,
-            })
+        # S2A A: preview performs zero persistence. Category discovery used to be
+        # written here (source_mappings) together with a PREVIEW_READY sync state;
+        # both moved out: the discovered categories travel in meta (the frontend
+        # echoes meta verbatim on confirm) and are persisted by the import
+        # endpoint, so a dry run never mutates the database.
         meta = {
             **accounts_result.get("meta", {}),
             **records_result.get("meta", {}),
             **categories_result.get("meta", {}),
             **budgets_result.get("meta", {}),
             **standing_orders_result.get("meta", {}),
+            "discovered_categories": [
+                {"external_id": category["external_id"], "external_name": category["external_name"]}
+                for category in normalized_categories
+            ],
         }
-        db.set_sync_state("BUDGETBAKERS", {
-            "status": "PREVIEW_READY",
-            "last_sync_at": datetime.datetime.now().isoformat(),
-            "last_error": None,
-            "last_data_change_at": meta.get("last_data_change_at"),
-            "last_data_change_rev": meta.get("last_data_change_rev"),
-            "sync_in_progress": meta.get("sync_in_progress"),
-        })
         preview = db.preview_canonical_import(normalized_accounts, normalized_records, "BUDGETBAKERS")
+        preview_hash = _ingest_preview_hash({"accounts": normalized_accounts, "transactions": normalized_records})
         return {
             **preview,
             "accounts": normalized_accounts,
@@ -2037,7 +2203,8 @@ def preview_budgetbakers_import():
             "categories": normalized_categories,
             "budgets": normalized_budgets,
             "standing_orders": normalized_standing_orders,
-            "meta": meta,
+            "meta": {**meta, "preview_hash": preview_hash},
+            "preview_hash": preview_hash,
             "optional_warnings": [item.get("warning") for item in (budgets_result, standing_orders_result) if item.get("warning")],
             "pages": {
                 "accounts": accounts_result.get("pages", 0),
@@ -2050,10 +2217,46 @@ def preview_budgetbakers_import():
     except Exception as exc:
         return budgetbakers_error_response(exc)
 
+def _persist_discovered_category_mappings(discovered: Any) -> None:
+    """Persist the Wallet category mappings discovered during preview (S2A A).
+
+    Preview is read-only, so the confirm call replays the categories it echoed
+    back through meta and persists them here, before the financial import.
+    Entries are auxiliary: a non-list or malformed entry is skipped instead of
+    being able to block the import of accounts and transactions.
+    """
+    if not isinstance(discovered, list):
+        return
+    local_by_name = _budgetbakers_category_mappings()
+    for item in discovered[:MAX_MAPPING_ITEMS]:
+        if not isinstance(item, dict) or not item.get("external_id"):
+            continue
+        external_name = str(item.get("external_name") or "")
+        db.save_source_mapping({
+            "source": "BUDGETBAKERS",
+            "external_type": "category",
+            "external_id": str(item["external_id"]),
+            "external_name": external_name,
+            "local_id": local_by_name.get(external_name),
+            "local_type": "category",
+            "is_active": True,
+        })
+
 @app.post("/api/budgetbakers/import")
 def import_budgetbakers_preview(payload: CanonicalImportInput):
     try:
+        # The frontend echoes preview.meta verbatim, so a server-issued
+        # meta.preview_hash travels back automatically: enforce it whenever a
+        # hash is supplied (STALE_PREVIEW on mismatch) while requests without
+        # one keep the pre-S2C contract.
+        requested_hash = payload.preview_hash or payload.meta.get("preview_hash")
+        if requested_hash:
+            current_hash = _ingest_preview_hash({"accounts": payload.accounts, "transactions": payload.transactions})
+            _verify_ingest_preview_hash(str(requested_hash), current_hash)
+        _persist_discovered_category_mappings(payload.meta.get("discovered_categories"))
         return db.import_canonical_import(payload.accounts, payload.transactions, "BUDGETBAKERS", payload.meta)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -2066,16 +2269,11 @@ def save_source_mapping(mapping: SourceMappingInput):
     return db.save_source_mapping(mapping.model_dump())
 
 @app.post("/api/budgetbakers/import-plan")
-def import_budgetbakers_plan(payload: Dict[str, Any]):
-    imported_budgets = 0
-    imported_orders = 0
-    for budget in payload.get("budgets", []):
-        db.save_budget({**budget, "source": "BUDGETBAKERS"})
-        imported_budgets += 1
-    for order in payload.get("standing_orders", []):
-        db.upsert_recurring_rule({**order, "source": "BUDGETBAKERS", "status": "confirmed"})
-        imported_orders += 1
-    return {"imported_budgets": imported_budgets, "imported_standing_orders": imported_orders}
+def import_budgetbakers_plan(payload: BudgetBakersPlanInput):
+    return db.import_budgetbakers_plan(
+        [item.model_dump(exclude_none=True) for item in payload.budgets],
+        [item.model_dump(exclude_none=True) for item in payload.standing_orders],
+    )
 
 @app.get("/api/reconciliation")
 def get_reconciliation(source: str = Query("BUDGETBAKERS")):

@@ -17,12 +17,23 @@ DEFAULT_DB_FILE = os.path.join(os.path.dirname(__file__), "finanzas.db")
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 SEED_FILE = os.path.join(os.path.dirname(__file__), "seeds", "initial_seed.sql")
 BACKUP_FILE_PREFIXES = ("finance-backup-", "finance-pre-restore-")
-VALID_SOURCES = {"DEMO", "MANUAL", "CSV", "BUDGETBAKERS", "ETORO", "GOOGLE", "MARKET_DATA"}
+VALID_SOURCES = {"DEMO", "MANUAL", "CSV", "BUDGETBAKERS", "ETORO", "GOOGLE", "MARKET_DATA", "RESEARCH"}
 VALID_INVESTMENT_OPERATION_TYPES = {
     "CONTRIBUTION", "WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "INTEREST", "FEE",
     "TRANSFER_IN", "TRANSFER_OUT", "SPLIT", "ADJUSTMENT",
 }
 logger = logging.getLogger(__name__)
+
+# S2C ingestion boundaries: deterministic request limits backed by repository
+# evidence (manual exports are KB-sized; BudgetBakers pages hold 200 items and
+# are capped at MAX pages by the adapter). Pydantic models in backend/app.py
+# reuse these constants so every ingestion path enforces the same bounds.
+MAX_CSV_CONTENT_CHARS = 5_000_000  # ~5 MB of CSV text per request
+MAX_CSV_ROWS = 50_000              # parsed rows per CSV request
+MAX_CANONICAL_ACCOUNTS = 2_000     # canonical import account rows
+MAX_CANONICAL_TRANSACTIONS = 50_000  # > BudgetBakers page-cap output (200 x 200)
+MAX_IMPORT_PLAN_ITEMS = 5_000      # import-plan budgets / standing orders per list
+MAX_MAPPING_ITEMS = 10_000         # mapping-config collection size
 
 
 def resolve_db_path() -> str:
@@ -386,7 +397,16 @@ class DatabaseManager:
 
     def delete_account(self, account_id: str):
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+            cursor = conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "ACCOUNT_DELETE",
+                "Cuenta eliminada." if deleted else "Cuenta no encontrada; sin cambios.",
+                "INFO",
+                {"entity_id": account_id, "deleted": deleted},
+            )
             conn.commit()
 
     def get_assets(self, include_watchlist: bool = True) -> List[Dict[str, Any]]:
@@ -432,11 +452,26 @@ class DatabaseManager:
         return payload
 
     def delete_asset(self, ticker: str):
+        clean_ticker = ticker.upper()
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM assets WHERE ticker = ?", (ticker.upper(),))
+            cursor = conn.execute("DELETE FROM assets WHERE ticker = ?", (clean_ticker,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "ASSET_DELETE",
+                "Activo eliminado." if deleted else "Activo no encontrado; sin cambios.",
+                "INFO",
+                {"entity_id": clean_ticker, "deleted": deleted},
+            )
             conn.commit()
 
-    def save_asset_valuation(self, valuation: Dict[str, Any]) -> Dict[str, Any]:
+    def save_asset_valuation(
+        self,
+        valuation: Dict[str, Any],
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Dict[str, Any]:
+        """Upsert one valuation; passing `conn` joins an existing batch transaction."""
         retrieved_at = valuation.get("retrieved_at") or datetime.now().isoformat()
         metadata = valuation.get("metadata") or {}
         payload = {
@@ -450,28 +485,46 @@ class DatabaseManager:
             "retrieved_at": retrieved_at,
             "metadata": json.dumps(metadata if isinstance(metadata, dict) else self._safe_json(metadata), ensure_ascii=False),
         }
-        with self.get_connection() as conn:
-            existing = conn.execute(
-                """
-                SELECT id FROM asset_valuations
-                WHERE ticker = ? AND valuation_date = ? AND source = ?
-                """,
-                (payload["ticker"], payload["valuation_date"], payload["source"]),
-            ).fetchone()
-            if existing:
-                payload["id"] = existing["id"]
-            conn.execute(
-                """
-                INSERT INTO asset_valuations (id, ticker, price, currency, valuation_date, source, provider, retrieved_at, metadata)
-                VALUES (:id, :ticker, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata)
-                ON CONFLICT(ticker, valuation_date, source) DO UPDATE SET
-                    price = excluded.price, currency = excluded.currency,
-                    provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata
-                """,
-                payload,
-            )
-            conn.commit()
+        if conn is not None:
+            self._upsert_asset_valuation(conn, payload)
+            return payload
+        with self.get_connection() as own_conn:
+            self._upsert_asset_valuation(own_conn, payload)
+            own_conn.commit()
         return payload
+
+    def _upsert_asset_valuation(self, conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
+        """Write one valuation on an existing connection; the caller owns the commit.
+
+        asset_valuations.ticker is a foreign key to assets(ticker), so an unknown
+        ticker is rejected here with a clear ValueError before any row of the
+        batch is written instead of surfacing as a mid-batch FK failure (S2A I).
+        """
+        known = conn.execute(
+            "SELECT 1 FROM assets WHERE ticker = ? LIMIT 1",
+            (payload["ticker"],),
+        ).fetchone()
+        if not known:
+            raise ValueError(f"ticker desconocido: {payload['ticker']}; no existe en assets.")
+        existing = conn.execute(
+            """
+            SELECT id FROM asset_valuations
+            WHERE ticker = ? AND valuation_date = ? AND source = ?
+            """,
+            (payload["ticker"], payload["valuation_date"], payload["source"]),
+        ).fetchone()
+        if existing:
+            payload["id"] = existing["id"]
+        conn.execute(
+            """
+            INSERT INTO asset_valuations (id, ticker, price, currency, valuation_date, source, provider, retrieved_at, metadata)
+            VALUES (:id, :ticker, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata)
+            ON CONFLICT(ticker, valuation_date, source) DO UPDATE SET
+                price = excluded.price, currency = excluded.currency,
+                provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata
+            """,
+            payload,
+        )
 
     def get_asset_valuations(self, ticker: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, params = [], []
@@ -541,8 +594,17 @@ class DatabaseManager:
                 accepted.append(payload)
             except Exception as exc:
                 rejected.append({"row_number": index, "row": row, "error": str(exc)})
-        for payload in accepted:
-            self.save_asset_valuation(payload)
+        if accepted:
+            # S2A F: all-or-nothing. Any persistence failure (e.g. unknown
+            # ticker) rolls the whole batch back instead of leaving a prefix.
+            with closing(self.get_connection()) as conn:
+                try:
+                    for payload in accepted:
+                        self.save_asset_valuation(payload, conn=conn)
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
         return {
             "accepted_rows": accepted,
             "rejected_rows": rejected,
@@ -551,7 +613,12 @@ class DatabaseManager:
             "imported_count": len(accepted),
         }
 
-    def save_benchmark_price(self, price: Dict[str, Any]) -> Dict[str, Any]:
+    def save_benchmark_price(
+        self,
+        price: Dict[str, Any],
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Dict[str, Any]:
+        """Upsert one benchmark price; passing `conn` joins an existing batch transaction."""
         key = (price.get("benchmark_key") or price.get("ticker") or "BENCHMARK").strip().upper()
         retrieved_at = price.get("retrieved_at") or datetime.now().isoformat()
         metadata = price.get("metadata") or {}
@@ -567,29 +634,36 @@ class DatabaseManager:
             "retrieved_at": retrieved_at,
             "metadata": json.dumps(metadata if isinstance(metadata, dict) else self._safe_json(metadata), ensure_ascii=False),
         }
-        with self.get_connection() as conn:
-            existing = conn.execute(
-                """
-                SELECT id FROM benchmark_prices
-                WHERE benchmark_key = ? AND valuation_date = ? AND source = ?
-                """,
-                (payload["benchmark_key"], payload["valuation_date"], payload["source"]),
-            ).fetchone()
-            if existing:
-                payload["id"] = existing["id"]
-            conn.execute(
-                """
-                INSERT INTO benchmark_prices (id, benchmark_key, label, price, currency, valuation_date, source, provider, retrieved_at, metadata, updated_at)
-                VALUES (:id, :benchmark_key, :label, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata, datetime('now'))
-                ON CONFLICT(benchmark_key, valuation_date, source) DO UPDATE SET
-                    label = excluded.label, price = excluded.price, currency = excluded.currency,
-                    provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata,
-                    updated_at = datetime('now')
-                """,
-                payload,
-            )
-            conn.commit()
+        if conn is not None:
+            self._upsert_benchmark_price(conn, payload)
+            return payload
+        with self.get_connection() as own_conn:
+            self._upsert_benchmark_price(own_conn, payload)
+            own_conn.commit()
         return payload
+
+    def _upsert_benchmark_price(self, conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
+        """Write one benchmark price on an existing connection; the caller owns the commit."""
+        existing = conn.execute(
+            """
+            SELECT id FROM benchmark_prices
+            WHERE benchmark_key = ? AND valuation_date = ? AND source = ?
+            """,
+            (payload["benchmark_key"], payload["valuation_date"], payload["source"]),
+        ).fetchone()
+        if existing:
+            payload["id"] = existing["id"]
+        conn.execute(
+            """
+            INSERT INTO benchmark_prices (id, benchmark_key, label, price, currency, valuation_date, source, provider, retrieved_at, metadata, updated_at)
+            VALUES (:id, :benchmark_key, :label, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata, datetime('now'))
+            ON CONFLICT(benchmark_key, valuation_date, source) DO UPDATE SET
+                label = excluded.label, price = excluded.price, currency = excluded.currency,
+                provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata,
+                updated_at = datetime('now')
+            """,
+            payload,
+        )
 
     def get_benchmark_prices(self, benchmark_key: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, params = [], []
@@ -794,7 +868,12 @@ class DatabaseManager:
             conn.commit()
         return row
 
-    def save_fx_rate(self, rate: Dict[str, Any]) -> Dict[str, Any]:
+    def save_fx_rate(
+        self,
+        rate: Dict[str, Any],
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Dict[str, Any]:
+        """Upsert one FX rate; passing `conn` joins an existing batch transaction."""
         payload = {
             "id": rate.get("id") or str(uuid.uuid4()),
             "base_currency": rate["base_currency"].upper(),
@@ -808,32 +887,39 @@ class DatabaseManager:
         }
         if payload["rate"] <= 0:
             raise ValueError("FX rate must be positive.")
-        with self.get_connection() as conn:
-            existing = conn.execute(
-                """
-                SELECT id FROM fx_rates
-                WHERE base_currency = ? AND quote_currency = ? AND rate_date = ? AND provider = ?
-                """,
-                (payload["base_currency"], payload["quote_currency"], payload["rate_date"], payload["provider"]),
-            ).fetchone()
-            if existing:
-                payload["id"] = existing["id"]
-            conn.execute(
-                """
-                INSERT INTO fx_rates (
-                    id, base_currency, quote_currency, rate, rate_date, provider, source, retrieved_at, metadata, updated_at
-                )
-                VALUES (
-                    :id, :base_currency, :quote_currency, :rate, :rate_date, :provider, :source, :retrieved_at, :metadata, datetime('now')
-                )
-                ON CONFLICT(base_currency, quote_currency, rate_date, provider) DO UPDATE SET
-                    rate = excluded.rate, source = excluded.source, retrieved_at = excluded.retrieved_at,
-                    metadata = excluded.metadata, updated_at = datetime('now')
-                """,
-                payload,
-            )
-            conn.commit()
+        if conn is not None:
+            self._upsert_fx_rate(conn, payload)
+            return self._decode_market_row(payload)
+        with self.get_connection() as own_conn:
+            self._upsert_fx_rate(own_conn, payload)
+            own_conn.commit()
         return self._decode_market_row(payload)
+
+    def _upsert_fx_rate(self, conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
+        """Write one FX rate on an existing connection; the caller owns the commit."""
+        existing = conn.execute(
+            """
+            SELECT id FROM fx_rates
+            WHERE base_currency = ? AND quote_currency = ? AND rate_date = ? AND provider = ?
+            """,
+            (payload["base_currency"], payload["quote_currency"], payload["rate_date"], payload["provider"]),
+        ).fetchone()
+        if existing:
+            payload["id"] = existing["id"]
+        conn.execute(
+            """
+            INSERT INTO fx_rates (
+                id, base_currency, quote_currency, rate, rate_date, provider, source, retrieved_at, metadata, updated_at
+            )
+            VALUES (
+                :id, :base_currency, :quote_currency, :rate, :rate_date, :provider, :source, :retrieved_at, :metadata, datetime('now')
+            )
+            ON CONFLICT(base_currency, quote_currency, rate_date, provider) DO UPDATE SET
+                rate = excluded.rate, source = excluded.source, retrieved_at = excluded.retrieved_at,
+                metadata = excluded.metadata, updated_at = datetime('now')
+            """,
+            payload,
+        )
 
     def get_fx_rates(self, base_currency: Optional[str] = None, quote_currency: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, params = [], []
@@ -898,8 +984,16 @@ class DatabaseManager:
                 accepted.append(payload)
             except Exception as exc:
                 rejected.append({"row_number": index, "row": row, "error": str(exc)})
-        for payload in accepted:
-            self.save_fx_rate(payload)
+        if accepted:
+            # S2A H: all-or-nothing persistence for the whole batch.
+            with closing(self.get_connection()) as conn:
+                try:
+                    for payload in accepted:
+                        self.save_fx_rate(payload, conn=conn)
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
         return {
             "accepted_rows": accepted,
             "rejected_rows": rejected,
@@ -929,8 +1023,16 @@ class DatabaseManager:
                 accepted.append(payload)
             except Exception as exc:
                 rejected.append({"row_number": index, "row": row, "error": str(exc)})
-        for payload in accepted:
-            self.save_benchmark_price(payload)
+        if accepted:
+            # S2A G: all-or-nothing persistence for the whole batch.
+            with closing(self.get_connection()) as conn:
+                try:
+                    for payload in accepted:
+                        self.save_benchmark_price(payload, conn=conn)
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
         return {
             "accepted_rows": accepted,
             "rejected_rows": rejected,
@@ -1001,7 +1103,16 @@ class DatabaseManager:
 
     def delete_investment_transaction(self, operation_id: str):
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM investment_transactions WHERE id = ?", (operation_id,))
+            cursor = conn.execute("DELETE FROM investment_transactions WHERE id = ?", (operation_id,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "INVESTMENT_OPERATION_DELETE",
+                "Operación de inversión eliminada." if deleted else "Operación de inversión no encontrada; sin cambios.",
+                "INFO",
+                {"entity_id": operation_id, "deleted": deleted},
+            )
             conn.commit()
 
     def preview_investment_transactions_csv(self, content: str, source: str = "CSV") -> Dict[str, Any]:
@@ -1170,7 +1281,15 @@ class DatabaseManager:
     def import_mapping_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         validation = self.validate_mapping_config(payload)
         if not validation["valid"]:
-            raise ValueError("; ".join(validation["errors"]))
+            errors = validation["errors"]
+            self._try_add_action_event(
+                "MANUAL",
+                "MAPPING_CONFIG_IMPORT_FAILED",
+                "La importación de mappings fue rechazada; no se aplicó ningún cambio.",
+                "WARNING",
+                {"errors": errors},
+            )
+            raise ValueError("; ".join(errors))
         imported = {"etoro_instrument_mappings": 0, "market_symbol_mappings": 0, "price_authority": 0}
         with self.get_connection() as conn:
             try:
@@ -1241,9 +1360,24 @@ class DatabaseManager:
                         clean,
                     )
                     imported["price_authority"] += 1
+                self._insert_action_event(
+                    conn,
+                    "MANUAL",
+                    "MAPPING_CONFIG_IMPORT_SUCCESS",
+                    "Configuración de mappings importada.",
+                    "INFO",
+                    {"imported": imported},
+                )
                 conn.commit()
-            except Exception:
+            except Exception as exc:
                 conn.rollback()
+                self._try_add_action_event(
+                    "MANUAL",
+                    "MAPPING_CONFIG_IMPORT_FAILED",
+                    "La importación de mappings falló; no se aplicó ningún cambio.",
+                    "ERROR",
+                    {"error_type": type(exc).__name__},
+                )
                 raise
         return {"status": "IMPORTED", "imported": imported}
 
@@ -1460,8 +1594,21 @@ class DatabaseManager:
             return [dict(row) for row in rows]
 
     def save_transaction(self, tx: Dict[str, Any]) -> Dict[str, Any]:
+        provided_id = tx.get("id")
         payload = self._normalize_transaction(tx)
         with self.get_connection() as conn:
+            if not provided_id:
+                # S2A K: a create without an explicit id is deduplicated against
+                # (source, external_id) first and the content fingerprint second,
+                # mirroring the CSV/canonical import duplicate semantics: the
+                # second identical manual save returns the persisted row instead
+                # of inserting a twin. An explicit id keeps the edit/upsert path.
+                existing = self._get_existing_transaction(conn, payload)
+                if existing:
+                    return {
+                        key: existing[key]
+                        for key in ("id", "account_id", "amount", "category", "date", "description", "currency", "source", "external_id", "raw_payload")
+                    }
             conn.execute(
                 """
                 INSERT INTO transactions (id, account_id, amount, category, date, description, currency, source, external_id, raw_payload, updated_at)
@@ -1478,7 +1625,16 @@ class DatabaseManager:
 
     def delete_transaction(self, tx_id: str):
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+            cursor = conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "TRANSACTION_DELETE",
+                "Transacción eliminada." if deleted else "Transacción no encontrada; sin cambios.",
+                "INFO",
+                {"entity_id": tx_id, "deleted": deleted},
+            )
             conn.commit()
 
     def get_transaction_summary(self) -> Dict[str, float]:
@@ -1505,6 +1661,26 @@ class DatabaseManager:
             return [dict(row) for row in conn.execute("SELECT * FROM budgets ORDER BY category").fetchall()]
 
     def save_budget(self, budget: Dict[str, Any]) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            payload = self._upsert_budget(conn, budget)
+            conn.commit()
+        return payload
+
+    def _upsert_budget(
+        self,
+        conn: sqlite3.Connection,
+        budget: Dict[str, Any],
+        preserve_manual: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Write one budget on an existing connection; the caller owns the commit.
+
+        Returns the payload with the id actually persisted: budgets upsert on the
+        UNIQUE category, so on conflict the existing row keeps its own id and a
+        freshly generated uuid would be a lie (S2A J). With `preserve_manual`, a
+        budget whose existing row belongs to source MANUAL is skipped entirely so
+        a Wallet import can never clobber a user-maintained budget (S2A D);
+        skipped rows return None.
+        """
         payload = {
             "id": budget.get("id") or str(uuid.uuid4()),
             "category": budget["category"],
@@ -1515,24 +1691,41 @@ class DatabaseManager:
             "is_active": 1 if budget.get("is_active", True) else 0,
             "external_id": budget.get("external_id"),
         }
-        with self.get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO budgets (id, category, monthly_limit, currency, source, period, is_active, external_id, updated_at)
-                VALUES (:id, :category, :monthly_limit, :currency, :source, :period, :is_active, :external_id, datetime('now'))
-                ON CONFLICT(category) DO UPDATE SET
-                    monthly_limit = excluded.monthly_limit, currency = excluded.currency,
-                    source = excluded.source, period = excluded.period, is_active = excluded.is_active,
-                    external_id = excluded.external_id, updated_at = datetime('now')
-                """,
-                payload,
-            )
-            conn.commit()
+        if preserve_manual:
+            existing = conn.execute(
+                "SELECT source FROM budgets WHERE category = ?",
+                (payload["category"],),
+            ).fetchone()
+            if existing and (existing["source"] or "MANUAL").upper() == "MANUAL":
+                return None
+        conn.execute(
+            """
+            INSERT INTO budgets (id, category, monthly_limit, currency, source, period, is_active, external_id, updated_at)
+            VALUES (:id, :category, :monthly_limit, :currency, :source, :period, :is_active, :external_id, datetime('now'))
+            ON CONFLICT(category) DO UPDATE SET
+                monthly_limit = excluded.monthly_limit, currency = excluded.currency,
+                source = excluded.source, period = excluded.period, is_active = excluded.is_active,
+                external_id = excluded.external_id, updated_at = datetime('now')
+            """,
+            payload,
+        )
+        row = conn.execute("SELECT id FROM budgets WHERE category = ?", (payload["category"],)).fetchone()
+        if row:
+            payload["id"] = row["id"]
         return payload
 
     def delete_budget(self, budget_id: str):
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM budgets WHERE id = ?", (budget_id,))
+            cursor = conn.execute("DELETE FROM budgets WHERE id = ?", (budget_id,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "BUDGET_DELETE",
+                "Presupuesto eliminado." if deleted else "Presupuesto no encontrado; sin cambios.",
+                "INFO",
+                {"entity_id": budget_id, "deleted": deleted},
+            )
             conn.commit()
 
     def get_recurring_rules(self, include_rejected: bool = False) -> List[Dict[str, Any]]:
@@ -1541,8 +1734,22 @@ class DatabaseManager:
             return [dict(row) for row in conn.execute(f"SELECT * FROM recurring_rules {where} ORDER BY next_expected, merchant").fetchall()]
 
     def upsert_recurring_rule(self, rule: Dict[str, Any]) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            payload = self._upsert_recurring_rule(conn, rule)
+            conn.commit()
+        return payload
+
+    def _upsert_recurring_rule(self, conn: sqlite3.Connection, rule: Dict[str, Any]) -> Dict[str, Any]:
+        """Write one recurring rule on an existing connection; the caller owns the commit.
+
+        When the caller does not supply an id but does supply an external_id, an
+        existing row for the same (source, external_id) is reused, so re-importing
+        the same Wallet standing order updates it instead of duplicating it
+        (S2A C). An explicit id keeps the plain id upsert semantics.
+        """
+        provided_id = rule.get("id")
         payload = {
-            "id": rule.get("id") or str(uuid.uuid4()),
+            "id": provided_id or str(uuid.uuid4()),
             "merchant": rule["merchant"],
             "category": rule.get("category", "General"),
             "account_id": rule.get("account_id"),
@@ -1555,20 +1762,25 @@ class DatabaseManager:
             "last_seen": rule.get("last_seen"),
             "raw_payload": json.dumps(rule.get("raw_payload", rule), ensure_ascii=False),
         }
-        with self.get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO recurring_rules (id, merchant, category, account_id, typical_amount, frequency, status, source, external_id, next_expected, last_seen, raw_payload, updated_at)
-                VALUES (:id, :merchant, :category, :account_id, :typical_amount, :frequency, :status, :source, :external_id, :next_expected, :last_seen, :raw_payload, datetime('now'))
-                ON CONFLICT(id) DO UPDATE SET
-                    merchant = excluded.merchant, category = excluded.category, account_id = excluded.account_id,
-                    typical_amount = excluded.typical_amount, frequency = excluded.frequency, status = excluded.status,
-                    source = excluded.source, external_id = excluded.external_id, next_expected = excluded.next_expected,
-                    last_seen = excluded.last_seen, raw_payload = excluded.raw_payload, updated_at = datetime('now')
-                """,
-                payload,
-            )
-            conn.commit()
+        if not provided_id and payload["external_id"]:
+            existing = conn.execute(
+                "SELECT id FROM recurring_rules WHERE source = ? AND external_id = ? LIMIT 1",
+                (payload["source"], payload["external_id"]),
+            ).fetchone()
+            if existing:
+                payload["id"] = existing["id"]
+        conn.execute(
+            """
+            INSERT INTO recurring_rules (id, merchant, category, account_id, typical_amount, frequency, status, source, external_id, next_expected, last_seen, raw_payload, updated_at)
+            VALUES (:id, :merchant, :category, :account_id, :typical_amount, :frequency, :status, :source, :external_id, :next_expected, :last_seen, :raw_payload, datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+                merchant = excluded.merchant, category = excluded.category, account_id = excluded.account_id,
+                typical_amount = excluded.typical_amount, frequency = excluded.frequency, status = excluded.status,
+                source = excluded.source, external_id = excluded.external_id, next_expected = excluded.next_expected,
+                last_seen = excluded.last_seen, raw_payload = excluded.raw_payload, updated_at = datetime('now')
+            """,
+            payload,
+        )
         return payload
 
     def update_recurring_status(self, rule_id: str, status: str) -> Dict[str, Any]:
@@ -1581,6 +1793,59 @@ class DatabaseManager:
         if not row:
             raise ValueError("Recurring rule not found")
         return dict(row)
+
+    def import_budgetbakers_plan(self, budgets: List[Dict[str, Any]], standing_orders: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Apply a BudgetBakers import plan as one atomic operation (S2A D/E).
+
+        - every budget and standing order is written on a single connection and
+          committed only when the whole plan succeeds; any failure rolls the
+          entire plan back, so the IMPORT_PLAN_FAILED event always reports the
+          only honest numbers after a rollback: zero rows written;
+        - budgets whose existing row belongs to source MANUAL are skipped, so a
+          Wallet plan can never overwrite a user-maintained budget (S2A D);
+        - the single audit event is written after the outcome is known and can
+          never mask a failed import.
+        """
+        imported_budgets = 0
+        imported_orders = 0
+        try:
+            with closing(self.get_connection()) as conn:
+                try:
+                    for budget in budgets:
+                        written = self._upsert_budget(
+                            conn, {**budget, "source": "BUDGETBAKERS"}, preserve_manual=True
+                        )
+                        if written is not None:
+                            imported_budgets += 1
+                    for order in standing_orders:
+                        self._upsert_recurring_rule(conn, {**order, "source": "BUDGETBAKERS", "status": "confirmed"})
+                        imported_orders += 1
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+        except Exception as exc:
+            self._try_add_action_event(
+                "BUDGETBAKERS",
+                "IMPORT_PLAN_FAILED",
+                "La importación del plan de BudgetBakers falló.",
+                "ERROR",
+                {
+                    "imported_budgets": 0,
+                    "imported_standing_orders": 0,
+                    "rolled_back": True,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        self._try_add_action_event(
+            "BUDGETBAKERS",
+            "IMPORT_PLAN_SUCCESS",
+            "Plan de BudgetBakers importado.",
+            "INFO",
+            {"imported_budgets": imported_budgets, "imported_standing_orders": imported_orders},
+        )
+        return {"imported_budgets": imported_budgets, "imported_standing_orders": imported_orders}
 
     def sync_detected_recurring_rules(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         existing = {(row["merchant"], round(float(row["typical_amount"] or 0), 2)): row for row in self.get_recurring_rules(include_rejected=True)}
@@ -1743,13 +2008,56 @@ class DatabaseManager:
             conn.commit()
         return payload
 
+    def _insert_action_event(
+        self,
+        conn: sqlite3.Connection,
+        source: str,
+        event_type: str,
+        message: str,
+        severity: str = "INFO",
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write one action_events row on an existing connection; the caller owns the commit.
+
+        Writing on the caller's connection lets a mutation and its audit record share
+        a single transaction, so either both persist or neither does.
+        """
+        conn.execute(
+            "INSERT INTO action_events (id, source, event_type, severity, message, payload) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), self._clean_source(source), event_type, severity, message, json.dumps(payload or {}, ensure_ascii=False)),
+        )
+
     def add_action_event(self, source: str, event_type: str, message: str, severity: str = "INFO", payload: Optional[Dict[str, Any]] = None):
         with self.get_connection() as conn:
-            conn.execute(
-                "INSERT INTO action_events (id, source, event_type, severity, message, payload) VALUES (?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), self._clean_source(source), event_type, severity, message, json.dumps(payload or {}, ensure_ascii=False)),
-            )
+            self._insert_action_event(conn, source, event_type, message, severity, payload)
             conn.commit()
+
+    def _try_add_action_event(
+        self,
+        source: str,
+        event_type: str,
+        message: str,
+        severity: str = "INFO",
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Best-effort audit write for mutations that cannot share one transaction.
+
+        Restore replaces the database file and the import-plan loop commits row by
+        row, so their events are written after the outcome is known. This helper never
+        raises: recording the outcome must not mask, reverse or alter the operation
+        being audited. Failures are logged instead.
+        """
+        if not os.path.isfile(self.db_path):
+            logger.warning("Skipped action event %s/%s: no local database to record it in", source, event_type)
+            return False
+        try:
+            with closing(self.get_connection()) as conn:
+                self._insert_action_event(conn, source, event_type, message, severity, payload)
+                conn.commit()
+            return True
+        except Exception:
+            logger.exception("Could not record action event %s/%s", source, event_type)
+            return False
 
     def get_action_events(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
@@ -2155,24 +2463,51 @@ class DatabaseManager:
             self._copy_sqlite(resolved, self.db_path)
             self._verify_restored_database()
         except Exception as exc:
-            if self._recover_previous_database(had_live_database, pre_restore_path):
+            recovered = self._recover_previous_database(had_live_database, pre_restore_path)
+            self._try_add_action_event(
+                "MANUAL",
+                "BACKUP_RESTORE_FAILED",
+                "La restauración falló; la base de datos anterior quedó intacta."
+                if recovered
+                else "La restauración falló y la base de datos no pudo recuperarse.",
+                "ERROR",
+                {
+                    "backup_file": os.path.basename(resolved),
+                    "recovered": recovered,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            if recovered:
                 raise ValueError("Restore failed; the previous database was left unchanged.") from exc
             raise ValueError("Restore failed and the live database could not be recovered.") from exc
 
+        schema = self.get_schema_info()
+        self._try_add_action_event(
+            "MANUAL",
+            "BACKUP_RESTORE_SUCCESS",
+            "Base de datos local restaurada desde backup.",
+            "INFO",
+            {"backup_file": os.path.basename(resolved), "schema_version": schema["latest_version"]},
+        )
         logger.warning("Restored local database from %s", backup_path)
         return {
             "status": "RESTORED",
             "restored_from": backup_path,
             "pre_restore_backup_path": pre_restore_path if os.path.exists(pre_restore_path) else None,
             "validation": validation,
-            "schema": self.get_schema_info(),
+            "schema": schema,
         }
 
     def _parse_csv_rows(self, content: str) -> List[Dict[str, Any]]:
         if not content.strip():
             return []
         reader = csv.DictReader(io.StringIO(content.strip()))
-        return [{(k or "").strip(): (v or "").strip() for k, v in row.items()} for row in reader]
+        rows: List[Dict[str, Any]] = []
+        for row in reader:
+            rows.append({(k or "").strip(): (v or "").strip() for k, v in row.items()})
+            if len(rows) > MAX_CSV_ROWS:
+                raise ValueError(f"CSV supera el límite de {MAX_CSV_ROWS} filas por solicitud.")
+        return rows
 
     def _validate_csv_rows(self, rows: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         accepted, rejected = [], []

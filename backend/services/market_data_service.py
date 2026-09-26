@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from database.db_manager import DatabaseManager
 from backend.integrations.market_data_provider import MarketDataProvider, get_market_provider
+from backend.integrations.provider_security import sanitize_provider_message
 from backend.analytics.portfolio_xray import normalize_fund_composition_snapshot
 
 
@@ -275,8 +276,9 @@ def refresh_fund_compositions(db: DatabaseManager, symbols: List[str], provider:
             db.set_market_cache(_fund_cache_key(provider.name, symbol), snapshot, provider.name, expires)
             rows.append({"symbol": symbol, "status": snapshot["status"], "known_holdings_weight": snapshot["known_holdings_weight"], "residual_weight": snapshot["residual_weight"], "reasons": snapshot["reasons"]})
         except Exception as exc:
-            rows.append({"symbol": symbol, "status": "FAILED", "error": str(exc)})
-            errors.append({"symbol": symbol, "error": str(exc)})
+            message = sanitize_provider_message(str(exc))
+            rows.append({"symbol": symbol, "status": "FAILED", "error": message})
+            errors.append({"symbol": symbol, "error": message})
     status = "PARTIAL" if errors else "CONNECTED"
     db.set_sync_state("FUND_COMPOSITIONS", {"status": status, "last_sync_at": now, "last_success_at": now if not errors else None, "last_error": errors[0]["error"] if errors else None})
     return {"provider": provider.name, "status": status, "started_at": now, "completed_at": datetime.now().isoformat(), "symbols": rows, "errors": errors}
@@ -350,8 +352,9 @@ def sync_market_data(db: DatabaseManager, provider: Optional[MarketDataProvider]
                     history_count += 1
             result["assets"].append({"ticker": ticker, "provider_symbol": provider_symbol, "status": "UPDATED", "history_rows": history_count})
         except Exception as exc:
-            result["assets"].append({"ticker": ticker, "status": "FAILED", "error": str(exc)})
-            result["errors"].append({"symbol": ticker, "error": str(exc)})
+            message = sanitize_provider_message(str(exc))
+            result["assets"].append({"ticker": ticker, "status": "FAILED", "error": message})
+            result["errors"].append({"symbol": ticker, "error": message})
 
     for base, quote in sorted(_relevant_fx_pairs(holdings, operations)):
         pair = f"{base}/{quote}"
@@ -373,8 +376,9 @@ def sync_market_data(db: DatabaseManager, provider: Optional[MarketDataProvider]
                 count += 1
             result["fx"].append({"pair": pair, "status": "UPDATED", "rows": count})
         except Exception as exc:
-            result["fx"].append({"pair": pair, "status": "FAILED", "error": str(exc)})
-            result["errors"].append({"symbol": pair, "error": str(exc)})
+            message = sanitize_provider_message(str(exc))
+            result["fx"].append({"pair": pair, "status": "FAILED", "error": message})
+            result["errors"].append({"symbol": pair, "error": message})
 
     bench = (benchmark_symbol if benchmark_symbol is not None else config.get("benchmark_symbol") or "").upper()
     if bench:
@@ -399,8 +403,9 @@ def sync_market_data(db: DatabaseManager, provider: Optional[MarketDataProvider]
                 count += 1
             result["benchmark"] = {"symbol": bench, "provider_symbol": bench_provider_symbol, "status": "UPDATED", "rows": count}
         except Exception as exc:
-            result["benchmark"] = {"symbol": bench, "status": "FAILED", "error": str(exc)}
-            result["errors"].append({"symbol": bench, "error": str(exc)})
+            message = sanitize_provider_message(str(exc))
+            result["benchmark"] = {"symbol": bench, "status": "FAILED", "error": message}
+            result["errors"].append({"symbol": bench, "error": message})
 
     now = datetime.now().isoformat()
     status = "PARTIAL" if result["errors"] else "CONNECTED"

@@ -12,6 +12,14 @@ import urllib.request
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from backend.integrations.provider_security import (
+    DEFAULT_TIMEOUT_SECONDS,
+    MAX_RETRY_ATTEMPTS,
+    RETRYABLE_SERVER_STATUS_CODES,
+    backoff_delay,
+    parse_retry_after,
+)
+
 
 class BudgetBakersAuthError(Exception):
     pass
@@ -31,10 +39,38 @@ class BudgetBakersNetworkError(Exception):
     pass
 
 
+class BudgetBakersPaginationError(Exception):
+    """Pagination exceeded the safety cap or failed to advance.
+
+    Deliberately NOT a BudgetBakersNetworkError subclass: preview fallbacks that
+    tolerate unavailable optional endpoints must not swallow a broken-pagination
+    truncation — it has to surface as a clear error instead.
+    """
+
+
+class BudgetBakersMalformedResponseError(Exception):
+    """BudgetBakers answered 2xx with a body that is not usable JSON.
+
+    Deliberately a SIBLING of BudgetBakersNetworkError (like
+    BudgetBakersPaginationError): preview fallbacks that tolerate unavailable
+    optional endpoints must not treat a broken upstream payload as an empty
+    collection — it has to surface as a controlled 502 instead of silently
+    pretending the account has no data.
+    """
+
+
+MAX_FETCH_PAGES = 200  # safety cap: 200 pages x 200 items = 40k items per collection
+
+
+def _retry_sleep(seconds: float) -> None:
+    """Single indirection point for retry delays so tests never really sleep."""
+    time.sleep(seconds)
+
+
 class BudgetBakersAdapter:
     source = "BUDGETBAKERS"
 
-    def __init__(self, token: Optional[str] = None, base_url: Optional[str] = None, timeout: float = 15.0):
+    def __init__(self, token: Optional[str] = None, base_url: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT_SECONDS):
         self.token = token if token is not None else os.getenv("BUDGETBAKERS_API_TOKEN", "")
         self.base_url = (base_url or os.getenv("BUDGETBAKERS_BASE_URL", "https://rest.budgetbakers.com/wallet")).rstrip("/")
         self.timeout = timeout
@@ -212,12 +248,16 @@ class BudgetBakersAdapter:
             })
         return normalized
 
-    def _fetch_paginated(self, path: str, collection_key: str, limit: int = 200) -> Dict[str, Any]:
+    def _fetch_paginated(self, path: str, collection_key: str, limit: int = 200, max_pages: int = MAX_FETCH_PAGES) -> Dict[str, Any]:
         offset = 0
         items: List[Dict[str, Any]] = []
         pages = 0
         meta: Dict[str, Any] = {}
         while True:
+            if pages >= max_pages:
+                raise BudgetBakersPaginationError(
+                    f"BudgetBakers superó el límite de {max_pages} páginas para {path}; paginación detenida por seguridad."
+                )
             data, page_meta = self._get(path, {"limit": limit, "offset": offset})
             meta.update(page_meta)
             page_items = self._extract_items(data, collection_key)
@@ -226,7 +266,17 @@ class BudgetBakersAdapter:
             next_offset = data.get("nextOffset") if isinstance(data, dict) else None
             if next_offset is None:
                 break
-            offset = int(next_offset)
+            try:
+                parsed_offset = int(next_offset)
+            except (TypeError, ValueError) as exc:
+                raise BudgetBakersPaginationError(
+                    f"BudgetBakers devolvió nextOffset inválido ({next_offset!r}) en {path}."
+                ) from exc
+            if parsed_offset <= offset:
+                raise BudgetBakersPaginationError(
+                    f"La paginación de BudgetBakers no avanzó en {path} (offset {offset} -> {parsed_offset})."
+                )
+            offset = parsed_offset
         return {"items": items, "pages": pages, "meta": meta}
 
     def _extract_items(self, data: Any, collection_key: str) -> List[Dict[str, Any]]:
@@ -252,20 +302,45 @@ class BudgetBakersAdapter:
             },
             method="GET",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                body = response.read().decode("utf-8")
-                return json.loads(body or "{}"), self._response_meta(response.headers)
-        except urllib.error.HTTPError as exc:
-            if exc.code in {401, 403}:
-                raise BudgetBakersAuthError("Token BudgetBakers inválido o sin permisos.") from exc
-            if exc.code == 409:
-                raise BudgetBakersInitSyncError("Wallet todavía está preparando/sincronizando datos. Intente más tarde.") from exc
-            if exc.code == 429:
-                raise BudgetBakersRateLimitError("Rate limit de BudgetBakers alcanzado.", retry_after=exc.headers.get("Retry-After")) from exc
-            raise BudgetBakersNetworkError(f"BudgetBakers respondió HTTP {exc.code}.") from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise BudgetBakersNetworkError("No se pudo conectar con BudgetBakers.") from exc
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    try:
+                        body = response.read().decode("utf-8")
+                        data = json.loads(body or "{}")
+                    except ValueError as exc:
+                        raise BudgetBakersMalformedResponseError(
+                            "BudgetBakers devolvió una respuesta inválida (JSON malformado)."
+                        ) from exc
+                    if not isinstance(data, (dict, list)):
+                        raise BudgetBakersMalformedResponseError(
+                            "BudgetBakers devolvió una respuesta inválida (estructura inesperada)."
+                        )
+                    return data, self._response_meta(response.headers)
+            except urllib.error.HTTPError as exc:
+                if exc.code in {401, 403}:
+                    raise BudgetBakersAuthError("Token BudgetBakers inválido o sin permisos.") from exc
+                if exc.code == 409:
+                    raise BudgetBakersInitSyncError("Wallet todavía está preparando/sincronizando datos. Intente más tarde.") from exc
+                if exc.code == 429:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    delay = parse_retry_after(retry_after)
+                    if delay is None or attempt >= MAX_RETRY_ATTEMPTS:
+                        raise BudgetBakersRateLimitError("Rate limit de BudgetBakers alcanzado.", retry_after=retry_after) from exc
+                    _retry_sleep(delay)
+                    continue
+                if exc.code in RETRYABLE_SERVER_STATUS_CODES and attempt < MAX_RETRY_ATTEMPTS:
+                    server_delay = parse_retry_after(exc.headers.get("Retry-After") if exc.headers else None)
+                    _retry_sleep(server_delay if server_delay is not None else backoff_delay(attempt))
+                    continue
+                raise BudgetBakersNetworkError(f"BudgetBakers respondió HTTP {exc.code}.") from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                if attempt < MAX_RETRY_ATTEMPTS:
+                    _retry_sleep(backoff_delay(attempt))
+                    continue
+                raise BudgetBakersNetworkError("No se pudo conectar con BudgetBakers.") from exc
 
     def _response_meta(self, headers: Any) -> Dict[str, Any]:
         return {
