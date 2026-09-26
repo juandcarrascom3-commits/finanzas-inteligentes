@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { AlertTriangle, Eye, Info } from 'lucide-react';
+import { AlertTriangle, Info } from 'lucide-react';
 import { DashboardSummary, DataSourceInfo, FinancialInboxResult, MonthlyReview, TimelineItem, UnderstandSummary } from '../types';
+import { Button } from './controls';
 import { DataState, DataStateKind, DeltaDirection, DeltaMetric, HeroMetric, InlineMetric, Inspector, Timeline } from './primitives';
 
 interface AetherisOverviewProps {
@@ -29,7 +30,7 @@ const deltaDirection = (value: number | undefined | null): DeltaDirection => {
 
 const confidenceState = (level?: string): DataStateKind => {
   if (level === 'HIGH') return 'READY';
-  if (level === 'LOW') return 'PARTIAL';
+  if (level === 'MEDIUM') return 'PARTIAL';
   return 'UNEVALUABLE';
 };
 
@@ -39,6 +40,16 @@ const inboxState = (status?: string): DataStateKind => {
   if (status === 'PARTIAL') return 'PARTIAL';
   return 'UNEVALUABLE';
 };
+
+// Copia visible de severidad; el valor canónico del backend no se altera.
+const severityCopy: Record<string, string> = {
+  URGENT: 'Urgente',
+  ATTENTION: 'Atención',
+  WATCH: 'Seguimiento',
+  INFO: 'Info',
+};
+
+const severityLabel = (severity: string) => severityCopy[severity] || severity;
 
 const timelineItems = (items: TimelineItem[]) => items.slice(0, 5).map((item) => ({
   label: item.title,
@@ -72,6 +83,14 @@ export function AetherisOverview({
   const urgentAttention = attentionItems.filter((item) => item.severity === 'URGENT' || item.severity === 'ATTENTION');
   const watchAttention = attentionItems.filter((item) => item.severity === 'WATCH');
   const upcoming = financialInbox?.timeline ? timelineItems(financialInbox.timeline) : [];
+  // Lista visible operativa del rail: única fuente para render y empty state.
+  const visibleAttention = [...urgentAttention, ...watchAttention].slice(0, 6);
+  // Nivel efectivo único de confianza: mismo fallback para state y title.
+  const confidenceLevel = understand?.data_confidence?.level || understand?.what_changed?.data_confidence?.level;
+  const confidenceKind = confidenceState(confidenceLevel);
+  const confidenceTitle = confidenceKind === 'READY'
+    ? 'Información disponible'
+    : confidenceKind === 'PARTIAL' ? 'Información limitada' : 'Información insuficiente';
 
   const openAttention = (item: FinancialInboxResult['attention_items'][number]) => {
     setInspectorItem({
@@ -90,7 +109,7 @@ export function AetherisOverview({
     const reasons = understand?.what_changed.explain?.reasons || understand?.what_changed.interpretation || [];
     setInspectorItem({
       title: 'Qué cambió',
-      summary: 'Evidencia canónica del periodo actual frente al periodo anterior.',
+      summary: 'Evidencia del periodo actual frente al periodo anterior.',
       evidence: reasons.length > 0 ? reasons.slice(0, 4) : ['No hay explicación detallada disponible para este periodo.'],
     });
   };
@@ -109,15 +128,13 @@ export function AetherisOverview({
               detail: 'cashflow vs periodo anterior',
             } : undefined}
             trajectory={trajectory}
-            trajectoryCaption="Serie temporal canónica del dashboard; no se interpolan puntos."
+            trajectoryCaption="Evolución registrada del patrimonio; no se estiman puntos faltantes."
           />
 
           <div className="mt-8 grid gap-4 md:grid-cols-3">
             <InlineMetric
               label="Cashflow"
               value={money(changeMetric?.current ?? dashboard.cashflow?.cashflow, primaryCurrency, privacyMode)}
-              delta={changeMetric ? money(changeMetric.delta, primaryCurrency, privacyMode) : undefined}
-              direction={deltaDirection(changeMetric?.delta)}
             />
             <InlineMetric
               label="Tasa de ahorro"
@@ -134,15 +151,13 @@ export function AetherisOverview({
           </div>
 
           <section className="mt-9 grid gap-5 lg:grid-cols-[1fr_0.68fr]">
-            <div className="a-surface p-5">
+            <section className="a-surface p-5" aria-labelledby="overview-changed-title">
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <h2 className="a-module-title">Qué cambió</h2>
-                  <p className="a-meta mt-1">Comparación canónica del periodo; la explicación se abre bajo demanda.</p>
+                  <h2 id="overview-changed-title" className="a-module-title">Qué cambió</h2>
+                  <p className="a-meta mt-1">Cómo se compara este periodo con el anterior; la evidencia se abre bajo demanda.</p>
                 </div>
-                <button type="button" onClick={openChange} className="a-motion rounded-full border border-[var(--a-line)] px-3 py-1.5 text-xs text-[var(--a-secondary)]">
-                  Ver evidencia
-                </button>
+                <Button variant="quiet" onClick={openChange}>Ver evidencia</Button>
               </div>
               <div className="mt-5 space-y-3">
                 {contributors.slice(0, 5).map((item) => (
@@ -151,91 +166,93 @@ export function AetherisOverview({
                     <DeltaMetric value={money(item.delta, item.currency || primaryCurrency, privacyMode)} direction={deltaDirection(item.delta)} />
                   </div>
                 ))}
-                {contributors.length === 0 && <DataState state="EMPTY" title="Sin contribuciones destacadas" detail="El backend no devolvió contributors para este periodo." />}
+                {contributors.length === 0 && <DataState state="EMPTY" title="Sin desglose por categoría" detail="Este periodo no incluye desglose por categoría." />}
               </div>
-            </div>
+            </section>
 
-            <div className="a-surface p-5">
-              <h2 className="a-module-title">Estado de datos</h2>
+            <section className="a-surface p-5" aria-labelledby="overview-state-title">
+              <h2 id="overview-state-title" className="a-module-title">Estado de datos</h2>
               <div className="mt-4 grid gap-3">
                 <DataState
-                  state={confidenceState(understand?.data_confidence?.level || understand?.what_changed.data_confidence?.level)}
-                  title={understand?.data_confidence?.level === 'HIGH' ? 'Información disponible' : 'Información limitada'}
-                  detail={(understand?.data_confidence?.reasons || understand?.what_changed.data_confidence?.reasons || ['Se muestra lo disponible sin ocultar limitaciones.'])[0]}
+                  state={confidenceKind}
+                  title={confidenceTitle}
+                  detail={(understand?.data_confidence?.reasons || understand?.what_changed?.data_confidence?.reasons || ['Se muestra lo disponible sin ocultar limitaciones.'])[0]}
                 />
                 <DataState
                   state={inboxState(financialInbox?.status)}
                   title="Financial Inbox"
-                  detail={financialInbox ? `${financialInbox.summary.urgent_count} urgentes · ${financialInbox.summary.attention_count} atención · ${financialInbox.summary.watch_count} watch` : 'Sin inbox cargado todavía.'}
+                  detail={financialInbox ? `Horizonte evaluado: ${financialInbox.horizon_days} días.` : 'Sin bandeja cargada todavía.'}
                 />
               </div>
-            </div>
+            </section>
           </section>
 
           <section className="mt-5 grid gap-5 lg:grid-cols-[1fr_0.68fr]">
-            <div className="a-surface p-5">
-              <h2 className="a-module-title">Cash / trayectoria principal</h2>
-              {hasTrajectory ? (
-                <p className="a-meta mt-1">Se usa la serie real `dashboard.temporal_evolution` como vista temporal primaria.</p>
+            <section className="a-surface p-5" aria-labelledby="overview-close-title">
+              <h2 id="overview-close-title" className="a-module-title">Cierre del periodo</h2>
+              {monthlyReview ? (
+                <>
+                  <p className="a-meta mt-1">{monthlyReview.period}</p>
+                  <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                    <InlineMetric label="Ingresos" value={money(monthlyReview.facts.income, primaryCurrency, privacyMode)} direction="positive" />
+                    <InlineMetric label="Gastos" value={money(monthlyReview.facts.expenses, primaryCurrency, privacyMode)} direction="negative" />
+                    <InlineMetric label="Cierre estimado" value={money(monthlyReview.forecast.projected_balance, primaryCurrency, privacyMode)} direction="analytical" />
+                  </div>
+                </>
               ) : (
-                <DataState state="UNEVALUABLE" title="Sin serie temporal suficiente" detail="No se fabrica trayectoria cuando el backend no entrega puntos reales." />
-              )}
-              {monthlyReview && (
-                <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                  <InlineMetric label="Ingresos" value={money(monthlyReview.facts.income, primaryCurrency, privacyMode)} direction="positive" />
-                  <InlineMetric label="Gastos" value={money(monthlyReview.facts.expenses, primaryCurrency, privacyMode)} direction="negative" />
-                  <InlineMetric label="Cierre estimado" value={money(monthlyReview.forecast.projected_balance, primaryCurrency, privacyMode)} direction="analytical" />
+                <div className="mt-5">
+                  <DataState state="EMPTY" title="Sin cierre de periodo" detail="El cierre mensual todavía no está disponible." />
                 </div>
               )}
-            </div>
+            </section>
 
-            <div className="a-surface p-5">
-              <h2 className="a-module-title">Próximo</h2>
-              <p className="a-meta mt-1">Timeline canónico del Financial Inbox.</p>
+            <section className="a-surface p-5" aria-labelledby="overview-upcoming-title">
+              <h2 id="overview-upcoming-title" className="a-module-title">Próximo</h2>
+              <p className="a-meta mt-1">Próximos eventos del Financial Inbox.</p>
               <div className="mt-5">
                 {upcoming.length > 0 ? <Timeline items={upcoming} /> : <DataState state="EMPTY" title="Sin próximos eventos" detail="No hay eventos en el horizonte configurado." />}
               </div>
-            </div>
+            </section>
           </section>
         </section>
 
-        <aside className="a-elevated h-fit p-5">
+        <aside className="a-elevated h-fit p-5" aria-labelledby="overview-attention-title">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <h2 className="a-module-title">Attention</h2>
-              <p className="a-meta mt-1">Severidades canónicas del Financial Inbox.</p>
+              <h2 id="overview-attention-title" className="a-module-title">Attention</h2>
+              <p className="a-meta mt-1">Asuntos del Financial Inbox, de mayor a menor severidad.</p>
             </div>
             <Info className="h-4 w-4 text-[var(--a-info)]" aria-hidden="true" />
           </div>
 
+          {financialInbox && (financialInbox.summary.urgent_count + financialInbox.summary.attention_count + financialInbox.summary.watch_count) > 0 && (
+            <p className="a-meta mt-3">
+              {financialInbox.summary.urgent_count} urgentes · {financialInbox.summary.attention_count} en atención · {financialInbox.summary.watch_count} en seguimiento
+            </p>
+          )}
+
           <div className="mt-5 space-y-3">
-            {[...urgentAttention, ...watchAttention].slice(0, 6).map((item) => (
+            {visibleAttention.map((item) => (
               <button
                 key={item.id}
                 type="button"
                 onClick={() => openAttention(item)}
-                className="a-motion w-full rounded-[15px] border border-[var(--a-line)] bg-black/10 p-3 text-left"
+                className="a-motion w-full rounded-[var(--a-radius-sm)] border border-[var(--a-line)] bg-[var(--a-canvas)] p-3 text-left"
               >
                 <div className="flex items-start gap-3">
                   <AlertTriangle className={`mt-0.5 h-4 w-4 shrink-0 ${item.severity === 'URGENT' ? 'text-[var(--a-negative)]' : item.severity === 'ATTENTION' ? 'text-[var(--a-warning)]' : 'text-[var(--a-info)]'}`} aria-hidden="true" />
                   <span className="min-w-0">
-                    <span className="block text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">{item.severity}</span>
+                    <span className="block text-[10px] font-bold uppercase tracking-wide text-[var(--a-muted)]">{severityLabel(item.severity)}</span>
                     <span className="mt-1 block text-xs font-bold text-[var(--a-text)]">{item.title}</span>
                     <span className="a-meta mt-1 block">{item.summary}</span>
                   </span>
                 </div>
               </button>
             ))}
-            {attentionItems.length === 0 && <DataState state="EMPTY" title="Sin señales prioritarias" detail="Financial Inbox no reporta asuntos en este horizonte." />}
+            {visibleAttention.length === 0 && <DataState state="EMPTY" title="Sin señales prioritarias" detail="Financial Inbox no reporta asuntos en este horizonte." />}
           </div>
 
-          <div className="a-floating mt-5 rounded-[18px] border border-[var(--a-line)] p-4">
-            <div className="flex items-center gap-2 text-xs font-bold text-[var(--a-text)]">
-              <Eye className="h-4 w-4 text-[var(--a-info)]" aria-hidden="true" />
-              Disclosures
-            </div>
-            <p className="a-meta mt-2">Selecciona una señal o “Qué cambió” para ver explicación y evidencia, sin traer datos crudos al Overview.</p>
-          </div>
+          <p className="a-meta mt-5">Selecciona una señal o “Qué cambió” para ver la explicación y su evidencia.</p>
         </aside>
       </div>
 
