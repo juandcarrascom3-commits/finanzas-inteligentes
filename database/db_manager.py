@@ -24,6 +24,17 @@ VALID_INVESTMENT_OPERATION_TYPES = {
 }
 logger = logging.getLogger(__name__)
 
+# S2C ingestion boundaries: deterministic request limits backed by repository
+# evidence (manual exports are KB-sized; BudgetBakers pages hold 200 items and
+# are capped at MAX pages by the adapter). Pydantic models in backend/app.py
+# reuse these constants so every ingestion path enforces the same bounds.
+MAX_CSV_CONTENT_CHARS = 5_000_000  # ~5 MB of CSV text per request
+MAX_CSV_ROWS = 50_000              # parsed rows per CSV request
+MAX_CANONICAL_ACCOUNTS = 2_000     # canonical import account rows
+MAX_CANONICAL_TRANSACTIONS = 50_000  # > BudgetBakers page-cap output (200 x 200)
+MAX_IMPORT_PLAN_ITEMS = 5_000      # import-plan budgets / standing orders per list
+MAX_MAPPING_ITEMS = 10_000         # mapping-config collection size
+
 
 def resolve_db_path() -> str:
     configured = os.getenv("FINANCE_DB_PATH")
@@ -2344,7 +2355,12 @@ class DatabaseManager:
         if not content.strip():
             return []
         reader = csv.DictReader(io.StringIO(content.strip()))
-        return [{(k or "").strip(): (v or "").strip() for k, v in row.items()} for row in reader]
+        rows: List[Dict[str, Any]] = []
+        for row in reader:
+            rows.append({(k or "").strip(): (v or "").strip() for k, v in row.items()})
+            if len(rows) > MAX_CSV_ROWS:
+                raise ValueError(f"CSV supera el límite de {MAX_CSV_ROWS} filas por solicitud.")
+        return rows
 
     def _validate_csv_rows(self, rows: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
         accepted, rejected = [], []

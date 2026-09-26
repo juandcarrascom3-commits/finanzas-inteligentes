@@ -31,6 +31,18 @@ class BudgetBakersNetworkError(Exception):
     pass
 
 
+class BudgetBakersPaginationError(Exception):
+    """Pagination exceeded the safety cap or failed to advance.
+
+    Deliberately NOT a BudgetBakersNetworkError subclass: preview fallbacks that
+    tolerate unavailable optional endpoints must not swallow a broken-pagination
+    truncation — it has to surface as a clear error instead.
+    """
+
+
+MAX_FETCH_PAGES = 200  # safety cap: 200 pages x 200 items = 40k items per collection
+
+
 class BudgetBakersAdapter:
     source = "BUDGETBAKERS"
 
@@ -212,12 +224,16 @@ class BudgetBakersAdapter:
             })
         return normalized
 
-    def _fetch_paginated(self, path: str, collection_key: str, limit: int = 200) -> Dict[str, Any]:
+    def _fetch_paginated(self, path: str, collection_key: str, limit: int = 200, max_pages: int = MAX_FETCH_PAGES) -> Dict[str, Any]:
         offset = 0
         items: List[Dict[str, Any]] = []
         pages = 0
         meta: Dict[str, Any] = {}
         while True:
+            if pages >= max_pages:
+                raise BudgetBakersPaginationError(
+                    f"BudgetBakers superó el límite de {max_pages} páginas para {path}; paginación detenida por seguridad."
+                )
             data, page_meta = self._get(path, {"limit": limit, "offset": offset})
             meta.update(page_meta)
             page_items = self._extract_items(data, collection_key)
@@ -226,7 +242,17 @@ class BudgetBakersAdapter:
             next_offset = data.get("nextOffset") if isinstance(data, dict) else None
             if next_offset is None:
                 break
-            offset = int(next_offset)
+            try:
+                parsed_offset = int(next_offset)
+            except (TypeError, ValueError) as exc:
+                raise BudgetBakersPaginationError(
+                    f"BudgetBakers devolvió nextOffset inválido ({next_offset!r}) en {path}."
+                ) from exc
+            if parsed_offset <= offset:
+                raise BudgetBakersPaginationError(
+                    f"La paginación de BudgetBakers no avanzó en {path} (offset {offset} -> {parsed_offset})."
+                )
+            offset = parsed_offset
         return {"items": items, "pages": pages, "meta": meta}
 
     def _extract_items(self, data: Any, collection_key: str) -> List[Dict[str, Any]]:
