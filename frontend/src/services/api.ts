@@ -26,6 +26,7 @@ import type {
   MarketDataSyncResult,
   RecurringRule,
   ReconciliationSummary,
+  ResearchItem,
   SourceMapping,
   SafeToSpendResult,
   ScenarioEvaluationResult,
@@ -608,4 +609,50 @@ export async function evaluateFinancialInbox(payload: Record<string, unknown>): 
     body: JSON.stringify(payload)
   });
   return readJson<FinancialInboxResult>(res, 'Error al evaluar inbox financiero.');
+}
+
+/**
+ * Parser propio de Research: los endpoints de Research devuelven `detail`
+ * estructurado (p. ej. `{ "code": "EPISTEMIC_INVALID" }`), que el helper
+ * compartido `readJson` convertiría en "[object Object]" al construir el
+ * mensaje. Solo se usa dentro de esta capa GET; `readJson` no se modifica.
+ */
+async function readResearchJson<T>(response: Response, fallbackMessage: string): Promise<T> {
+  if (!response.ok) {
+    let detail: unknown;
+    try {
+      const body: unknown = await response.json();
+      detail = body && typeof body === 'object' ? (body as { detail?: unknown }).detail : undefined;
+    } catch {
+      detail = undefined;
+    }
+    const code = detail && typeof detail === 'object' && typeof (detail as { code?: unknown }).code === 'string'
+      ? (detail as { code: string }).code
+      : undefined;
+    const message = typeof detail === 'string' && detail.trim()
+      ? detail
+      : code || fallbackMessage || `HTTP error ${response.status}`;
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+export interface FetchResearchItemsParams {
+  source_id?: string;
+  epistemic?: string;
+  limit?: number;
+}
+
+/**
+ * Lista GET-only de elementos de Research persistidos.
+ * El límite explícito por defecto es 1000: es un tope de consulta, no una
+ * afirmación de que el corpus completo esté representado.
+ */
+export async function fetchResearchItems(params: FetchResearchItemsParams = {}): Promise<ResearchItem[]> {
+  const query = new URLSearchParams();
+  if (params.source_id) query.set('source_id', params.source_id);
+  if (params.epistemic) query.set('epistemic', params.epistemic);
+  query.set('limit', String(params.limit ?? 1000));
+  const res = await fetch(`${API_BASE}/research/items?${query.toString()}`);
+  return readResearchJson<ResearchItem[]>(res, 'Error al cargar elementos de Research.');
 }

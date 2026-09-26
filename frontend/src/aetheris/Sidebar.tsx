@@ -1,7 +1,7 @@
 import React from 'react';
-import { BarChart3, Compass, Database, LineChart, PanelLeftClose, PanelLeftOpen, Target } from 'lucide-react';
+import { BarChart3, BookOpen, Compass, Database, LineChart, PanelLeftClose, PanelLeftOpen, Target } from 'lucide-react';
 
-export type AetherisTab = 'overview' | 'plan' | 'invest' | 'datos';
+export type AetherisTab = 'overview' | 'plan' | 'invest' | 'datos' | 'research';
 
 interface NavItem {
   id: AetherisTab;
@@ -19,6 +19,7 @@ const navItems: NavItem[] = [
   { id: 'plan', label: 'Plan', description: 'Presupuesto y calendario', icon: Target },
   { id: 'invest', label: 'Invest', description: 'Portafolio y ledger', icon: LineChart },
   { id: 'datos', label: 'Datos', description: 'Fuentes y control', icon: Database },
+  { id: 'research', label: 'Research', description: 'Conocimiento externo', icon: BookOpen },
 ];
 
 interface SidebarProps {
@@ -65,7 +66,7 @@ export function Sidebar({
       <nav
         id="a-sidebar-nav"
         aria-label="Navegación principal"
-        className="mt-8 grid gap-2 max-[920px]:mt-5 max-[920px]:grid-cols-4 max-[640px]:grid-cols-2"
+        className="mt-8 grid gap-2 max-[920px]:mt-5 max-[920px]:grid-cols-5 max-[640px]:grid-cols-2"
       >
         {navItems.map((item) => {
           const Icon = item.icon;
