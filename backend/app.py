@@ -13,6 +13,7 @@ Exposes endpoints for:
 
 import hashlib
 import json
+import logging
 import math
 import os
 import uuid
@@ -34,6 +35,7 @@ from database.db_manager import (
     MAX_IMPORT_PLAN_ITEMS,
     MAX_MAPPING_ITEMS,
 )
+from database.research_store import ResearchStore
 from backend.analytics.metrics import (
     calculate_net_worth,
     calculate_savings_rate,
@@ -101,6 +103,7 @@ from backend.analytics.wealth import (
     get_wealth_action_items,
 )
 from backend.analytics.portfolio_xray import calculate_portfolio_exposure
+from backend.analytics.research_normalize import EPISTEMIC_VALUES, normalize_source_id
 from backend.analytics.investment_ledger import (
     derive_positions,
     get_effective_holdings,
@@ -110,6 +113,13 @@ from backend.analytics.investment_ledger import (
 from backend.services.budgetbakers_client import BudgetBakersClient, DailyQuotaExceededError
 from backend.services.guardrail_service import GuardrailService, TradeGuardrailBlockedError
 from backend.services.market_data_service import apply_market_prices, get_cached_fund_compositions, get_market_data_status, refresh_fund_compositions, sync_market_data
+from backend.services.research_service import (
+    ResearchServiceError,
+    ingest_research,
+    preview_research,
+)
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -552,6 +562,22 @@ class FinancialSnapshotInput(BaseModel):
     reserve_floor: Optional[float] = None
 
 
+class ResearchPreviewInput(BaseModel):
+    # items stays List[Any] on purpose: non-dict entries must reach
+    # ResearchService and surface as REJECTED decisions, not a Pydantic 422.
+    # The batch cap reuses the house per-list import bound (MAX_IMPORT_PLAN_ITEMS).
+    items: List[Any] = Field(default_factory=list, max_length=MAX_IMPORT_PLAN_ITEMS)
+    fetched_at: Optional[str] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ResearchIngestInput(ResearchPreviewInput):
+    # Missing preview_hash is deliberately valid here: ResearchService treats
+    # it as STALE_PREVIEW (409) with the current hash, matching the eToro flow.
+    preview_hash: Optional[str] = None
+    confirm_import: bool = False
+
+
 def get_budgetbakers_adapter() -> BudgetBakersAdapter:
     return BudgetBakersAdapter()
 
@@ -584,6 +610,70 @@ def _verify_ingest_preview_hash(requested_hash: Optional[str], current_hash: str
     """Reject a confirm whose submitted preview hash no longer matches the input."""
     if requested_hash and requested_hash != current_hash:
         raise HTTPException(status_code=409, detail={"code": "STALE_PREVIEW", "current_preview_hash": current_hash})
+
+
+_RESEARCH_SERVICE_STATUS = {
+    "CONFIRMATION_REQUIRED": 400,
+    "STALE_PREVIEW": 409,
+    "CONFLICTS_BLOCKED": 409,
+    "NOTHING_TO_APPLY": 409,
+}
+
+
+def _research_service_error(exc: ResearchServiceError) -> HTTPException:
+    """Map the stable ResearchServiceError.code to its documented HTTP status.
+
+    Only code, message and the service's documented details travel — never a
+    raw str(exc) from anywhere else.
+    """
+    status = _RESEARCH_SERVICE_STATUS.get(exc.code, 400)
+    return HTTPException(
+        status_code=status,
+        detail={"code": exc.code, "message": exc.message, **exc.details},
+    )
+
+
+def _research_internal_error() -> HTTPException:
+    """Sanitized 500: unexpected failures never expose internals."""
+    return HTTPException(
+        status_code=500,
+        detail={"code": "INTERNAL_ERROR", "message": "Error interno de Research."},
+    )
+
+
+def _record_research_audit(pending_event: Dict[str, Any]) -> bool:
+    """Emit the deferred RESEARCH/INGEST event AFTER the committed ingest.
+
+    Best-effort by design (same policy as DatabaseManager._try_add_action_event):
+    a failed audit write must never fail or reverse the already-committed
+    Research persistence — the caller reports audit.recorded = false instead.
+    """
+    try:
+        db.add_action_event(**pending_event)
+        return True
+    except Exception:
+        logger.exception("Could not record RESEARCH/INGEST action event")
+        return False
+
+
+def _research_source_filter(value: Optional[str]) -> Optional[str]:
+    """Canonical ResearchStore source representation; blank means no filter."""
+    if value is None or not str(value).strip():
+        return None
+    try:
+        return normalize_source_id(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={"code": str(exc)})
+
+
+def _research_epistemic_filter(value: Optional[str]) -> Optional[str]:
+    """Existing Research epistemic vocabulary only; blank means no filter."""
+    if value is None or not str(value).strip():
+        return None
+    label = str(value).strip().upper()
+    if label not in EPISTEMIC_VALUES:
+        raise HTTPException(status_code=422, detail={"code": "EPISTEMIC_INVALID"})
+    return label
 
 
 def budgetbakers_error_response(exc: Exception):
@@ -2425,3 +2515,82 @@ def get_executive_report(period: str = Query("mensual", pattern="^(diario|semana
             "Rebalancear liquidez en COP aprovechando la estabilidad relativa cambiaria."
         ]
     }
+
+
+# --- Research (R1C) API ---
+
+@app.post("/api/research/preview")
+def research_preview(payload: ResearchPreviewInput):
+    """Read-only R1B preview: zero persistence, zero action_events."""
+    try:
+        return preview_research(
+            db,
+            payload.items,
+            fetched_at=payload.fetched_at,
+            meta=payload.meta,
+        )
+    except ResearchServiceError as exc:
+        raise _research_service_error(exc)
+    except Exception:
+        logger.exception("Research preview failed")
+        raise _research_internal_error()
+
+
+@app.post("/api/research/ingest")
+def research_ingest(payload: ResearchIngestInput):
+    """Confirm and apply a batch; the audit event is written only post-commit.
+
+    Research persistence and action_events remain two transactions: this call
+    returns only after the ResearchStore commit, so a RESEARCH success event
+    can never precede the write. A crash between commit and event leaves rows
+    without audit (at-most-once); the inverse never happens. An audit-write
+    failure after commit keeps the 200 and reports audit.recorded = false.
+    """
+    try:
+        result = ingest_research(
+            db,
+            payload.items,
+            preview_hash=payload.preview_hash,
+            confirm_import=payload.confirm_import,
+            fetched_at=payload.fetched_at,
+            meta=payload.meta,
+        )
+    except ResearchServiceError as exc:
+        raise _research_service_error(exc)
+    except Exception:
+        logger.exception("Research ingest failed")
+        raise _research_internal_error()
+
+    recorded = _record_research_audit(result["audit"]["pending_event"])
+    result["audit"] = {
+        "recorded": recorded,
+        "source": "RESEARCH",
+        "event_type": "INGEST",
+    }
+    return result
+
+
+@app.get("/api/research/items")
+def research_items_list(
+    source_id: Optional[str] = Query(None),
+    epistemic: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=MAX_IMPORT_PLAN_ITEMS),
+):
+    """Persisted Research items through the existing Store filters only."""
+    return ResearchStore(db).list_items(
+        source_id=_research_source_filter(source_id),
+        epistemic=_research_epistemic_filter(epistemic),
+        limit=limit,
+    )
+
+
+@app.get("/api/research/items/{source_id}/{external_ref:path}")
+def research_item_detail(source_id: str, external_ref: str):
+    """Natural identity lookup (source_id, external_ref); 404 when absent."""
+    canonical_source = _research_source_filter(source_id)
+    if canonical_source is None:
+        raise HTTPException(status_code=422, detail={"code": "SOURCE_ID_REQUIRED"})
+    rows = ResearchStore(db).get_by_identities([(canonical_source, external_ref)])
+    if not rows:
+        raise HTTPException(status_code=404, detail={"code": "RESEARCH_ITEM_NOT_FOUND"})
+    return rows[0]
