@@ -1,5 +1,6 @@
 """Migration integrity tests against an isolated temporary database."""
 
+import glob
 import os
 import sqlite3
 
@@ -80,3 +81,46 @@ def test_failed_migration_rolls_back_and_is_not_recorded(tmp_path, monkeypatch):
     assert versions == ["001"]
 
     os.remove(db_path)  # deterministic close: no handle left behind on Windows
+
+
+def _declared_sqlite_versions() -> set:
+    files = glob.glob(os.path.join(db_manager.MIGRATIONS_DIR, "*_sqlite_*.sql"))
+    return {os.path.basename(path).split("_", 1)[0] for path in files}
+
+
+def test_fresh_database_applies_every_sqlite_migration(tmp_path):
+    db_path = str(tmp_path / "fresh.db")
+    DatabaseManager(db_path=db_path)
+
+    connection = sqlite3.connect(db_path)
+    connection.row_factory = sqlite3.Row
+    try:
+        applied_files = {
+            row["filename"]
+            for row in connection.execute("SELECT filename FROM schema_migrations")
+        }
+    finally:
+        connection.close()
+    _, versions = _schema_state(db_path)
+
+    sqlite_files = {
+        os.path.basename(path)
+        for path in glob.glob(os.path.join(db_manager.MIGRATIONS_DIR, "*_sqlite_*.sql"))
+    }
+    # Every *_sqlite_*.sql file discovered by the engine gets applied.
+    assert applied_files == sqlite_files
+    assert set(versions) == _declared_sqlite_versions()
+    assert len(versions) == len(set(versions))  # one record per migration
+    assert versions == sorted(versions)
+    assert "001" in versions
+
+    # The Supabase/PostgreSQL migration really is in the directory and is
+    # excluded by the engine's glob: it must never be applied to (or
+    # recorded in) a fresh SQLite database, and its presence must not break
+    # the fresh-database path.
+    supabase_files = {
+        os.path.basename(path)
+        for path in glob.glob(os.path.join(db_manager.MIGRATIONS_DIR, "*supabase*.sql"))
+    }
+    assert supabase_files, "the PostgreSQL migration must exist to prove exclusion"
+    assert applied_files.isdisjoint(supabase_files)
