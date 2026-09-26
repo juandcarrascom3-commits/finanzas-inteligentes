@@ -417,3 +417,40 @@ def test_audited_mutations_do_not_touch_source_sync_state():
     client.delete(f"/api/budgets/{budget['id']}")
 
     assert _row_count("source_sync_state") == before
+
+
+# --- audit source vocabulary (S2 closeout) ---------------------------------
+
+
+def test_add_action_event_preserves_research_source_and_sanitizes_unknown():
+    """VALID_SOURCES is the audit vocabulary.
+
+    RESEARCH is a known domain source (Research R1C dependency resolved by
+    this S2 closeout), while genuinely unknown/invalid sources keep the
+    existing sanitation to MANUAL.
+    """
+    db.add_action_event(
+        "RESEARCH",
+        "AUDIT_SOURCE_CHECK",
+        "Vocabulario de auditoría: fuente RESEARCH.",
+        "INFO",
+        {"check": "research"},
+    )
+    db.add_action_event(
+        "definitely_not_a_source",
+        "AUDIT_SOURCE_CHECK",
+        "Vocabulario de auditoría: fuente desconocida.",
+        "INFO",
+        {"check": "unknown"},
+    )
+
+    events = _events_of("AUDIT_SOURCE_CHECK")
+    research_event = next(
+        event for event in events if event["message"] == "Vocabulario de auditoría: fuente RESEARCH."
+    )
+    unknown_event = next(
+        event for event in events if event["message"] == "Vocabulario de auditoría: fuente desconocida."
+    )
+
+    assert research_event["source"] == "RESEARCH"
+    assert unknown_event["source"] == "MANUAL"  # unchanged sanitation for invalid sources

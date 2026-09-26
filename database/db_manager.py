@@ -17,7 +17,7 @@ DEFAULT_DB_FILE = os.path.join(os.path.dirname(__file__), "finanzas.db")
 MIGRATIONS_DIR = os.path.join(os.path.dirname(__file__), "migrations")
 SEED_FILE = os.path.join(os.path.dirname(__file__), "seeds", "initial_seed.sql")
 BACKUP_FILE_PREFIXES = ("finance-backup-", "finance-pre-restore-")
-VALID_SOURCES = {"DEMO", "MANUAL", "CSV", "BUDGETBAKERS", "ETORO", "GOOGLE", "MARKET_DATA"}
+VALID_SOURCES = {"DEMO", "MANUAL", "CSV", "BUDGETBAKERS", "ETORO", "GOOGLE", "MARKET_DATA", "RESEARCH"}
 VALID_INVESTMENT_OPERATION_TYPES = {
     "CONTRIBUTION", "WITHDRAWAL", "BUY", "SELL", "DIVIDEND", "INTEREST", "FEE",
     "TRANSFER_IN", "TRANSFER_OUT", "SPLIT", "ADJUSTMENT",
@@ -466,7 +466,12 @@ class DatabaseManager:
             )
             conn.commit()
 
-    def save_asset_valuation(self, valuation: Dict[str, Any]) -> Dict[str, Any]:
+    def save_asset_valuation(
+        self,
+        valuation: Dict[str, Any],
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Dict[str, Any]:
+        """Upsert one valuation; passing `conn` joins an existing batch transaction."""
         retrieved_at = valuation.get("retrieved_at") or datetime.now().isoformat()
         metadata = valuation.get("metadata") or {}
         payload = {
@@ -480,28 +485,46 @@ class DatabaseManager:
             "retrieved_at": retrieved_at,
             "metadata": json.dumps(metadata if isinstance(metadata, dict) else self._safe_json(metadata), ensure_ascii=False),
         }
-        with self.get_connection() as conn:
-            existing = conn.execute(
-                """
-                SELECT id FROM asset_valuations
-                WHERE ticker = ? AND valuation_date = ? AND source = ?
-                """,
-                (payload["ticker"], payload["valuation_date"], payload["source"]),
-            ).fetchone()
-            if existing:
-                payload["id"] = existing["id"]
-            conn.execute(
-                """
-                INSERT INTO asset_valuations (id, ticker, price, currency, valuation_date, source, provider, retrieved_at, metadata)
-                VALUES (:id, :ticker, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata)
-                ON CONFLICT(ticker, valuation_date, source) DO UPDATE SET
-                    price = excluded.price, currency = excluded.currency,
-                    provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata
-                """,
-                payload,
-            )
-            conn.commit()
+        if conn is not None:
+            self._upsert_asset_valuation(conn, payload)
+            return payload
+        with self.get_connection() as own_conn:
+            self._upsert_asset_valuation(own_conn, payload)
+            own_conn.commit()
         return payload
+
+    def _upsert_asset_valuation(self, conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
+        """Write one valuation on an existing connection; the caller owns the commit.
+
+        asset_valuations.ticker is a foreign key to assets(ticker), so an unknown
+        ticker is rejected here with a clear ValueError before any row of the
+        batch is written instead of surfacing as a mid-batch FK failure (S2A I).
+        """
+        known = conn.execute(
+            "SELECT 1 FROM assets WHERE ticker = ? LIMIT 1",
+            (payload["ticker"],),
+        ).fetchone()
+        if not known:
+            raise ValueError(f"ticker desconocido: {payload['ticker']}; no existe en assets.")
+        existing = conn.execute(
+            """
+            SELECT id FROM asset_valuations
+            WHERE ticker = ? AND valuation_date = ? AND source = ?
+            """,
+            (payload["ticker"], payload["valuation_date"], payload["source"]),
+        ).fetchone()
+        if existing:
+            payload["id"] = existing["id"]
+        conn.execute(
+            """
+            INSERT INTO asset_valuations (id, ticker, price, currency, valuation_date, source, provider, retrieved_at, metadata)
+            VALUES (:id, :ticker, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata)
+            ON CONFLICT(ticker, valuation_date, source) DO UPDATE SET
+                price = excluded.price, currency = excluded.currency,
+                provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata
+            """,
+            payload,
+        )
 
     def get_asset_valuations(self, ticker: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, params = [], []
@@ -571,8 +594,17 @@ class DatabaseManager:
                 accepted.append(payload)
             except Exception as exc:
                 rejected.append({"row_number": index, "row": row, "error": str(exc)})
-        for payload in accepted:
-            self.save_asset_valuation(payload)
+        if accepted:
+            # S2A F: all-or-nothing. Any persistence failure (e.g. unknown
+            # ticker) rolls the whole batch back instead of leaving a prefix.
+            with closing(self.get_connection()) as conn:
+                try:
+                    for payload in accepted:
+                        self.save_asset_valuation(payload, conn=conn)
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
         return {
             "accepted_rows": accepted,
             "rejected_rows": rejected,
@@ -581,7 +613,12 @@ class DatabaseManager:
             "imported_count": len(accepted),
         }
 
-    def save_benchmark_price(self, price: Dict[str, Any]) -> Dict[str, Any]:
+    def save_benchmark_price(
+        self,
+        price: Dict[str, Any],
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Dict[str, Any]:
+        """Upsert one benchmark price; passing `conn` joins an existing batch transaction."""
         key = (price.get("benchmark_key") or price.get("ticker") or "BENCHMARK").strip().upper()
         retrieved_at = price.get("retrieved_at") or datetime.now().isoformat()
         metadata = price.get("metadata") or {}
@@ -597,29 +634,36 @@ class DatabaseManager:
             "retrieved_at": retrieved_at,
             "metadata": json.dumps(metadata if isinstance(metadata, dict) else self._safe_json(metadata), ensure_ascii=False),
         }
-        with self.get_connection() as conn:
-            existing = conn.execute(
-                """
-                SELECT id FROM benchmark_prices
-                WHERE benchmark_key = ? AND valuation_date = ? AND source = ?
-                """,
-                (payload["benchmark_key"], payload["valuation_date"], payload["source"]),
-            ).fetchone()
-            if existing:
-                payload["id"] = existing["id"]
-            conn.execute(
-                """
-                INSERT INTO benchmark_prices (id, benchmark_key, label, price, currency, valuation_date, source, provider, retrieved_at, metadata, updated_at)
-                VALUES (:id, :benchmark_key, :label, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata, datetime('now'))
-                ON CONFLICT(benchmark_key, valuation_date, source) DO UPDATE SET
-                    label = excluded.label, price = excluded.price, currency = excluded.currency,
-                    provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata,
-                    updated_at = datetime('now')
-                """,
-                payload,
-            )
-            conn.commit()
+        if conn is not None:
+            self._upsert_benchmark_price(conn, payload)
+            return payload
+        with self.get_connection() as own_conn:
+            self._upsert_benchmark_price(own_conn, payload)
+            own_conn.commit()
         return payload
+
+    def _upsert_benchmark_price(self, conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
+        """Write one benchmark price on an existing connection; the caller owns the commit."""
+        existing = conn.execute(
+            """
+            SELECT id FROM benchmark_prices
+            WHERE benchmark_key = ? AND valuation_date = ? AND source = ?
+            """,
+            (payload["benchmark_key"], payload["valuation_date"], payload["source"]),
+        ).fetchone()
+        if existing:
+            payload["id"] = existing["id"]
+        conn.execute(
+            """
+            INSERT INTO benchmark_prices (id, benchmark_key, label, price, currency, valuation_date, source, provider, retrieved_at, metadata, updated_at)
+            VALUES (:id, :benchmark_key, :label, :price, :currency, :valuation_date, :source, :provider, :retrieved_at, :metadata, datetime('now'))
+            ON CONFLICT(benchmark_key, valuation_date, source) DO UPDATE SET
+                label = excluded.label, price = excluded.price, currency = excluded.currency,
+                provider = excluded.provider, retrieved_at = excluded.retrieved_at, metadata = excluded.metadata,
+                updated_at = datetime('now')
+            """,
+            payload,
+        )
 
     def get_benchmark_prices(self, benchmark_key: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, params = [], []
@@ -824,7 +868,12 @@ class DatabaseManager:
             conn.commit()
         return row
 
-    def save_fx_rate(self, rate: Dict[str, Any]) -> Dict[str, Any]:
+    def save_fx_rate(
+        self,
+        rate: Dict[str, Any],
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> Dict[str, Any]:
+        """Upsert one FX rate; passing `conn` joins an existing batch transaction."""
         payload = {
             "id": rate.get("id") or str(uuid.uuid4()),
             "base_currency": rate["base_currency"].upper(),
@@ -838,32 +887,39 @@ class DatabaseManager:
         }
         if payload["rate"] <= 0:
             raise ValueError("FX rate must be positive.")
-        with self.get_connection() as conn:
-            existing = conn.execute(
-                """
-                SELECT id FROM fx_rates
-                WHERE base_currency = ? AND quote_currency = ? AND rate_date = ? AND provider = ?
-                """,
-                (payload["base_currency"], payload["quote_currency"], payload["rate_date"], payload["provider"]),
-            ).fetchone()
-            if existing:
-                payload["id"] = existing["id"]
-            conn.execute(
-                """
-                INSERT INTO fx_rates (
-                    id, base_currency, quote_currency, rate, rate_date, provider, source, retrieved_at, metadata, updated_at
-                )
-                VALUES (
-                    :id, :base_currency, :quote_currency, :rate, :rate_date, :provider, :source, :retrieved_at, :metadata, datetime('now')
-                )
-                ON CONFLICT(base_currency, quote_currency, rate_date, provider) DO UPDATE SET
-                    rate = excluded.rate, source = excluded.source, retrieved_at = excluded.retrieved_at,
-                    metadata = excluded.metadata, updated_at = datetime('now')
-                """,
-                payload,
-            )
-            conn.commit()
+        if conn is not None:
+            self._upsert_fx_rate(conn, payload)
+            return self._decode_market_row(payload)
+        with self.get_connection() as own_conn:
+            self._upsert_fx_rate(own_conn, payload)
+            own_conn.commit()
         return self._decode_market_row(payload)
+
+    def _upsert_fx_rate(self, conn: sqlite3.Connection, payload: Dict[str, Any]) -> None:
+        """Write one FX rate on an existing connection; the caller owns the commit."""
+        existing = conn.execute(
+            """
+            SELECT id FROM fx_rates
+            WHERE base_currency = ? AND quote_currency = ? AND rate_date = ? AND provider = ?
+            """,
+            (payload["base_currency"], payload["quote_currency"], payload["rate_date"], payload["provider"]),
+        ).fetchone()
+        if existing:
+            payload["id"] = existing["id"]
+        conn.execute(
+            """
+            INSERT INTO fx_rates (
+                id, base_currency, quote_currency, rate, rate_date, provider, source, retrieved_at, metadata, updated_at
+            )
+            VALUES (
+                :id, :base_currency, :quote_currency, :rate, :rate_date, :provider, :source, :retrieved_at, :metadata, datetime('now')
+            )
+            ON CONFLICT(base_currency, quote_currency, rate_date, provider) DO UPDATE SET
+                rate = excluded.rate, source = excluded.source, retrieved_at = excluded.retrieved_at,
+                metadata = excluded.metadata, updated_at = datetime('now')
+            """,
+            payload,
+        )
 
     def get_fx_rates(self, base_currency: Optional[str] = None, quote_currency: Optional[str] = None, start: Optional[str] = None, end: Optional[str] = None) -> List[Dict[str, Any]]:
         clauses, params = [], []
@@ -928,8 +984,16 @@ class DatabaseManager:
                 accepted.append(payload)
             except Exception as exc:
                 rejected.append({"row_number": index, "row": row, "error": str(exc)})
-        for payload in accepted:
-            self.save_fx_rate(payload)
+        if accepted:
+            # S2A H: all-or-nothing persistence for the whole batch.
+            with closing(self.get_connection()) as conn:
+                try:
+                    for payload in accepted:
+                        self.save_fx_rate(payload, conn=conn)
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
         return {
             "accepted_rows": accepted,
             "rejected_rows": rejected,
@@ -959,8 +1023,16 @@ class DatabaseManager:
                 accepted.append(payload)
             except Exception as exc:
                 rejected.append({"row_number": index, "row": row, "error": str(exc)})
-        for payload in accepted:
-            self.save_benchmark_price(payload)
+        if accepted:
+            # S2A G: all-or-nothing persistence for the whole batch.
+            with closing(self.get_connection()) as conn:
+                try:
+                    for payload in accepted:
+                        self.save_benchmark_price(payload, conn=conn)
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
         return {
             "accepted_rows": accepted,
             "rejected_rows": rejected,
@@ -1522,8 +1594,21 @@ class DatabaseManager:
             return [dict(row) for row in rows]
 
     def save_transaction(self, tx: Dict[str, Any]) -> Dict[str, Any]:
+        provided_id = tx.get("id")
         payload = self._normalize_transaction(tx)
         with self.get_connection() as conn:
+            if not provided_id:
+                # S2A K: a create without an explicit id is deduplicated against
+                # (source, external_id) first and the content fingerprint second,
+                # mirroring the CSV/canonical import duplicate semantics: the
+                # second identical manual save returns the persisted row instead
+                # of inserting a twin. An explicit id keeps the edit/upsert path.
+                existing = self._get_existing_transaction(conn, payload)
+                if existing:
+                    return {
+                        key: existing[key]
+                        for key in ("id", "account_id", "amount", "category", "date", "description", "currency", "source", "external_id", "raw_payload")
+                    }
             conn.execute(
                 """
                 INSERT INTO transactions (id, account_id, amount, category, date, description, currency, source, external_id, raw_payload, updated_at)
@@ -1576,6 +1661,26 @@ class DatabaseManager:
             return [dict(row) for row in conn.execute("SELECT * FROM budgets ORDER BY category").fetchall()]
 
     def save_budget(self, budget: Dict[str, Any]) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            payload = self._upsert_budget(conn, budget)
+            conn.commit()
+        return payload
+
+    def _upsert_budget(
+        self,
+        conn: sqlite3.Connection,
+        budget: Dict[str, Any],
+        preserve_manual: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """Write one budget on an existing connection; the caller owns the commit.
+
+        Returns the payload with the id actually persisted: budgets upsert on the
+        UNIQUE category, so on conflict the existing row keeps its own id and a
+        freshly generated uuid would be a lie (S2A J). With `preserve_manual`, a
+        budget whose existing row belongs to source MANUAL is skipped entirely so
+        a Wallet import can never clobber a user-maintained budget (S2A D);
+        skipped rows return None.
+        """
         payload = {
             "id": budget.get("id") or str(uuid.uuid4()),
             "category": budget["category"],
@@ -1586,19 +1691,27 @@ class DatabaseManager:
             "is_active": 1 if budget.get("is_active", True) else 0,
             "external_id": budget.get("external_id"),
         }
-        with self.get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO budgets (id, category, monthly_limit, currency, source, period, is_active, external_id, updated_at)
-                VALUES (:id, :category, :monthly_limit, :currency, :source, :period, :is_active, :external_id, datetime('now'))
-                ON CONFLICT(category) DO UPDATE SET
-                    monthly_limit = excluded.monthly_limit, currency = excluded.currency,
-                    source = excluded.source, period = excluded.period, is_active = excluded.is_active,
-                    external_id = excluded.external_id, updated_at = datetime('now')
-                """,
-                payload,
-            )
-            conn.commit()
+        if preserve_manual:
+            existing = conn.execute(
+                "SELECT source FROM budgets WHERE category = ?",
+                (payload["category"],),
+            ).fetchone()
+            if existing and (existing["source"] or "MANUAL").upper() == "MANUAL":
+                return None
+        conn.execute(
+            """
+            INSERT INTO budgets (id, category, monthly_limit, currency, source, period, is_active, external_id, updated_at)
+            VALUES (:id, :category, :monthly_limit, :currency, :source, :period, :is_active, :external_id, datetime('now'))
+            ON CONFLICT(category) DO UPDATE SET
+                monthly_limit = excluded.monthly_limit, currency = excluded.currency,
+                source = excluded.source, period = excluded.period, is_active = excluded.is_active,
+                external_id = excluded.external_id, updated_at = datetime('now')
+            """,
+            payload,
+        )
+        row = conn.execute("SELECT id FROM budgets WHERE category = ?", (payload["category"],)).fetchone()
+        if row:
+            payload["id"] = row["id"]
         return payload
 
     def delete_budget(self, budget_id: str):
@@ -1621,8 +1734,22 @@ class DatabaseManager:
             return [dict(row) for row in conn.execute(f"SELECT * FROM recurring_rules {where} ORDER BY next_expected, merchant").fetchall()]
 
     def upsert_recurring_rule(self, rule: Dict[str, Any]) -> Dict[str, Any]:
+        with self.get_connection() as conn:
+            payload = self._upsert_recurring_rule(conn, rule)
+            conn.commit()
+        return payload
+
+    def _upsert_recurring_rule(self, conn: sqlite3.Connection, rule: Dict[str, Any]) -> Dict[str, Any]:
+        """Write one recurring rule on an existing connection; the caller owns the commit.
+
+        When the caller does not supply an id but does supply an external_id, an
+        existing row for the same (source, external_id) is reused, so re-importing
+        the same Wallet standing order updates it instead of duplicating it
+        (S2A C). An explicit id keeps the plain id upsert semantics.
+        """
+        provided_id = rule.get("id")
         payload = {
-            "id": rule.get("id") or str(uuid.uuid4()),
+            "id": provided_id or str(uuid.uuid4()),
             "merchant": rule["merchant"],
             "category": rule.get("category", "General"),
             "account_id": rule.get("account_id"),
@@ -1635,20 +1762,25 @@ class DatabaseManager:
             "last_seen": rule.get("last_seen"),
             "raw_payload": json.dumps(rule.get("raw_payload", rule), ensure_ascii=False),
         }
-        with self.get_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO recurring_rules (id, merchant, category, account_id, typical_amount, frequency, status, source, external_id, next_expected, last_seen, raw_payload, updated_at)
-                VALUES (:id, :merchant, :category, :account_id, :typical_amount, :frequency, :status, :source, :external_id, :next_expected, :last_seen, :raw_payload, datetime('now'))
-                ON CONFLICT(id) DO UPDATE SET
-                    merchant = excluded.merchant, category = excluded.category, account_id = excluded.account_id,
-                    typical_amount = excluded.typical_amount, frequency = excluded.frequency, status = excluded.status,
-                    source = excluded.source, external_id = excluded.external_id, next_expected = excluded.next_expected,
-                    last_seen = excluded.last_seen, raw_payload = excluded.raw_payload, updated_at = datetime('now')
-                """,
-                payload,
-            )
-            conn.commit()
+        if not provided_id and payload["external_id"]:
+            existing = conn.execute(
+                "SELECT id FROM recurring_rules WHERE source = ? AND external_id = ? LIMIT 1",
+                (payload["source"], payload["external_id"]),
+            ).fetchone()
+            if existing:
+                payload["id"] = existing["id"]
+        conn.execute(
+            """
+            INSERT INTO recurring_rules (id, merchant, category, account_id, typical_amount, frequency, status, source, external_id, next_expected, last_seen, raw_payload, updated_at)
+            VALUES (:id, :merchant, :category, :account_id, :typical_amount, :frequency, :status, :source, :external_id, :next_expected, :last_seen, :raw_payload, datetime('now'))
+            ON CONFLICT(id) DO UPDATE SET
+                merchant = excluded.merchant, category = excluded.category, account_id = excluded.account_id,
+                typical_amount = excluded.typical_amount, frequency = excluded.frequency, status = excluded.status,
+                source = excluded.source, external_id = excluded.external_id, next_expected = excluded.next_expected,
+                last_seen = excluded.last_seen, raw_payload = excluded.raw_payload, updated_at = datetime('now')
+            """,
+            payload,
+        )
         return payload
 
     def update_recurring_status(self, rule_id: str, status: str) -> Dict[str, Any]:
@@ -1663,21 +1795,35 @@ class DatabaseManager:
         return dict(row)
 
     def import_budgetbakers_plan(self, budgets: List[Dict[str, Any]], standing_orders: List[Dict[str, Any]]) -> Dict[str, int]:
-        """Apply a BudgetBakers import plan and record exactly one audit event for it.
+        """Apply a BudgetBakers import plan as one atomic operation (S2A D/E).
 
-        The endpoint delegates here so the whole plan is one user-visible operation:
-        each row keeps its existing per-row commit behavior, and the single event is
-        written after the outcome is known and can never mask a failed import.
+        - every budget and standing order is written on a single connection and
+          committed only when the whole plan succeeds; any failure rolls the
+          entire plan back, so the IMPORT_PLAN_FAILED event always reports the
+          only honest numbers after a rollback: zero rows written;
+        - budgets whose existing row belongs to source MANUAL are skipped, so a
+          Wallet plan can never overwrite a user-maintained budget (S2A D);
+        - the single audit event is written after the outcome is known and can
+          never mask a failed import.
         """
         imported_budgets = 0
         imported_orders = 0
         try:
-            for budget in budgets:
-                self.save_budget({**budget, "source": "BUDGETBAKERS"})
-                imported_budgets += 1
-            for order in standing_orders:
-                self.upsert_recurring_rule({**order, "source": "BUDGETBAKERS", "status": "confirmed"})
-                imported_orders += 1
+            with closing(self.get_connection()) as conn:
+                try:
+                    for budget in budgets:
+                        written = self._upsert_budget(
+                            conn, {**budget, "source": "BUDGETBAKERS"}, preserve_manual=True
+                        )
+                        if written is not None:
+                            imported_budgets += 1
+                    for order in standing_orders:
+                        self._upsert_recurring_rule(conn, {**order, "source": "BUDGETBAKERS", "status": "confirmed"})
+                        imported_orders += 1
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
         except Exception as exc:
             self._try_add_action_event(
                 "BUDGETBAKERS",
@@ -1685,8 +1831,9 @@ class DatabaseManager:
                 "La importación del plan de BudgetBakers falló.",
                 "ERROR",
                 {
-                    "imported_budgets": imported_budgets,
-                    "imported_standing_orders": imported_orders,
+                    "imported_budgets": 0,
+                    "imported_standing_orders": 0,
+                    "rolled_back": True,
                     "error_type": type(exc).__name__,
                 },
             )

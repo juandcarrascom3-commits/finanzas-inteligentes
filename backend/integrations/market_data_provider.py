@@ -6,6 +6,8 @@ from dataclasses import dataclass, asdict
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Protocol
 
+from backend.integrations.provider_security import DEFAULT_TIMEOUT_SECONDS
+
 
 @dataclass
 class MarketQuote:
@@ -80,7 +82,7 @@ def _row_price(row: Any) -> float:
 class YFinanceProvider:
     name = "YFINANCE"
 
-    def __init__(self, timeout: int = 15):
+    def __init__(self, timeout: float = DEFAULT_TIMEOUT_SECONDS):
         self.timeout = timeout
 
     def _yf(self):
