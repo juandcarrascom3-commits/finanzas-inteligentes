@@ -16,9 +16,24 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
-from backend.integrations.provider_security import DEFAULT_TIMEOUT_SECONDS, redact_secrets
+from backend.integrations.provider_security import (
+    DEFAULT_TIMEOUT_SECONDS,
+    MAX_DIAGNOSTIC_BODY_BYTES,
+    MAX_RETRY_ATTEMPTS,
+    RETRYABLE_SERVER_STATUS_CODES,
+    ResponseTooLargeError,
+    backoff_delay,
+    parse_retry_after,
+    read_bounded_response,
+    redact_secrets,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _retry_sleep(seconds: float) -> None:
+    """Single indirection point for retry delays so tests never really sleep."""
+    time.sleep(seconds)
 
 
 class EtoroAuthError(Exception):
@@ -37,6 +52,15 @@ class EtoroNetworkError(Exception):
     def __init__(self, message: str, diagnostic: Optional[Dict[str, Any]] = None):
         super().__init__(message)
         self.diagnostic = diagnostic or {}
+
+
+class EtoroResponseTooLargeError(EtoroNetworkError):
+    """Provider body exceeded MAX_SUCCESS_BODY_BYTES; aborted before parsing.
+
+    Subclasses EtoroNetworkError so the existing app.py handler (502 +
+    NETWORK_ERROR sync state) applies unchanged — no API-layer change is
+    needed. Carries only the limit, never response body bytes.
+    """
 
 
 class EtoroAdapter:
@@ -372,32 +396,6 @@ class EtoroAdapter:
                     if items:
                         return items
         return []
-
-    def _fetch_paginated(self, path: str, collection_key: str, limit: int = 200) -> Dict[str, Any]:
-        items: List[Dict[str, Any]] = []
-        pages = 0
-        meta: Dict[str, Any] = {}
-        cursor: Optional[str] = None
-        offset = 0
-        while True:
-            params: Dict[str, Any] = {"limit": limit}
-            if cursor:
-                params["cursor"] = cursor
-            elif offset:
-                params["offset"] = offset
-            data, page_meta = self._get(path, params)
-            meta.update(page_meta)
-            items.extend(self.extract_items(data, collection_key))
-            pages += 1
-            cursor = data.get("nextCursor") or data.get("nextPageToken") if isinstance(data, dict) else None
-            next_offset = data.get("nextOffset") if isinstance(data, dict) else None
-            if cursor:
-                continue
-            if next_offset is not None:
-                offset = int(next_offset)
-                continue
-            break
-        return {"items": items, "pages": pages, "meta": meta}
 
     def _normalize_operation(self, raw: Dict[str, Any], mappings: Dict[str, str]) -> Dict[str, Any]:
         external_id = str(self._first(raw, ["id", "orderId", "positionId", "tradeId", "dealId"]) or "")
@@ -834,28 +832,51 @@ class EtoroAdapter:
             },
             method="GET",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                raw = response.read()
-                try:
-                    payload = json.loads(raw.decode("utf-8") or "{}")
-                except ValueError as exc:
-                    raise self._malformed_response_error(url, response, raw, "JSON malformado") from exc
-                if not isinstance(payload, (dict, list)):
-                    raise self._malformed_response_error(url, response, raw, "estructura inesperada")
-                return payload, self._response_meta(response.headers)
-        except urllib.error.HTTPError as exc:
-            diagnostic = self._safe_http_diagnostic(request, exc)
-            logger.warning("eToro HTTP error diagnostic: %s", json.dumps(diagnostic, ensure_ascii=False))
-            if exc.code == 403 and self._is_cloudflare_client_block(diagnostic):
-                raise EtoroNetworkError("eToro/Cloudflare bloqueó la firma del cliente HTTP local.", diagnostic=diagnostic) from exc
-            if exc.code in {401, 403}:
-                raise EtoroAuthError("Credenciales eToro inválidas o sin permiso read-only.", diagnostic=diagnostic) from exc
-            if exc.code == 429:
-                raise EtoroRateLimitError("Rate limit de eToro alcanzado.", retry_after=exc.headers.get("Retry-After")) from exc
-            raise EtoroNetworkError(f"eToro respondió HTTP {exc.code}.", diagnostic=diagnostic) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise EtoroNetworkError("No se pudo conectar con eToro.") from exc
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                    try:
+                        raw = read_bounded_response(response)
+                    except ResponseTooLargeError as exc:
+                        raise EtoroResponseTooLargeError(
+                            f"Respuesta de eToro demasiado grande "
+                            f"(supera el límite de {exc.limit_bytes} bytes)."
+                        ) from exc
+                    if not raw.strip():
+                        raise self._malformed_response_error(url, response, raw, "cuerpo vacío")
+                    try:
+                        payload = json.loads(raw.decode("utf-8"))
+                    except ValueError as exc:
+                        raise self._malformed_response_error(url, response, raw, "JSON malformado") from exc
+                    if not isinstance(payload, (dict, list)):
+                        raise self._malformed_response_error(url, response, raw, "estructura inesperada")
+                    return payload, self._response_meta(response.headers)
+            except urllib.error.HTTPError as exc:
+                diagnostic = self._safe_http_diagnostic(request, exc)
+                logger.warning("eToro HTTP error diagnostic: %s", json.dumps(diagnostic, ensure_ascii=False))
+                if exc.code == 403 and self._is_cloudflare_client_block(diagnostic):
+                    raise EtoroNetworkError("eToro/Cloudflare bloqueó la firma del cliente HTTP local.", diagnostic=diagnostic) from exc
+                if exc.code in {401, 403}:
+                    raise EtoroAuthError("Credenciales eToro inválidas o sin permiso read-only.", diagnostic=diagnostic) from exc
+                if exc.code == 429:
+                    retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                    delay = parse_retry_after(retry_after)
+                    if delay is None or attempt >= MAX_RETRY_ATTEMPTS:
+                        raise EtoroRateLimitError("Rate limit de eToro alcanzado.", retry_after=retry_after) from exc
+                    _retry_sleep(delay)
+                    continue
+                if exc.code in RETRYABLE_SERVER_STATUS_CODES and attempt < MAX_RETRY_ATTEMPTS:
+                    server_delay = parse_retry_after(exc.headers.get("Retry-After") if exc.headers else None)
+                    _retry_sleep(server_delay if server_delay is not None else backoff_delay(attempt))
+                    continue
+                raise EtoroNetworkError(f"eToro respondió HTTP {exc.code}.", diagnostic=diagnostic) from exc
+            except (urllib.error.URLError, TimeoutError) as exc:
+                if attempt < MAX_RETRY_ATTEMPTS:
+                    _retry_sleep(backoff_delay(attempt))
+                    continue
+                raise EtoroNetworkError("No se pudo conectar con eToro.") from exc
 
     def _malformed_response_error(self, url: str, response: Any, raw: bytes, reason: str) -> EtoroNetworkError:
         diagnostic = {
@@ -871,7 +892,9 @@ class EtoroAdapter:
     def _safe_http_diagnostic(self, request: urllib.request.Request, exc: urllib.error.HTTPError) -> Dict[str, Any]:
         body = ""
         try:
-            body = exc.read().decode("utf-8", errors="replace")
+            # Bounded read: diagnostics keep only the first 1000 chars anyway,
+            # and provider block markers sit at the body start.
+            body = exc.read(MAX_DIAGNOSTIC_BODY_BYTES).decode("utf-8", errors="replace")
         except Exception:
             body = ""
         body = self._sanitize_text(body)[:1000]

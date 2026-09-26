@@ -13,8 +13,8 @@ class FakeBody:
     def __init__(self, body):
         self.body = body
 
-    def read(self):
-        return self.body
+    def read(self, amt=-1):
+        return self.body if amt < 0 else self.body[:amt]
 
     def close(self):
         return None
@@ -33,8 +33,9 @@ def test_etoro_headers_and_connection(monkeypatch):
         def __exit__(self, *args):
             return False
 
-        def read(self):
-            return json.dumps({"positions": [{"id": "p1", "instrumentId": "AAPL"}]}).encode("utf-8")
+        def read(self, amt=-1):
+            body = json.dumps({"positions": [{"id": "p1", "instrumentId": "AAPL"}]}).encode("utf-8")
+            return body if amt < 0 else body[:amt]
 
     def fake_urlopen(request, timeout):
         captured["headers"] = dict(request.header_items())
@@ -94,8 +95,8 @@ def test_etoro_request_id_is_unique_per_request(monkeypatch):
         def __exit__(self, *args):
             return False
 
-        def read(self):
-            return b"{}"
+        def read(self, amt=-1):
+            return b"{}" if amt < 0 else b"{}"[:amt]
 
     def fake_urlopen(request, timeout):
         request_ids.append(dict(request.header_items())["X-request-id"])

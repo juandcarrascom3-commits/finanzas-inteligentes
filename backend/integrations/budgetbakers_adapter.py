@@ -16,8 +16,10 @@ from backend.integrations.provider_security import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_RETRY_ATTEMPTS,
     RETRYABLE_SERVER_STATUS_CODES,
+    ResponseTooLargeError,
     backoff_delay,
     parse_retry_after,
+    read_bounded_response,
 )
 
 
@@ -56,6 +58,16 @@ class BudgetBakersMalformedResponseError(Exception):
     optional endpoints must not treat a broken upstream payload as an empty
     collection — it has to surface as a controlled 502 instead of silently
     pretending the account has no data.
+    """
+
+
+class BudgetBakersResponseTooLargeError(BudgetBakersMalformedResponseError):
+    """Provider body exceeded MAX_SUCCESS_BODY_BYTES; aborted before parsing.
+
+    Subclasses BudgetBakersMalformedResponseError so the existing app.py
+    handler (502 + NETWORK_ERROR sync state) and the preview fallback rules
+    apply unchanged — no API-layer change is needed. Carries only the limit,
+    never response body bytes.
     """
 
 
@@ -308,8 +320,19 @@ class BudgetBakersAdapter:
             try:
                 with urllib.request.urlopen(request, timeout=self.timeout) as response:
                     try:
-                        body = response.read().decode("utf-8")
-                        data = json.loads(body or "{}")
+                        raw = read_bounded_response(response)
+                    except ResponseTooLargeError as exc:
+                        raise BudgetBakersResponseTooLargeError(
+                            f"BudgetBakers devolvió una respuesta demasiado grande "
+                            f"(supera el límite de {exc.limit_bytes} bytes)."
+                        ) from exc
+                    if not raw.strip():
+                        raise BudgetBakersMalformedResponseError(
+                            "BudgetBakers devolvió una respuesta vacía."
+                        )
+                    try:
+                        body = raw.decode("utf-8")
+                        data = json.loads(body)
                     except ValueError as exc:
                         raise BudgetBakersMalformedResponseError(
                             "BudgetBakers devolvió una respuesta inválida (JSON malformado)."

@@ -29,6 +29,49 @@ MAX_RETRY_DELAY_SECONDS = 5.0
 RETRYABLE_SERVER_STATUS_CODES = frozenset({500, 502, 503, 504})
 _BACKOFF_BASE_SECONDS = 0.1
 
+# --- Response body bounds -------------------------------------------------
+# Our code owns every provider body read (urllib response.read / HTTPError
+# read): bound them before parsing. yfinance internals are library-managed
+# and deliberately out of S3 scope.
+# Successful provider body: pages carry <=200 items, so 5 MiB is far above
+# any honest page while cutting off a hostile or misrouted stream quickly.
+MAX_SUCCESS_BODY_BYTES = 5 * 1024 * 1024
+# Diagnostic/error body: only the first 1000 chars are ever displayed, and
+# provider block markers (e.g. Cloudflare) sit at the body start.
+MAX_DIAGNOSTIC_BODY_BYTES = 64 * 1024
+
+
+class ResponseTooLargeError(Exception):
+    """Provider body exceeded the local bound; aborted before parsing.
+
+    Carries only the limit — never response body bytes — so the message is
+    safe to log, persist and surface verbatim.
+    """
+
+    def __init__(self, limit_bytes: int):
+        super().__init__(
+            f"Provider response exceeded the {limit_bytes}-byte limit."
+        )
+        self.limit_bytes = limit_bytes
+
+
+def read_bounded_response(
+    response: Any,
+    max_bytes: int = MAX_SUCCESS_BODY_BYTES,
+) -> bytes:
+    """Read at most ``max_bytes`` from response, raising if the body is larger.
+
+    Reads one byte past the limit to distinguish "fits" from "oversized"
+    without ever buffering an unbounded body; a body of exactly
+    ``max_bytes`` passes. Oversized bodies raise ``ResponseTooLargeError``
+    before any parsing, so truncated bytes are never fed to a parser.
+    """
+    data = response.read(max_bytes + 1)
+    if len(data) > max_bytes:
+        raise ResponseTooLargeError(max_bytes)
+    return data
+
+
 # --- Redaction ------------------------------------------------------------
 REDACTED = "[REDACTED]"
 MAX_UPSTREAM_MESSAGE_CHARS = 500
