@@ -386,7 +386,16 @@ class DatabaseManager:
 
     def delete_account(self, account_id: str):
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+            cursor = conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "ACCOUNT_DELETE",
+                "Cuenta eliminada." if deleted else "Cuenta no encontrada; sin cambios.",
+                "INFO",
+                {"entity_id": account_id, "deleted": deleted},
+            )
             conn.commit()
 
     def get_assets(self, include_watchlist: bool = True) -> List[Dict[str, Any]]:
@@ -432,8 +441,18 @@ class DatabaseManager:
         return payload
 
     def delete_asset(self, ticker: str):
+        clean_ticker = ticker.upper()
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM assets WHERE ticker = ?", (ticker.upper(),))
+            cursor = conn.execute("DELETE FROM assets WHERE ticker = ?", (clean_ticker,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "ASSET_DELETE",
+                "Activo eliminado." if deleted else "Activo no encontrado; sin cambios.",
+                "INFO",
+                {"entity_id": clean_ticker, "deleted": deleted},
+            )
             conn.commit()
 
     def save_asset_valuation(self, valuation: Dict[str, Any]) -> Dict[str, Any]:
@@ -1001,7 +1020,16 @@ class DatabaseManager:
 
     def delete_investment_transaction(self, operation_id: str):
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM investment_transactions WHERE id = ?", (operation_id,))
+            cursor = conn.execute("DELETE FROM investment_transactions WHERE id = ?", (operation_id,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "INVESTMENT_OPERATION_DELETE",
+                "Operación de inversión eliminada." if deleted else "Operación de inversión no encontrada; sin cambios.",
+                "INFO",
+                {"entity_id": operation_id, "deleted": deleted},
+            )
             conn.commit()
 
     def preview_investment_transactions_csv(self, content: str, source: str = "CSV") -> Dict[str, Any]:
@@ -1170,7 +1198,15 @@ class DatabaseManager:
     def import_mapping_config(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         validation = self.validate_mapping_config(payload)
         if not validation["valid"]:
-            raise ValueError("; ".join(validation["errors"]))
+            errors = validation["errors"]
+            self._try_add_action_event(
+                "MANUAL",
+                "MAPPING_CONFIG_IMPORT_FAILED",
+                "La importación de mappings fue rechazada; no se aplicó ningún cambio.",
+                "WARNING",
+                {"errors": errors},
+            )
+            raise ValueError("; ".join(errors))
         imported = {"etoro_instrument_mappings": 0, "market_symbol_mappings": 0, "price_authority": 0}
         with self.get_connection() as conn:
             try:
@@ -1241,9 +1277,24 @@ class DatabaseManager:
                         clean,
                     )
                     imported["price_authority"] += 1
+                self._insert_action_event(
+                    conn,
+                    "MANUAL",
+                    "MAPPING_CONFIG_IMPORT_SUCCESS",
+                    "Configuración de mappings importada.",
+                    "INFO",
+                    {"imported": imported},
+                )
                 conn.commit()
-            except Exception:
+            except Exception as exc:
                 conn.rollback()
+                self._try_add_action_event(
+                    "MANUAL",
+                    "MAPPING_CONFIG_IMPORT_FAILED",
+                    "La importación de mappings falló; no se aplicó ningún cambio.",
+                    "ERROR",
+                    {"error_type": type(exc).__name__},
+                )
                 raise
         return {"status": "IMPORTED", "imported": imported}
 
@@ -1478,7 +1529,16 @@ class DatabaseManager:
 
     def delete_transaction(self, tx_id: str):
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+            cursor = conn.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "TRANSACTION_DELETE",
+                "Transacción eliminada." if deleted else "Transacción no encontrada; sin cambios.",
+                "INFO",
+                {"entity_id": tx_id, "deleted": deleted},
+            )
             conn.commit()
 
     def get_transaction_summary(self) -> Dict[str, float]:
@@ -1532,7 +1592,16 @@ class DatabaseManager:
 
     def delete_budget(self, budget_id: str):
         with self.get_connection() as conn:
-            conn.execute("DELETE FROM budgets WHERE id = ?", (budget_id,))
+            cursor = conn.execute("DELETE FROM budgets WHERE id = ?", (budget_id,))
+            deleted = cursor.rowcount > 0
+            self._insert_action_event(
+                conn,
+                "MANUAL",
+                "BUDGET_DELETE",
+                "Presupuesto eliminado." if deleted else "Presupuesto no encontrado; sin cambios.",
+                "INFO",
+                {"entity_id": budget_id, "deleted": deleted},
+            )
             conn.commit()
 
     def get_recurring_rules(self, include_rejected: bool = False) -> List[Dict[str, Any]]:
@@ -1581,6 +1650,44 @@ class DatabaseManager:
         if not row:
             raise ValueError("Recurring rule not found")
         return dict(row)
+
+    def import_budgetbakers_plan(self, budgets: List[Dict[str, Any]], standing_orders: List[Dict[str, Any]]) -> Dict[str, int]:
+        """Apply a BudgetBakers import plan and record exactly one audit event for it.
+
+        The endpoint delegates here so the whole plan is one user-visible operation:
+        each row keeps its existing per-row commit behavior, and the single event is
+        written after the outcome is known and can never mask a failed import.
+        """
+        imported_budgets = 0
+        imported_orders = 0
+        try:
+            for budget in budgets:
+                self.save_budget({**budget, "source": "BUDGETBAKERS"})
+                imported_budgets += 1
+            for order in standing_orders:
+                self.upsert_recurring_rule({**order, "source": "BUDGETBAKERS", "status": "confirmed"})
+                imported_orders += 1
+        except Exception as exc:
+            self._try_add_action_event(
+                "BUDGETBAKERS",
+                "IMPORT_PLAN_FAILED",
+                "La importación del plan de BudgetBakers falló.",
+                "ERROR",
+                {
+                    "imported_budgets": imported_budgets,
+                    "imported_standing_orders": imported_orders,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        self._try_add_action_event(
+            "BUDGETBAKERS",
+            "IMPORT_PLAN_SUCCESS",
+            "Plan de BudgetBakers importado.",
+            "INFO",
+            {"imported_budgets": imported_budgets, "imported_standing_orders": imported_orders},
+        )
+        return {"imported_budgets": imported_budgets, "imported_standing_orders": imported_orders}
 
     def sync_detected_recurring_rules(self, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         existing = {(row["merchant"], round(float(row["typical_amount"] or 0), 2)): row for row in self.get_recurring_rules(include_rejected=True)}
@@ -1743,13 +1850,56 @@ class DatabaseManager:
             conn.commit()
         return payload
 
+    def _insert_action_event(
+        self,
+        conn: sqlite3.Connection,
+        source: str,
+        event_type: str,
+        message: str,
+        severity: str = "INFO",
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Write one action_events row on an existing connection; the caller owns the commit.
+
+        Writing on the caller's connection lets a mutation and its audit record share
+        a single transaction, so either both persist or neither does.
+        """
+        conn.execute(
+            "INSERT INTO action_events (id, source, event_type, severity, message, payload) VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), self._clean_source(source), event_type, severity, message, json.dumps(payload or {}, ensure_ascii=False)),
+        )
+
     def add_action_event(self, source: str, event_type: str, message: str, severity: str = "INFO", payload: Optional[Dict[str, Any]] = None):
         with self.get_connection() as conn:
-            conn.execute(
-                "INSERT INTO action_events (id, source, event_type, severity, message, payload) VALUES (?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), self._clean_source(source), event_type, severity, message, json.dumps(payload or {}, ensure_ascii=False)),
-            )
+            self._insert_action_event(conn, source, event_type, message, severity, payload)
             conn.commit()
+
+    def _try_add_action_event(
+        self,
+        source: str,
+        event_type: str,
+        message: str,
+        severity: str = "INFO",
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Best-effort audit write for mutations that cannot share one transaction.
+
+        Restore replaces the database file and the import-plan loop commits row by
+        row, so their events are written after the outcome is known. This helper never
+        raises: recording the outcome must not mask, reverse or alter the operation
+        being audited. Failures are logged instead.
+        """
+        if not os.path.isfile(self.db_path):
+            logger.warning("Skipped action event %s/%s: no local database to record it in", source, event_type)
+            return False
+        try:
+            with closing(self.get_connection()) as conn:
+                self._insert_action_event(conn, source, event_type, message, severity, payload)
+                conn.commit()
+            return True
+        except Exception:
+            logger.exception("Could not record action event %s/%s", source, event_type)
+            return False
 
     def get_action_events(self, limit: int = 50) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
@@ -2155,17 +2305,39 @@ class DatabaseManager:
             self._copy_sqlite(resolved, self.db_path)
             self._verify_restored_database()
         except Exception as exc:
-            if self._recover_previous_database(had_live_database, pre_restore_path):
+            recovered = self._recover_previous_database(had_live_database, pre_restore_path)
+            self._try_add_action_event(
+                "MANUAL",
+                "BACKUP_RESTORE_FAILED",
+                "La restauración falló; la base de datos anterior quedó intacta."
+                if recovered
+                else "La restauración falló y la base de datos no pudo recuperarse.",
+                "ERROR",
+                {
+                    "backup_file": os.path.basename(resolved),
+                    "recovered": recovered,
+                    "error_type": type(exc).__name__,
+                },
+            )
+            if recovered:
                 raise ValueError("Restore failed; the previous database was left unchanged.") from exc
             raise ValueError("Restore failed and the live database could not be recovered.") from exc
 
+        schema = self.get_schema_info()
+        self._try_add_action_event(
+            "MANUAL",
+            "BACKUP_RESTORE_SUCCESS",
+            "Base de datos local restaurada desde backup.",
+            "INFO",
+            {"backup_file": os.path.basename(resolved), "schema_version": schema["latest_version"]},
+        )
         logger.warning("Restored local database from %s", backup_path)
         return {
             "status": "RESTORED",
             "restored_from": backup_path,
             "pre_restore_backup_path": pre_restore_path if os.path.exists(pre_restore_path) else None,
             "validation": validation,
-            "schema": self.get_schema_info(),
+            "schema": schema,
         }
 
     def _parse_csv_rows(self, content: str) -> List[Dict[str, Any]]:

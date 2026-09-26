@@ -2067,15 +2067,7 @@ def save_source_mapping(mapping: SourceMappingInput):
 
 @app.post("/api/budgetbakers/import-plan")
 def import_budgetbakers_plan(payload: Dict[str, Any]):
-    imported_budgets = 0
-    imported_orders = 0
-    for budget in payload.get("budgets", []):
-        db.save_budget({**budget, "source": "BUDGETBAKERS"})
-        imported_budgets += 1
-    for order in payload.get("standing_orders", []):
-        db.upsert_recurring_rule({**order, "source": "BUDGETBAKERS", "status": "confirmed"})
-        imported_orders += 1
-    return {"imported_budgets": imported_budgets, "imported_standing_orders": imported_orders}
+    return db.import_budgetbakers_plan(payload.get("budgets", []), payload.get("standing_orders", []))
 
 @app.get("/api/reconciliation")
 def get_reconciliation(source: str = Query("BUDGETBAKERS")):
